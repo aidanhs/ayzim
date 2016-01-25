@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
@@ -316,193 +317,36 @@ impl Value {
             },
         };
     }
-//    fn parse(&mut self, mut curr: &str) {
-//        macro_rules! next {
-//            ($x:ident) => (&$x[1..]);
-//            ($x:ident, $offset:expr) => (&$x[$offset..]);
-//        }
-//        macro_rules! incr {
-//            ($x:ident) => ($x = &$x[1..]);
-//        }
-//        macro_rules! skip {
-//            ($x:ident) => {
-//                loop {
-//                    $x = match $x.chars().nth(0) {
-//                        Some(c) if is_json_space(c) => next!($x),
-//                        _ => break,
-//                    }
-//                }
-//            };
-//        }
-//        //#[inline(always)]
-//        //fn skip(mut curr: &[u8]) -> &[u8] {
-//        //    loop {
-//        //    }
-//        //}
-//        #[inline(always)]
-//        fn is_json_space(c: char) -> bool {
-//            // space, tab, linefeed/newline, or return
-//            c == '\x20' || c == '\x09' || c == '\x0A' || c == '\x0D'
-//        }
-//        skip!(curr);
-//        match curr.chars().nth(0).unwrap() {
-//            '"' => { // String
-//                next!(curr);
-//                let close = match curr.find('"') {
-//                    Some(i) => i,
-//                    None => panic!(),
-//                };
-//                self.setString(&curr[..close]);
-//                next!(curr, close + 1);
-//            },
-//            '[' => { // Array
-//                next!(curr);
-//                skip!(curr);
-//                self.setArray();
-//                while
-//            },
-//            _ => (),
-//        };
-//    }
-//    } else if (*curr == '[') {
-//      // Array
-//      curr++;
-//      skip();
-//      setArray();
-//      while (*curr != ']') {
-//        Ref temp = arena.alloc();
-//        arr->push_back(temp);
-//        curr = temp->parse(curr);
-//        skip();
-//        if (*curr == ']') break;
-//        assert(*curr == ',');
-//        curr++;
-//        skip();
-//      }
-//      curr++;
-//    } else if (*curr == 'n') {
-//      // Null
-//      assert(strncmp(curr, "null", 4) == 0);
-//      setNull();
-//      curr += 4;
-//    } else if (*curr == 't') {
-//      // Bool true
-//      assert(strncmp(curr, "true", 4) == 0);
-//      setBool(true);
-//      curr += 4;
-//    } else if (*curr == 'f') {
-//      // Bool false
-//      assert(strncmp(curr, "false", 5) == 0);
-//      setBool(false);
-//      curr += 5;
-//    } else if (*curr == '{') {
-//      // Object
-//      curr++;
-//      skip();
-//      setObject();
-//      while (*curr != '}') {
-//        assert(*curr == '"');
-//        curr++;
-//        char *close = strchr(curr, '"');
-//        assert(close);
-//        *close = 0; // end this string, and reuse it straight from the input
-//        IString key(curr);
-//        curr = close+1;
-//        skip();
-//        assert(*curr == ':');
-//        curr++;
-//        skip();
-//        Ref value = arena.alloc();
-//        curr = value->parse(curr);
-//        (*obj)[key] = value;
-//        skip();
-//        if (*curr == '}') break;
-//        assert(*curr == ',');
-//        curr++;
-//        skip();
-//      }
-//      curr++;
-//    } else {
-//      // Number
-//      char *after;
-//      setNumber(strtod(curr, &after));
-//      curr = after;
-//    }
-//    return curr;
-//  }
 
+    fn stringify<T>(&self, mut out: T, pretty: bool) where T: Write {
+        let jsonobj = self.stringify_json();
+        let outstr = if pretty {
+            serde_json::ser::to_string(&jsonobj)
+        } else {
+            serde_json::ser::to_string_pretty(&jsonobj)
+        }.unwrap();
+        out.write(outstr.as_bytes()); // .unwrap
+    }
+    fn stringify_json(&self) -> serde_json::Value {
+        match self {
+            &Value::null =>   serde_json::Value::Null,
+            &Value::str(ref a) => serde_json::Value::String((&**a).to_string()),
+            &Value::num(n) => serde_json::Value::F64(n),
+            &Value::boo(b) => serde_json::Value::Bool(b),
+            &Value::arr(ref a) => {
+                let outvec = a.iter().map(|v| v.stringify_json()).collect();
+                serde_json::Value::Array(outvec)
+            },
+            &Value::obj(ref o) => {
+                let outmap = o.iter().map(
+                    |(k, v)| ((&**k).to_string(), v.stringify_json())
+                ).collect();
+                serde_json::Value::Object(outmap)
+            },
+        }
+    }
 }
 
-//
-//  void stringify(std::ostream &os, bool pretty=false) {
-//    static int indent = 0;
-//    #define indentify() { for (int i = 0; i < indent; i++) os << "  "; }
-//    switch (type) {
-//      case String:
-//        os << '"' << str.str << '"';
-//        break;
-//      case Number:
-//        os << std::setprecision(17) << num; // doubles can have 17 digits of precision
-//        break;
-//      case Array:
-//        if (arr->size() == 0) {
-//          os << "[]";
-//          break;
-//        }
-//        os << '[';
-//        if (pretty) {
-//          os << std::endl;
-//          indent++;
-//        }
-//        for (unsigned i = 0; i < arr->size(); i++) {
-//          if (i > 0) {
-//            if (pretty) os << "," << std::endl;
-//            else os << ", ";
-//          }
-//          indentify();
-//          (*arr)[i]->stringify(os, pretty);
-//        }
-//        if (pretty) {
-//          os << std::endl;
-//          indent--;
-//        }
-//        indentify();
-//        os << ']';
-//        break;
-//      case Null:
-//        os << "null";
-//        break;
-//      case Bool:
-//        os << (boo ? "true" : "false");
-//        break;
-//      case Object:
-//        os << '{';
-//        if (pretty) {
-//          os << std::endl;
-//          indent++;
-//        }
-//        bool first = true;
-//        for (auto i : *obj) {
-//          if (first) {
-//            first = false;
-//          } else {
-//            os << ", ";
-//            if (pretty) os << std::endl;
-//          }
-//          indentify();
-//          os << '"' << i.first.c_str() << "\": ";
-//          i.second->stringify(os, pretty);
-//        }
-//        if (pretty) {
-//          os << std::endl;
-//          indent--;
-//        }
-//        indentify();
-//        os << '}';
-//        break;
-//    }
-//  }
-//
 //  // String operations
 //
 //  // Number operations
