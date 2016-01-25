@@ -1,0 +1,9 @@
+[package]
+name = "ayzim"
+version = "0.1.0"
+authors = ["Aidan Hobson Sayers <aidanhs@cantab.net>"]
+
+[dependencies]
+lazy_static = "0.1.*"
+string_cache = "0.2.5"
+serde_json = "0.6.0"
