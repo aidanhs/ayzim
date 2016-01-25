@@ -457,19 +457,12 @@ impl Value {
     fn lookup(&mut self, x: Atom) -> Ref {
         self.getMutObject().entry(x).or_insert(EMPTYREF).clone()
     }
+
+    fn has(&self, x: Atom) -> bool {
+        self.getObject().contains_key(&x)
+    }
 }
 
-//  Ref& operator[](IString x) {
-//    assert(isObject());
-//    return (*obj)[x];
-//  }
-//
-//  bool has(IString x) {
-//    assert(isObject());
-//    return obj->count(x) > 0;
-//  }
-//};
-//
 //// AST traversals
 //
 //// Traverse, calling visit before the children
