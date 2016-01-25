@@ -1,5 +1,5 @@
-#![feature(stmt_expr_attributes)]
-#![allow(non_snake_case,non_camel_case_types)]
+#![feature(stmt_expr_attributes, const_fn)]
+#![allow(non_snake_case, non_camel_case_types)]
 
 use std::env;
 use std::fs;
@@ -10,11 +10,10 @@ use std::time;
 
 #[macro_use]
 extern crate lazy_static;
-
 #[macro_use]
 extern crate string_cache;
-
 extern crate serde_json;
+extern crate odds;
 
 mod cashew;
 

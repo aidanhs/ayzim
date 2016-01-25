@@ -1,13 +1,17 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::iter;
 use std::mem;
+use std::ptr;
 use std::ops::{Deref, DerefMut};
+
+use odds::vec::VecExt;
 
 use string_cache::Atom;
 
 use serde_json;
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 struct Ref {
     inst: *mut Value,
 }
@@ -51,6 +55,8 @@ impl DerefMut for Ref {
         self.get_mut()
     }
 }
+
+const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 
 // Arena allocation, free it all on process exit
 
@@ -230,11 +236,20 @@ impl Value {
     fn getNumber(&self) -> f64 {
         if let &Value::num(d) = self { d } else { panic!() }
     }
+    fn getBool(&self) -> bool {
+        if let &Value::boo(b) = self { b } else { panic!() }
+    }
     fn getArray(&self) -> &ArrayStorage {
         if let &Value::arr(ref a) = self { a } else { panic!() }
     }
-    fn getBool(&self) -> bool {
-        if let &Value::boo(b) = self { b } else { panic!() }
+    fn getMutArray(&mut self) -> &mut ArrayStorage {
+        if let &mut Value::arr(ref mut a) = self { a } else { panic!() }
+    }
+    fn getObject(&self) -> &ObjectStorage {
+        if let &Value::obj(ref o) = self { o } else { panic!() }
+    }
+    fn getMutObject(&mut self) -> &mut ObjectStorage {
+        if let &mut Value::obj(ref mut o) = self { o } else { panic!() }
     }
 
     // convenience function to get a known integer
@@ -345,108 +360,105 @@ impl Value {
             },
         }
     }
+
+    // String operations
+
+    // Number operations
+
+    // Array operations
+
+    fn size(&self) -> usize {
+        self.getArray().len()
+    }
+
+    fn setSize(&mut self, size: usize) {
+        let a = self.getMutArray();
+        let old = a.len();
+        if old < size {
+            a.reserve_exact(size - old);
+        }
+        for i in old..size {
+            a.push(ARENA.alloc());
+        }
+    }
+
+    fn get(&self, x: usize) -> Ref {
+        self.getArray().get(x).unwrap().clone()
+    }
+
+    fn push_back(&mut self, r: Ref) -> &Value {
+        self.getMutArray().push(r);
+        self
+    }
+
+    fn pop_back(&mut self) -> Ref {
+        self.getMutArray().pop().unwrap()
+    }
+
+    fn back(&self) -> Option<Ref> {
+        match self.getArray().last() {
+            Some(r) => Some(r.clone()),
+            None => None,
+        }
+    }
+
+    fn splice(&mut self, x: usize, num: usize) {
+        self.getMutArray().splice(x..x+num, iter::empty());
+    }
+
+    fn insertEmpties(&mut self, x: usize, num: usize) {
+        let empties: Vec<_> = iter::repeat(EMPTYREF).take(num).collect();
+        self.getMutArray().splice(x..x, empties.into_iter());
+    }
+
+    fn insert(&mut self, x: usize, node: Ref) {
+        self.getMutArray().insert(x, node);
+    }
+
+    fn indexOf(&self, other: Ref) -> isize {
+        match self.getArray().iter().position(|r| r.clone() == other) {
+            Some(i) => i as isize,
+            None => -1,
+        }
+    }
+
+    fn map<F>(&self, func: F) -> Ref where F: Fn(Ref) -> Ref {
+        let a = self.getArray();
+        let mut ret = ARENA.alloc();
+        ret.setArrayHint(a.len());
+        {
+            let mut retarr = ret.getMutArray();
+            for r in a {
+                retarr.push(func(r.clone()));
+            }
+        }
+        ret
+    }
+
+    fn filter<F>(&self, func: F) -> Ref where F: Fn(Ref) -> bool {
+        let a = self.getArray();
+        let mut ret = ARENA.alloc();
+        ret.setArrayHint(0);
+        {
+            let mut retarr = ret.getMutArray();
+            for r in a {
+                if func(r.clone()) { retarr.push(r.clone()) }
+            }
+        }
+        ret
+    }
+
+    // Null operations
+
+    // Bool operations
+
+    // Object operations
+
+    fn lookup(&mut self, x: Atom) -> Ref {
+        self.getMutObject().entry(x).or_insert(EMPTYREF).clone()
+    }
 }
 
-//  // String operations
-//
-//  // Number operations
-//
-//  // Array operations
-//
-//  unsigned size() {
-//    assert(isArray());
-//    return arr->size();
-//  }
-//
-//  void setSize(unsigned size) {
-//    assert(isArray());
-//    unsigned old = arr->size();
-//    if (old != size) arr->resize(size);
-//    if (old < size) {
-//      for (unsigned i = old; i < size; i++) {
-//        (*arr)[i] = arena.alloc();
-//      }
-//    }
-//  }
-//
-//  Ref& operator[](unsigned x) {
-//    assert(isArray());
-//    return arr->at(x);
-//  }
-//
-//  Value& push_back(Ref r) {
-//    assert(isArray());
-//    arr->push_back(r);
-//    return *this;
-//  }
-//  Ref pop_back() {
-//    assert(isArray());
-//    Ref ret = arr->back();
-//    arr->pop_back();
-//    return ret;
-//  }
-//
-//  Ref back() {
-//    assert(isArray());
-//    if (arr->size() == 0) return nullptr;
-//    return arr->back();
-//  }
-//
-//  void splice(int x, int num) {
-//    assert(isArray());
-//    arr->erase(arr->begin() + x, arr->begin() + x + num);
-//  }
-//
-//  void insert(int x, int num) {
-//    arr->insert(arr->begin() + x, num, Ref());
-//  }
-//  void insert(int x, Ref node) {
-//    arr->insert(arr->begin() + x, 1, node);
-//  }
-//
-//  int indexOf(Ref other) {
-//    assert(isArray());
-//    for (unsigned i = 0; i < arr->size(); i++) {
-//      if (other == (*arr)[i]) return i;
-//    }
-//    return -1;
-//  }
-//
-//  Ref map(std::function<Ref (Ref node)> func) {
-//    assert(isArray());
-//    Ref ret = arena.alloc();
-//    ret->setArray();
-//    for (unsigned i = 0; i < arr->size(); i++) {
-//      ret->push_back(func((*arr)[i]));
-//    }
-//    return ret;
-//  }
-//
-//  Ref filter(std::function<bool (Ref node)> func) {
-//    assert(isArray());
-//    Ref ret = arena.alloc();
-//    ret->setArray();
-//    for (unsigned i = 0; i < arr->size(); i++) {
-//      Ref curr = (*arr)[i];
-//      if (func(curr)) ret->push_back(curr);
-//    }
-//    return ret;
-//  }
-//
-//  /*
-//  void forEach(std::function<void (Ref)> func) {
-//    for (unsigned i = 0; i < arr->size(); i++) {
-//      func((*arr)[i]);
-//    }
-//  }
-//  */
-//
-//  // Null operations
-//
-//  // Bool operations
-//
-//  // Object operations
-//
 //  Ref& operator[](IString x) {
 //    assert(isObject());
 //    return (*obj)[x];
