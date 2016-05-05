@@ -12,7 +12,7 @@ use serde_json;
 
 use super::IString;
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 struct Ref {
     inst: *mut Value,
 }
@@ -21,10 +21,10 @@ impl Ref {
     fn new(v: *mut Value) -> Ref { // can be null
         Ref { inst: v }
     }
-    fn get(&self) -> &Value {
+    fn get_val(&self) -> &Value {
         unsafe { &(*self.inst) }
     }
-    fn get_mut(&self) -> &mut Value {
+    fn get_val_mut(&self) -> &mut Value {
         unsafe { &mut (*self.inst) }
     }
 // RSTODO
@@ -48,12 +48,12 @@ impl Deref for Ref {
     type Target = Value;
 
     fn deref(&self) -> &Value {
-        self.get()
+        self.get_val()
     }
 }
 impl DerefMut for Ref {
     fn deref_mut(&mut self) -> &mut Value {
-        self.get_mut()
+        self.get_val_mut()
     }
 }
 
@@ -108,6 +108,7 @@ enum Value {
     obj(ObjectStorage),
 }
 
+impl Eq for Value {}
 impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
         match self {
@@ -243,13 +244,13 @@ impl Value {
     fn getArray(&self) -> &ArrayStorage {
         if let &Value::arr(ref a) = self { a } else { panic!() }
     }
-    fn getMutArray(&mut self) -> &mut ArrayStorage {
+    fn getArrayMut(&mut self) -> &mut ArrayStorage {
         if let &mut Value::arr(ref mut a) = self { a } else { panic!() }
     }
     fn getObject(&self) -> &ObjectStorage {
         if let &Value::obj(ref o) = self { o } else { panic!() }
     }
-    fn getMutObject(&mut self) -> &mut ObjectStorage {
+    fn getObjectMut(&mut self) -> &mut ObjectStorage {
         if let &mut Value::obj(ref mut o) = self { o } else { panic!() }
     }
 
@@ -277,7 +278,7 @@ impl Value {
 
     // RSTODO
     fn deepCompare(&self, otherref: Ref) -> bool {
-        false
+        panic!()
     }
 //  bool deepCompare(Ref ref) {
 //    Value& other = *ref;
@@ -329,7 +330,13 @@ impl Value {
                 self
             },
             &serde_json::Value::Object(ref o) => {
-                self.setNull()
+                self.setObject();
+                self.getObjectMut().extend(o.into_iter().map(|(key, val)| {
+                    let mut r = ARENA.alloc();
+                    r.parse_json(val);
+                    (IString::from(key.as_str()), r)
+                }));
+                self
             },
         };
     }
@@ -341,7 +348,7 @@ impl Value {
         } else {
             serde_json::ser::to_string_pretty(&jsonobj)
         }.unwrap();
-        out.write(outstr.as_bytes()); // .unwrap
+        out.write(outstr.as_bytes()).unwrap();
     }
     fn stringify_json(&self) -> serde_json::Value {
         match self {
@@ -373,12 +380,12 @@ impl Value {
     }
 
     fn setSize(&mut self, size: usize) {
-        let a = self.getMutArray();
+        let a = self.getArrayMut();
         let old = a.len();
         if old < size {
             a.reserve_exact(size - old);
         }
-        for i in old..size {
+        for _ in old..size {
             a.push(ARENA.alloc());
         }
     }
@@ -387,13 +394,13 @@ impl Value {
         self.getArray().get(x).unwrap().clone()
     }
 
-    fn push_back(&mut self, r: Ref) -> &Value {
-        self.getMutArray().push(r);
+    fn push_back(&mut self, r: Ref) -> &mut Value {
+        self.getArrayMut().push(r);
         self
     }
 
     fn pop_back(&mut self) -> Ref {
-        self.getMutArray().pop().unwrap()
+        self.getArrayMut().pop().unwrap()
     }
 
     fn back(&self) -> Option<Ref> {
@@ -404,20 +411,20 @@ impl Value {
     }
 
     fn splice(&mut self, x: usize, num: usize) {
-        self.getMutArray().splice(x..x+num, iter::empty());
+        self.getArrayMut().splice(x..x+num, iter::empty());
     }
 
     fn insertEmpties(&mut self, x: usize, num: usize) {
         let empties: Vec<_> = iter::repeat(EMPTYREF).take(num).collect();
-        self.getMutArray().splice(x..x, empties.into_iter());
+        self.getArrayMut().splice(x..x, empties.into_iter());
     }
 
     fn insert(&mut self, x: usize, node: Ref) {
-        self.getMutArray().insert(x, node);
+        self.getArrayMut().insert(x, node);
     }
 
     fn indexOf(&self, other: Ref) -> isize {
-        match self.getArray().iter().position(|r| r.clone() == other) {
+        match self.getArray().iter().position(|r| **r == *other) {
             Some(i) => i as isize,
             None => -1,
         }
@@ -428,7 +435,7 @@ impl Value {
         let mut ret = ARENA.alloc();
         ret.setArrayHint(a.len());
         {
-            let mut retarr = ret.getMutArray();
+            let mut retarr = ret.getArrayMut();
             for r in a {
                 retarr.push(func(r.clone()));
             }
@@ -441,7 +448,7 @@ impl Value {
         let mut ret = ARENA.alloc();
         ret.setArrayHint(0);
         {
-            let mut retarr = ret.getMutArray();
+            let mut retarr = ret.getArrayMut();
             for r in a {
                 if func(r.clone()) { retarr.push(r.clone()) }
             }
@@ -456,7 +463,7 @@ impl Value {
     // Object operations
 
     fn lookup(&mut self, x: IString) -> Ref {
-        self.getMutObject().entry(x).or_insert(EMPTYREF).clone()
+        self.getObjectMut().entry(x).or_insert(EMPTYREF).clone()
     }
 
     fn has(&self, x: IString) -> bool {
@@ -1211,8 +1218,8 @@ struct ValueBuilder;
 
 lazy_static! {
     static ref STATABLE: phf::Set<IString> = {
-        let mut s = phf_builder::Set::new();
-        for is in &[
+        let mut set = phf_builder::Set::new();
+        for s in &[
             is!("assign"),
             is!("call"),
             is!("binary"),
@@ -1229,9 +1236,9 @@ lazy_static! {
             is!("object"),
             is!("array"),
         ] {
-            s.entry(is.clone());
+            set.entry(s.clone());
         }
-        s.build()
+        set.build()
     };
 }
 
