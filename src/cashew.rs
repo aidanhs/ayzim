@@ -6,10 +6,11 @@ use std::ptr;
 use std::ops::{Deref, DerefMut};
 
 use odds::vec::VecExt;
-
-use string_cache::Atom;
-
+use phf;
+use phf_builder;
 use serde_json;
+
+use super::IString;
 
 #[derive(Clone, Eq, PartialEq)]
 struct Ref {
@@ -64,10 +65,10 @@ type ArrayStorage = Vec<Ref>;
 
 const ARENA_CHUNK_SIZE: usize = 1000;
 struct Arena {
-    chunks: Vec<*const Value>,
+    chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
     index: usize, // in last chunk
 
-    arr_chunks: Vec<Box<ArrayStorage>>,
+    arr_chunks: Vec<Box<[ArrayStorage; ARENA_CHUNK_SIZE]>>,
     arr_index: usize,
 }
 
@@ -82,7 +83,7 @@ impl Arena {
     // RSTODO: placeholder
     fn alloc(&self) -> Ref {
         let mut v = Value::new();
-        let r = Ref { inst: &mut v as *mut Value };
+        let r = Ref::new(&mut v);
         mem::forget(v);
         r
     }
@@ -96,11 +97,11 @@ lazy_static! {
     static ref ARENA: Arena = Arena::new();
 }
 
-type ObjectStorage = HashMap<Atom, Ref>;
+type ObjectStorage = HashMap<IString, Ref>;
 
 enum Value {
     null,
-    str(Atom),
+    str(IString),
     num(f64),
     arr(ArrayStorage),
     boo(bool),
@@ -159,10 +160,10 @@ impl Value {
 
     fn setString(&mut self, s: &str) -> &mut Value {
         self.free();
-        *self = Value::str(Atom::from(s));
+        *self = Value::str(IString::from(s));
         self
     }
-    fn setAtom(&mut self, a: Atom) -> &mut Value {
+    fn setIString(&mut self, a: IString) -> &mut Value {
         self.free();
         *self = Value::str(a);
         self
@@ -230,7 +231,7 @@ impl Value {
     fn getStr(&self) -> &str {
         if let &Value::str(ref a) = self { &*a } else { panic!() }
     }
-    fn getAtom(&self) -> Atom {
+    fn getIString(&self) -> IString {
         if let &Value::str(ref a) = self { a.clone() } else { panic!() }
     }
     fn getNumber(&self) -> f64 {
@@ -265,7 +266,7 @@ impl Value {
         self.free();
         match other {
             &Value::null => self.setNull(),
-            &Value::str(ref a) => self.setAtom(a.clone()),
+            &Value::str(ref a) => self.setIString(a.clone()),
             &Value::num(d) => self.setNumber(d),
             &Value::arr(ref a) => self.setArray(a),
             &Value::boo(b) => self.setBool(b),
@@ -454,15 +455,16 @@ impl Value {
 
     // Object operations
 
-    fn lookup(&mut self, x: Atom) -> Ref {
+    fn lookup(&mut self, x: IString) -> Ref {
         self.getMutObject().entry(x).or_insert(EMPTYREF).clone()
     }
 
-    fn has(&self, x: Atom) -> bool {
+    fn has(&self, x: IString) -> bool {
         self.getObject().contains_key(&x)
     }
 }
 
+// RSTODO
 //// AST traversals
 //
 //// Traverse, calling visit before the children
@@ -476,9 +478,10 @@ impl Value {
 //
 //// Traverses all the top-level functions in the document
 //void traverseFunctions(Ref ast, std::function<void (Ref)> visit);
-//
+
+
+// RSTODO
 //// JS printer
-//
 //struct JSPrinter {
 //  bool pretty, finalize;
 //
@@ -1203,7 +1206,43 @@ impl Value {
 //    emit('}');
 //  }
 //};
-//
+
+struct ValueBuilder;
+
+lazy_static! {
+    static ref STATABLE: phf::Set<IString> = {
+        let mut s = phf_builder::Set::new();
+        for is in &[
+            is!("assign"),
+            is!("call"),
+            is!("binary"),
+            is!("unary-prefix"),
+            is!("if"),
+            is!("name"),
+            is!("num"),
+            is!("conditional"),
+            is!("dot"),
+            is!("new"),
+            is!("sub"),
+            is!("seq"),
+            is!("string"),
+            is!("object"),
+            is!("array"),
+        ] {
+            s.entry(is.clone());
+        }
+        s.build()
+    };
+}
+
+impl ValueBuilder {
+    fn makeRawString(s: IString) -> Ref {
+        let mut r = ARENA.alloc();
+        r.setIString(s);
+        r
+    }
+}
+
 //// cashew builder
 //
 //class ValueBuilder {
@@ -1449,14 +1488,6 @@ impl Value {
 //    assert(array[0] == OBJECT);
 //    array[1]->push_back(&makeRawArray(2)->push_back(makeRawString(key))
 //                                         .push_back(value));
-//  }
-//};
-//
-//// Tolerates 0.0 in the input; does not trust a +() to be there.
-//class DotZeroValueBuilder : public ValueBuilder {
-//public:
-//  static Ref makeDouble(double num) {
-//    return makePrefix(PLUS, ValueBuilder::makeDouble(num));
 //  }
 //};
 //

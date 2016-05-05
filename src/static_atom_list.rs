@@ -1,0 +1,17 @@
+pub static ATOMS: &'static [&'static str] = &[
+    "assign",
+    "call",
+    "binary",
+    "unary-prefix",
+    "if",
+    "name",
+    "num",
+    "conditional",
+    "dot",
+    "new",
+    "sub",
+    "seq",
+    "string",
+    "object",
+    "array",
+];
