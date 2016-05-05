@@ -27,6 +27,9 @@ impl Ref {
     fn get_val_mut(&self) -> &mut Value {
         unsafe { &mut (*self.inst) }
     }
+    fn is_something(&self) -> bool {
+        self.inst != ptr::null_mut() && !self.isNull()
+    }
 // RSTODO
 //  Value& operator*() { return *inst; }
 //  Value* operator->() { return inst; }
@@ -1242,262 +1245,363 @@ lazy_static! {
     };
 }
 
+// cashew builder
 impl ValueBuilder {
     fn makeRawString(s: IString) -> Ref {
         let mut r = ARENA.alloc();
         r.setIString(s);
         r
     }
-}
 
-//// cashew builder
-//
-//class ValueBuilder {
-//  static IStringSet statable;
-//
-//  static Ref makeRawString(const IString& s) {
-//    return &arena.alloc()->setString(s);
-//  }
-//
-//  static Ref makeRawArray(int size_hint=0) {
-//    return &arena.alloc()->setArray(size_hint);
-//  }
-//
-//  static Ref makeNull() {
-//    return &arena.alloc()->setNull();
-//  }
-//
-//public:
-//  static Ref makeToplevel() {
-//    return &makeRawArray(2)->push_back(makeRawString(TOPLEVEL))
-//                            .push_back(makeRawArray());
-//  }
-//
-//  static Ref makeString(IString str) {
-//    return &makeRawArray(2)->push_back(makeRawString(STRING))
-//                            .push_back(makeRawString(str));
-//  }
-//
-//  static Ref makeBlock() {
-//    return &makeRawArray(2)->push_back(makeRawString(BLOCK))
-//                            .push_back(makeRawArray());
-//  }
-//
-//  static Ref makeName(IString name) {
-//    return &makeRawArray(2)->push_back(makeRawString(NAME))
-//                            .push_back(makeRawString(name));
-//  }
-//
-//  static void setBlockContent(Ref target, Ref block) {
-//    if (target[0] == TOPLEVEL) {
-//      target[1]->setArray(block[1]->getArray());
-//    } else if (target[0] == DEFUN) {
-//      target[3]->setArray(block[1]->getArray());
-//    } else abort();
-//  }
-//
-//  static void appendToBlock(Ref block, Ref element) {
-//    assert(block[0] == BLOCK);
-//    block[1]->push_back(element);
-//  }
-//
-//  static Ref makeCall(Ref target) {
-//    return &makeRawArray(3)->push_back(makeRawString(CALL))
-//                            .push_back(target)
-//                            .push_back(makeRawArray());
-//  }
-//
-//  static void appendToCall(Ref call, Ref element) {
-//    assert(call[0] == CALL);
-//    call[2]->push_back(element);
-//  }
-//
-//  static Ref makeStatement(Ref contents) {
-//    if (statable.has(contents[0]->getIString())) {
-//      return &makeRawArray(2)->push_back(makeRawString(STAT))
-//                              .push_back(contents);
-//    } else {
-//      return contents; // only very specific things actually need to be stat'ed
-//    }
-//  }
-//
-//  static Ref makeDouble(double num) {
-//    return &makeRawArray(2)->push_back(makeRawString(NUM))
-//                            .push_back(&arena.alloc()->setNumber(num));
-//  }
-//  static Ref makeInt(uint32_t num) {
-//    return makeDouble(double(num));
-//  }
-//
-//  static Ref makeBinary(Ref left, IString op, Ref right) {
-//    if (op == SET) {
-//      return &makeRawArray(4)->push_back(makeRawString(ASSIGN))
-//                              .push_back(&arena.alloc()->setBool(true))
-//                              .push_back(left)
-//                              .push_back(right);
-//    } else if (op == COMMA) {
-//      return &makeRawArray(3)->push_back(makeRawString(SEQ))
-//                              .push_back(left)
-//                              .push_back(right);
-//    } else {
-//      return &makeRawArray(4)->push_back(makeRawString(BINARY))
-//                              .push_back(makeRawString(op))
-//                              .push_back(left)
-//                              .push_back(right);
-//    }
-//  }
-//
-//  static Ref makePrefix(IString op, Ref right) {
-//    return &makeRawArray(3)->push_back(makeRawString(UNARY_PREFIX))
-//                            .push_back(makeRawString(op))
-//                            .push_back(right);
-//  }
-//
-//  static Ref makeFunction(IString name) {
-//    return &makeRawArray(4)->push_back(makeRawString(DEFUN))
-//                            .push_back(makeRawString(name))
-//                            .push_back(makeRawArray())
-//                            .push_back(makeRawArray());
-//  }
-//
-//  static void appendArgumentToFunction(Ref func, IString arg) {
-//    assert(func[0] == DEFUN);
-//    func[2]->push_back(makeRawString(arg));
-//  }
-//
-//  static Ref makeVar(bool is_const) {
-//    return &makeRawArray(2)->push_back(makeRawString(VAR))
-//                            .push_back(makeRawArray());
-//  }
-//
-//  static void appendToVar(Ref var, IString name, Ref value) {
-//    assert(var[0] == VAR);
-//    Ref array = &makeRawArray(1)->push_back(makeRawString(name));
-//    if (!!value) array->push_back(value);
-//    var[1]->push_back(array);
-//  }
-//
-//  static Ref makeReturn(Ref value) {
-//    return &makeRawArray(2)->push_back(makeRawString(RETURN))
-//                            .push_back(!!value ? value : makeNull());
-//  }
-//
-//  static Ref makeIndexing(Ref target, Ref index) {
-//    return &makeRawArray(3)->push_back(makeRawString(SUB))
-//                            .push_back(target)
-//                            .push_back(index);
-//  }
-//
-//  static Ref makeIf(Ref condition, Ref ifTrue, Ref ifFalse) {
-//    return &makeRawArray(4)->push_back(makeRawString(IF))
-//                            .push_back(condition)
-//                            .push_back(ifTrue)
-//                            .push_back(!!ifFalse ? ifFalse : makeNull());
-//  }
-//
-//  static Ref makeConditional(Ref condition, Ref ifTrue, Ref ifFalse) {
-//    return &makeRawArray(4)->push_back(makeRawString(CONDITIONAL))
-//                            .push_back(condition)
-//                            .push_back(ifTrue)
-//                            .push_back(ifFalse);
-//  }
-//
-//  static Ref makeDo(Ref body, Ref condition) {
-//    return &makeRawArray(3)->push_back(makeRawString(DO))
-//                            .push_back(condition)
-//                            .push_back(body);
-//  }
-//
-//  static Ref makeWhile(Ref condition, Ref body) {
-//    return &makeRawArray(3)->push_back(makeRawString(WHILE))
-//                            .push_back(condition)
-//                            .push_back(body);
-//  }
-//
-//  static Ref makeBreak(IString label) {
-//    return &makeRawArray(2)->push_back(makeRawString(BREAK))
-//                            .push_back(!!label ? makeRawString(label) : makeNull());
-//  }
-//
-//  static Ref makeContinue(IString label) {
-//    return &makeRawArray(2)->push_back(makeRawString(CONTINUE))
-//                            .push_back(!!label ? makeRawString(label) : makeNull());
-//  }
-//
-//  static Ref makeLabel(IString name, Ref body) {
-//    return &makeRawArray(3)->push_back(makeRawString(LABEL))
-//                            .push_back(makeRawString(name))
-//                            .push_back(body);
-//  }
-//
-//  static Ref makeSwitch(Ref input) {
-//    return &makeRawArray(3)->push_back(makeRawString(SWITCH))
-//                            .push_back(input)
-//                            .push_back(makeRawArray());
-//  }
-//
-//  static void appendCaseToSwitch(Ref switch_, Ref arg) {
-//    assert(switch_[0] == SWITCH);
-//    switch_[2]->push_back(&makeRawArray(2)->push_back(arg)
-//                                           .push_back(makeRawArray()));
-//  }
-//
-//  static void appendDefaultToSwitch(Ref switch_) {
-//    assert(switch_[0] == SWITCH);
-//    switch_[2]->push_back(&makeRawArray(2)->push_back(makeNull())
-//                                           .push_back(makeRawArray()));
-//  }
-//
-//  static void appendCodeToSwitch(Ref switch_, Ref code, bool explicitBlock) {
-//    assert(switch_[0] == SWITCH);
-//    assert(code[0] == BLOCK);
-//    if (!explicitBlock) {
-//      for (size_t i = 0; i < code[1]->size(); i++) {
-//        switch_[2]->back()->back()->push_back(code[1][i]);
-//      }
-//    } else {
-//      switch_[2]->back()->back()->push_back(code);
-//    }
-//  }
-//
-//  static Ref makeDot(Ref obj, IString key) {
-//    return &makeRawArray(3)->push_back(makeRawString(DOT))
-//                            .push_back(obj)
-//                            .push_back(makeRawString(key));
-//  }
-//
-//  static Ref makeDot(Ref obj, Ref key) {
-//    assert(key[0] == NAME);
-//    return makeDot(obj, key[1]->getIString());
-//  }
-//
-//  static Ref makeNew(Ref call) {
-//    return &makeRawArray(2)->push_back(makeRawString(NEW))
-//                            .push_back(call);
-//  }
-//
-//  static Ref makeArray() {
-//    return &makeRawArray(2)->push_back(makeRawString(ARRAY))
-//                            .push_back(makeRawArray());
-//  }
-//
-//  static void appendToArray(Ref array, Ref element) {
-//    assert(array[0] == ARRAY);
-//    array[1]->push_back(element);
-//  }
-//
-//  static Ref makeObject() {
-//    return &makeRawArray(2)->push_back(makeRawString(OBJECT))
-//                            .push_back(makeRawArray());
-//  }
-//
-//  static void appendToObject(Ref array, IString key, Ref value) {
-//    assert(array[0] == OBJECT);
-//    array[1]->push_back(&makeRawArray(2)->push_back(makeRawString(key))
-//                                         .push_back(value));
-//  }
-//};
-//
-//} // namespace cashew
-//
-//
+    fn makeRawArray(size_hint: usize) -> Ref {
+        let mut r = ARENA.alloc();
+        r.setArrayHint(size_hint);
+        r
+    }
+
+    fn makeNull() -> Ref {
+        let mut r = ARENA.alloc();
+        r.setNull();
+        r
+    }
+
+    fn makeToplevel() -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("toplevel")))
+            .push_back(Self::makeRawArray(0));
+        r
+    }
+
+    fn makeString(s: IString) -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("string")))
+            .push_back(Self::makeRawString(s));
+        r
+    }
+
+    fn makeBlock() -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("block")))
+            .push_back(Self::makeRawArray(0));
+        r
+    }
+
+    fn makeName(name: IString) -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("name")))
+            .push_back(Self::makeRawString(name));
+        r
+    }
+
+    fn setBlockContent(target: Ref, block: Ref) {
+        match target.get(0).getIString() {
+            is!("toplevel") => { target.get(1).setArray(block.get(1).getArray()); },
+            is!("defun") => { target.get(3).setArray(block.get(1).getArray()); },
+            _ => panic!(),
+        }
+    }
+
+    fn appendToBlock(block: Ref, element: Ref) {
+        assert_eq!(block.get(0).getIString(), is!("block"));
+        block.get(1).push_back(element);
+    }
+
+    fn makeCall(target: Ref) -> Ref {
+        let mut r = Self::makeRawArray(3);
+        r
+            .push_back(Self::makeRawString(is!("call")))
+            .push_back(target)
+            .push_back(Self::makeRawArray(0));
+        r
+    }
+
+    fn appendToCall(call: Ref, element: Ref) {
+        assert_eq!(call.get(0).getIString(), is!("call"));
+        call.get(2).push_back(element);
+    }
+
+    fn makeStatement(contents: Ref) -> Ref {
+        if STATABLE.contains(&contents.get(0).getIString()) {
+            let mut r = Self::makeRawArray(2);
+            r
+                .push_back(Self::makeRawString(is!("stat")))
+                .push_back(contents);
+            r
+        } else {
+            contents // only very specific things actually need to be stat'ed
+        }
+    }
+
+    fn makeDouble(num: f64) -> Ref {
+        let mut n = ARENA.alloc();
+        n.setNumber(num);
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("num")))
+            .push_back(n);
+        r
+    }
+
+    fn makeInt(num: u32) -> Ref {
+        Self::makeDouble(num as f64)
+    }
+
+    fn makeBinary(left: Ref, op: IString, right: Ref) -> Ref {
+        match op {
+            is!("=") => {
+                let mut b = ARENA.alloc();
+                b.setBool(true);
+                let mut r = Self::makeRawArray(4);
+                r
+                    .push_back(Self::makeRawString(is!("assign")))
+                    .push_back(b)
+                    .push_back(left)
+                    .push_back(right);
+                r
+            },
+            is!(",") => {
+                let mut r = Self::makeRawArray(3);
+                r
+                    .push_back(Self::makeRawString(is!("seq")))
+                    .push_back(left)
+                    .push_back(right);
+                r
+            },
+            _ => {
+                let mut r = Self::makeRawArray(4);
+                r
+                    .push_back(Self::makeRawString(is!("binary")))
+                    .push_back(Self::makeRawString(op))
+                    .push_back(left)
+                    .push_back(right);
+                r
+            },
+        }
+    }
+
+
+    fn makePrefix(op: IString, right: Ref) -> Ref {
+        let mut r = Self::makeRawArray(3);
+        r
+            .push_back(Self::makeRawString(is!("unary-prefix")))
+            .push_back(Self::makeRawString(op))
+            .push_back(right);
+        r
+    }
+
+
+    fn makeFunction(name: IString) -> Ref {
+        let mut r = Self::makeRawArray(4);
+        r
+            .push_back(Self::makeRawString(is!("defun")))
+            .push_back(Self::makeRawString(name))
+            .push_back(Self::makeRawArray(0))
+            .push_back(Self::makeRawArray(0));
+        r
+    }
+
+    fn appendArgumentToFunction(func: Ref, arg: IString) {
+        assert_eq!(func.get(0).getIString(), is!("defun"));
+        func.get(2).push_back(Self::makeRawString(arg));
+    }
+
+    fn makeVar(_is_const: bool) -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("var")))
+            .push_back(Self::makeRawArray(0));
+        r
+    }
+
+    fn appendToVar(var: Ref, name: IString, value: Ref) {
+        assert_eq!(var.get(0).getIString(), is!("var"));
+        let mut array = Self::makeRawArray(1);
+        array.push_back(Self::makeRawString(name));
+        if value.is_something() {
+            array.push_back(value);
+        }
+        var.get(1).push_back(array);
+    }
+
+    fn makeReturn(value: Ref) -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("return")))
+            .push_back(
+                if value.is_something() { value } else { Self::makeNull() }
+            );
+        r
+    }
+
+    fn makeIndexing(target: Ref, index: Ref) -> Ref {
+        let mut r = Self::makeRawArray(3);
+        r
+            .push_back(Self::makeRawString(is!("sub")))
+            .push_back(target)
+            .push_back(index);
+        r
+    }
+
+
+    fn makeIf(condition: Ref, ifTrue: Ref, ifFalse: Ref) -> Ref {
+        let mut r = Self::makeRawArray(4);
+        r
+            .push_back(Self::makeRawString(is!("if")))
+            .push_back(condition)
+            .push_back(ifTrue)
+            .push_back(
+                if ifFalse.is_something() { ifFalse } else { Self::makeNull() }
+            );
+        r
+    }
+
+    fn makeConditional(condition: Ref, ifTrue: Ref, ifFalse: Ref) -> Ref {
+        let mut r = Self::makeRawArray(4);
+        r
+            .push_back(Self::makeRawString(is!("conditional")))
+            .push_back(condition)
+            .push_back(ifTrue)
+            .push_back(ifFalse);
+        r
+    }
+
+    fn makeDo(body: Ref, condition: Ref) -> Ref {
+        let mut r = Self::makeRawArray(3);
+        r
+            .push_back(Self::makeRawString(is!("do")))
+            .push_back(condition)
+            .push_back(body);
+        r
+    }
+
+    fn makeWhile(condition: Ref, body: Ref) -> Ref {
+        let mut r = Self::makeRawArray(3);
+        r
+            .push_back(Self::makeRawString(is!("while")))
+            .push_back(condition)
+            .push_back(body);
+        r
+    }
+
+    fn makeBreak(label: Option<IString>) -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("break")))
+            .push_back(match label {
+                Some(s) => Self::makeRawString(s),
+                None => Self::makeNull(),
+            });
+        r
+    }
+
+    fn makeContinue(label: Option<IString>) -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("continue")))
+            .push_back(match label {
+                Some(s) => Self::makeRawString(s),
+                None => Self::makeNull(),
+            });
+        r
+    }
+
+    fn makeLabel(name: IString, body: Ref) -> Ref {
+        let mut r = Self::makeRawArray(3);
+        r
+            .push_back(Self::makeRawString(is!("label")))
+            .push_back(Self::makeRawString(name))
+            .push_back(body);
+        r
+    }
+
+    fn makeSwitch(input: Ref) -> Ref {
+        let mut r = Self::makeRawArray(3);
+        r
+            .push_back(Self::makeRawString(is!("switch")))
+            .push_back(input)
+            .push_back(Self::makeRawArray(0));
+        r
+    }
+
+    fn appendCaseToSwitch(switch: Ref, arg: Ref) {
+        assert_eq!(switch.get(0).getIString(), is!("switch"));
+        let mut array = Self::makeRawArray(2);
+        array.push_back(arg).push_back(Self::makeRawArray(0));
+        switch.get(2).push_back(array);
+    }
+
+    fn appendDefaultToSwitch(switch: Ref) {
+        assert_eq!(switch.get(0).getIString(), is!("switch"));
+        let mut array = Self::makeRawArray(2);
+        array.push_back(Self::makeNull()).push_back(Self::makeRawArray(0));
+        switch.get(2).push_back(array);
+    }
+
+    fn appendCodeToSwitch(switch: Ref, code: Ref, explicitBlock: bool) {
+        assert_eq!(switch.get(0).getIString(), is!("switch"));
+        assert_eq!(code.get(0).getIString(), is!("block"));
+        let mut switchtarget = switch.get(2).back().unwrap().back().unwrap();
+        if !explicitBlock {
+            let codesrc = code.get(1);
+            for i in 0..code.get(1).size() {
+                switchtarget.push_back(codesrc.get(i));
+            }
+        } else {
+            switchtarget.push_back(code);
+        }
+    }
+
+    fn makeDot(obj: Ref, key: IString) -> Ref {
+        let mut r = Self::makeRawArray(3);
+        r
+            .push_back(Self::makeRawString(is!("dot")))
+            .push_back(obj)
+            .push_back(Self::makeRawString(key));
+        r
+    }
+
+    fn makeDotRef(obj: Ref, key: Ref) -> Ref {
+        assert_eq!(key.get(0).getIString(), is!("name"));
+        Self::makeDot(obj, key.get(1).getIString())
+    }
+
+    fn makeNew(call: Ref) -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("new")))
+            .push_back(call);
+        r
+    }
+
+    fn makeArray() -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("array")))
+            .push_back(Self::makeRawArray(0));
+        r
+    }
+
+    fn appendToArray(array: Ref, element: Ref) {
+        assert_eq!(array.get(0).getIString(), is!("array"));
+        array.get(1).push_back(element);
+    }
+
+    fn makeObject() -> Ref {
+        let mut r = Self::makeRawArray(2);
+        r
+            .push_back(Self::makeRawString(is!("object")))
+            .push_back(Self::makeRawArray(0));
+        r
+    }
+
+    fn appendToObject(array: Ref, key: IString, value: Ref) {
+        assert_eq!(array.get(0).getIString(), is!("object"));
+        let mut array = Self::makeRawArray(2);
+        array.push_back(Self::makeRawString(key)).push_back(value);
+        array.get(1).push_back(array);
+    }
+}
