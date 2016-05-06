@@ -278,31 +278,33 @@ impl Value {
         self
     }
 
-    // RSTODO
-    fn deepCompare(&self, otherref: Ref) -> bool {
-        panic!()
+    fn deepCompare(&self, other: Ref) -> bool {
+        // either same pointer, or identical value type (str, number, null or bool)
+        if self == &*other { return true }
+        // https://github.com/rust-lang/rust/issues/24263 - enum discriminant
+        let typesame = match *self {
+            Value::null => other.isNull(),
+            Value::str(_) => other.isString(),
+            Value::num(_) => other.isNumber(),
+            Value::arr(_) => other.isArray(),
+            Value::boo(_) => other.isBool(),
+            Value::obj(_) => other.isObject(),
+        };
+        if !typesame { return false }
+        if self.isArray() {
+            let (arr1, arr2) = (self.getArray(), other.getArray());
+            if arr1.len() != arr2.len() { return false }
+            arr1.iter().zip(arr2).all(|(v1, &v2)| v1.deepCompare(v2))
+        } else if self.isObject() {
+            let (obj1, obj2) = (self.getObject(), other.getObject());
+            if obj1.len() != obj2.len() { return false }
+            obj1.iter().all(|(k, v1)|
+                if let Some(&v2) = obj2.get(k) { v1.deepCompare(v2) } else { false }
+            )
+        } else {
+            false
+        }
     }
-//  bool deepCompare(Ref ref) {
-//    Value& other = *ref;
-//    if (*this == other) return true; // either same pointer, or identical value type (string, number, null or bool)
-//    if (type != other.type) return false;
-//    if (type == Array) {
-//      if (arr->size() != other.arr->size()) return false;
-//      for (unsigned i = 0; i < arr->size(); i++) {
-//        if (!(*arr)[i]->deepCompare((*other.arr)[i])) return false;
-//      }
-//      return true;
-//    } else if (type == Object) {
-//      if (obj->size() != other.obj->size()) return false;
-//      for (auto i : *obj) {
-//        if (other.obj->count(i.first) == 0) return false;
-//        if (i.second->deepCompare((*other.obj)[i.first])) return false;
-//      }
-//      return true;
-//    }
-//    return false;
-//  }
-
 
     fn parse(&mut self, curr: &str) {
         let json: serde_json::Value = serde_json::from_str(curr).unwrap();
