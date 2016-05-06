@@ -12,7 +12,7 @@ use serde_json;
 
 use super::IString;
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 struct Ref {
     inst: *mut Value,
 }
@@ -114,15 +114,14 @@ enum Value {
 impl Eq for Value {}
 impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
-        match self {
-            &Value::str(_) |
-            &Value::num(_) |
-            &Value::null |
-            &Value::boo(_) => self == other,
+        match *self {
+            Value::str(_) |
+            Value::num(_) |
+            Value::null |
+            Value::boo(_) => self == other,
             // if you want a deep compare, use deepCompare
-            // RSTODO: this is unfortunate
-            &Value::arr(_) |
-            &Value::obj(_) => self as *const Value == other as *const Value,
+            Value::arr(_) |
+            Value::obj(_) => self as *const Value == other as *const Value,
         }
     }
 }
@@ -268,13 +267,13 @@ impl Value {
 
     fn assignFrom(&mut self, other: &Value) -> &Value {
         self.free();
-        match other {
-            &Value::null => self.setNull(),
-            &Value::str(ref a) => self.setIString(a.clone()),
-            &Value::num(d) => self.setNumber(d),
-            &Value::arr(ref a) => self.setArray(a),
-            &Value::boo(b) => self.setBool(b),
-            &Value::obj(_) => panic!(), // TODO
+        match *other {
+            Value::null => self.setNull(),
+            Value::str(ref a) => self.setIString(a.clone()),
+            Value::num(d) => self.setNumber(d),
+            Value::arr(ref a) => self.setArray(a),
+            Value::boo(b) => self.setBool(b),
+            Value::obj(_) => panic!(), // TODO
         };
         self
     }
@@ -310,29 +309,25 @@ impl Value {
         self.parse_json(&json);
     }
     fn parse_json(&mut self, json: &serde_json::Value) {
-        match json {
-            &serde_json::Value::Null => self.setNull(),
-            &serde_json::Value::Bool(b) => self.setBool(b),
-            &serde_json::Value::I64(n) => self.setNumber(n as f64),
-            &serde_json::Value::U64(n) => self.setNumber(n as f64),
-            &serde_json::Value::F64(n) => self.setNumber(n),
-            &serde_json::Value::String(ref s) => self.setString(s),
-            &serde_json::Value::Array(ref a) => {
+        match *json {
+            serde_json::Value::Null => self.setNull(),
+            serde_json::Value::Bool(b) => self.setBool(b),
+            serde_json::Value::I64(n) => self.setNumber(n as f64),
+            serde_json::Value::U64(n) => self.setNumber(n as f64),
+            serde_json::Value::F64(n) => self.setNumber(n),
+            serde_json::Value::String(ref s) => self.setString(s),
+            serde_json::Value::Array(ref a) => {
                 self.setArrayHint(a.len());
-                {
-                    let mut sa = match self {
-                        &mut Value::arr(ref mut sa) => sa,
-                        _ => unreachable!(),
-                    };
-                    for v in a {
-                        let mut tmp: Ref = ARENA.alloc();
-                        tmp.parse_json(v);
-                        sa.push(tmp);
-                    };
-                }
+                let iter = a.iter().map(|v| {
+                    let mut r = ARENA.alloc(); r.parse_json(v); r
+                });
+                match *self {
+                    Value::arr(ref mut sa) => sa.extend(iter),
+                    _ => unreachable!(),
+                };
                 self
             },
-            &serde_json::Value::Object(ref o) => {
+            serde_json::Value::Object(ref o) => {
                 self.setObject();
                 self.getObjectMut().extend(o.into_iter().map(|(key, val)| {
                     let mut r = ARENA.alloc();
@@ -354,16 +349,16 @@ impl Value {
         out.write(outstr.as_bytes()).unwrap();
     }
     fn stringify_json(&self) -> serde_json::Value {
-        match self {
-            &Value::null =>   serde_json::Value::Null,
-            &Value::str(ref a) => serde_json::Value::String((&**a).to_string()),
-            &Value::num(n) => serde_json::Value::F64(n),
-            &Value::boo(b) => serde_json::Value::Bool(b),
-            &Value::arr(ref a) => {
+        match *self {
+            Value::null =>   serde_json::Value::Null,
+            Value::str(ref a) => serde_json::Value::String((&**a).to_string()),
+            Value::num(n) => serde_json::Value::F64(n),
+            Value::boo(b) => serde_json::Value::Bool(b),
+            Value::arr(ref a) => {
                 let outvec = a.iter().map(|v| v.stringify_json()).collect();
                 serde_json::Value::Array(outvec)
             },
-            &Value::obj(ref o) => {
+            Value::obj(ref o) => {
                 let outmap = o.iter().map(
                     |(k, v)| ((&**k).to_string(), v.stringify_json())
                 ).collect();
@@ -394,7 +389,7 @@ impl Value {
     }
 
     fn get(&self, x: usize) -> Ref {
-        self.getArray().get(x).unwrap().clone()
+        *self.getArray().get(x).unwrap()
     }
 
     fn push_back(&mut self, r: Ref) -> &mut Value {
@@ -407,10 +402,7 @@ impl Value {
     }
 
     fn back(&self) -> Option<Ref> {
-        match self.getArray().last() {
-            Some(r) => Some(r.clone()),
-            None => None,
-        }
+        self.getArray().last().cloned()
     }
 
     fn splice(&mut self, x: usize, num: usize) {
@@ -427,7 +419,7 @@ impl Value {
     }
 
     fn indexOf(&self, other: Ref) -> isize {
-        match self.getArray().iter().position(|r| **r == *other) {
+        match self.getArray().iter().position(|&r| *r == *other) {
             Some(i) => i as isize,
             None => -1,
         }
