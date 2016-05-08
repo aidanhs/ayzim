@@ -11,6 +11,7 @@ extern crate serde_json;
 extern crate odds;
 extern crate phf;
 extern crate phf_builder;
+extern crate smallvec;
 
 use std::env;
 use std::fs;

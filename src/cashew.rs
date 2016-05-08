@@ -10,6 +10,7 @@ use odds::vec::VecExt;
 use phf;
 use phf_builder;
 use serde_json;
+use smallvec::SmallVec;
 
 use super::IString;
 
@@ -469,192 +470,181 @@ impl Value {
     }
 }
 
-// RSTODO
-//// AST traversals
-//
-//// Traversals
-//
-//struct TraverseInfo {
-//  TraverseInfo() {}
-//  TraverseInfo(Ref node, ArrayStorage* arr) : node(node), arr(arr), index(0) {}
-//  Ref node;
-//  ArrayStorage* arr;
-//  int index;
-//};
-//
-//template <class T, int init>
-//struct StackedStack { // a stack, on the stack
-//  T stackStorage[init];
-//  T* storage;
-//  int used, available; // used amount, available amount
-//  bool alloced;
-//
-//  StackedStack() : used(0), available(init), alloced(false) {
-//    storage = stackStorage;
-//  }
-//  ~StackedStack() {
-//    if (alloced) free(storage);
-//  }
-//
-//  int size() { return used; }
-//
-//  void push_back(const T& t) {
-//    assert(used <= available);
-//    if (used == available) {
-//      available *= 2;
-//      if (!alloced) {
-//        T* old = storage;
-//        storage = (T*)malloc(sizeof(T)*available);
-//        memcpy(storage, old, sizeof(T)*used);
-//        alloced = true;
-//      } else {
-//        T *newStorage = (T*)realloc(storage, sizeof(T)*available);
-//        assert(newStorage);
-//        storage = newStorage;
-//      }
-//    }
-//    assert(used < available);
-//    assert(storage);
-//    storage[used++] = t;
-//  }
-//
-//  T& back() {
-//    assert(used > 0);
-//    return storage[used-1];
-//  }
-//
-//  void pop_back() {
-//    assert(used > 0);
-//    used--;
-//  }
-//};
-//
-//#define visitable(node) (node->isArray() && node->size() > 0)
-//
-//#define TRAV_STACK 40
-//
-//// Traverse, calling visit before the children
-//void traversePre(Ref node, std::function<void (Ref)> visit) {
-//  if (!visitable(node)) return;
-//  visit(node);
-//  StackedStack<TraverseInfo, TRAV_STACK> stack;
-//  int index = 0;
-//  ArrayStorage* arr = &node->getArray();
-//  int arrsize = (int)arr->size();
-//  Ref* arrdata = arr->data();
-//  stack.push_back(TraverseInfo(node, arr));
-//  while (1) {
-//    if (index < arrsize) {
-//      Ref sub = *(arrdata+index);
-//      index++;
-//      if (visitable(sub)) {
-//        stack.back().index = index;
-//        index = 0;
-//        visit(sub);
-//        arr = &sub->getArray();
-//        arrsize = (int)arr->size();
-//        arrdata = arr->data();
-//        stack.push_back(TraverseInfo(sub, arr));
-//      }
-//    } else {
-//      stack.pop_back();
-//      if (stack.size() == 0) break;
-//      TraverseInfo& back = stack.back();
-//      index = back.index;
-//      arr = back.arr;
-//      arrsize = (int)arr->size();
-//      arrdata = arr->data();
-//    }
-//  }
-//}
-//
-//// Traverse, calling visitPre before the children and visitPost after
-//void traversePrePost(Ref node, std::function<void (Ref)> visitPre, std::function<void (Ref)> visitPost) {
-//  if (!visitable(node)) return;
-//  visitPre(node);
-//  StackedStack<TraverseInfo, TRAV_STACK> stack;
-//  int index = 0;
-//  ArrayStorage* arr = &node->getArray();
-//  int arrsize = (int)arr->size();
-//  Ref* arrdata = arr->data();
-//  stack.push_back(TraverseInfo(node, arr));
-//  while (1) {
-//    if (index < arrsize) {
-//      Ref sub = *(arrdata+index);
-//      index++;
-//      if (visitable(sub)) {
-//        stack.back().index = index;
-//        index = 0;
-//        visitPre(sub);
-//        arr = &sub->getArray();
-//        arrsize = (int)arr->size();
-//        arrdata = arr->data();
-//        stack.push_back(TraverseInfo(sub, arr));
-//      }
-//    } else {
-//      visitPost(stack.back().node);
-//      stack.pop_back();
-//      if (stack.size() == 0) break;
-//      TraverseInfo& back = stack.back();
-//      index = back.index;
-//      arr = back.arr;
-//      arrsize = (int)arr->size();
-//      arrdata = arr->data();
-//    }
-//  }
-//}
-//
-//// Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
-//void traversePrePostConditional(Ref node, std::function<bool (Ref)> visitPre, std::function<void (Ref)> visitPost) {
-//  if (!visitable(node)) return;
-//  if (!visitPre(node)) return;
-//  StackedStack<TraverseInfo, TRAV_STACK> stack;
-//  int index = 0;
-//  ArrayStorage* arr = &node->getArray();
-//  int arrsize = (int)arr->size();
-//  Ref* arrdata = arr->data();
-//  stack.push_back(TraverseInfo(node, arr));
-//  while (1) {
-//    if (index < arrsize) {
-//      Ref sub = *(arrdata+index);
-//      index++;
-//      if (visitable(sub)) {
-//        if (visitPre(sub)) {
-//          stack.back().index = index;
-//          index = 0;
-//          arr = &sub->getArray();
-//          arrsize = (int)arr->size();
-//          arrdata = arr->data();
-//          stack.push_back(TraverseInfo(sub, arr));
-//        }
-//      }
-//    } else {
-//      visitPost(stack.back().node);
-//      stack.pop_back();
-//      if (stack.size() == 0) break;
-//      TraverseInfo& back = stack.back();
-//      index = back.index;
-//      arr = back.arr;
-//      arrsize = (int)arr->size();
-//      arrdata = arr->data();
-//    }
-//  }
-//}
-//
-//// Traverses all the top-level functions in the document
-//void traverseFunctions(Ref ast, std::function<void (Ref)> visit) {
-//  if (!ast || ast->size() == 0) return;
-//  if (ast[0] == TOPLEVEL) {
-//    Ref stats = ast[1];
-//    for (size_t i = 0; i < stats->size(); i++) {
-//      Ref curr = stats[i];
-//      if (curr[0] == DEFUN) visit(curr);
-//    }
-//  } else if (ast[0] == DEFUN) {
-//    visit(ast);
-//  }
-//}
+// AST traversals
 
+// Traversals
+
+struct TraverseInfo {
+  node: Ref,
+  index: isize,
+  arrlen: isize,
+  arrdata: *const Ref,
+}
+
+impl TraverseInfo {
+    fn new(node: Ref, len: isize, data: *const Ref) -> TraverseInfo {
+        TraverseInfo { node: node, index: 0, arrlen: len, arrdata: data }
+    }
+}
+
+// RSTODO: originally 40, but rust isn't generic over integer params and 40
+// isn't explicitly implemented in smallvec
+const TRAV_STACK: usize = 32;
+
+struct StackedStack<T> { // a stack, on the stack
+    // smallvec automatically handles spilling
+    storage: SmallVec<[T; TRAV_STACK]>,
+}
+
+impl<T> StackedStack<T> {
+    fn new() -> StackedStack<T> {
+        StackedStack {
+            storage: SmallVec::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.storage.len()
+    }
+
+    fn push_back(&mut self, t: T) {
+        self.storage.push(t)
+    }
+
+    fn back(&mut self) -> &mut T {
+        let len = self.storage.len();
+        assert!(len > 0);
+        unsafe { self.storage.get_unchecked_mut(len-1) }
+    }
+
+    fn pop_back(&mut self) {
+        self.storage.pop().unwrap();
+    }
+}
+
+#[inline(always)]
+fn visitable(node: Ref) -> bool {
+    node.isArray() && node.size() > 0
+}
+
+// https://github.com/rust-lang/rfcs/issues/372 would make this code nicer
+
+// Traverse, calling visit before the children
+fn traversePre<F>(node: Ref, visit: F) where F: Fn(Ref) {
+    if !visitable(node) { return }
+    visit(node);
+    let mut stack = StackedStack::<TraverseInfo>::new();
+    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
+    {
+        let arr = node.getArray();
+        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+    };
+    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
+    loop {
+        if index < arrlen {
+            let sub: Ref = unsafe { *arrdata.offset(index) };
+            index += 1;
+            if visitable(sub) {
+                visit(sub);
+                stack.back().index = index;
+                {
+                    let arr = node.getArray();
+                    index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+                };
+                stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
+            }
+        } else {
+            stack.pop_back();
+            if stack.len() == 0 { break }
+            let back = stack.back();
+            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
+        }
+    }
+}
+
+// Traverse, calling visitPre before the children and visitPost after
+fn traversePrePost<F>(node: Ref, visitPre: F, visitPost: F) where F: Fn(Ref) {
+    if !visitable(node) { return }
+    visitPre(node);
+    let mut stack = StackedStack::<TraverseInfo>::new();
+    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
+    {
+        let arr = node.getArray();
+        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+    };
+    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
+    loop {
+        if index < arrlen {
+            let sub: Ref = unsafe { *arrdata.offset(index) };
+            index += 1;
+            if visitable(sub) {
+                visitPre(sub);
+                stack.back().index = index;
+                {
+                    let arr = node.getArray();
+                    index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+                };
+                stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
+            }
+        } else {
+            visitPost(stack.back().node);
+            stack.pop_back();
+            if stack.len() == 0 { break }
+            let back = stack.back();
+            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
+        }
+    }
+}
+// Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
+fn traversePrePostConditional<F1,F2>(node: Ref, visitPre: F1, visitPost: F2) where F1: Fn(Ref) -> bool, F2: Fn(Ref) {
+    if !visitable(node) { return }
+    if !visitPre(node) { return }
+    let mut stack = StackedStack::<TraverseInfo>::new();
+    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
+    {
+        let arr = node.getArray();
+        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+    };
+    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
+    loop {
+        if index < arrlen {
+            let sub: Ref = unsafe { *arrdata.offset(index) };
+            index += 1;
+            if visitable(sub) {
+                if visitPre(sub) {
+                    stack.back().index = index;
+                    {
+                        let arr = node.getArray();
+                        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+                    };
+                    stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
+                }
+            }
+        } else {
+            visitPost(stack.back().node);
+            stack.pop_back();
+            if stack.len() == 0 { break }
+            let back = stack.back();
+            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
+        }
+    }
+}
+
+fn traverseFunctions<F>(ast: Ref, visit: F) where F: Fn(Ref) {
+    if !ast.is_something() { return }
+    let arr = ast.getArray();
+    if arr.len() == 0 { return }
+    match arr[0].getIString() {
+        is!("toplevel") => {
+            let stats = arr[1];
+            for &curr in stats.getArray() {
+                if curr.get(0).getIString() == is!("defun") { visit(curr) }
+            }
+        },
+        is!("defun") => visit(ast),
+        _ => {},
+    }
+}
 
 fn dump(s: &str, node: Ref, pretty: bool) {
     let mut stderr = io::stderr();

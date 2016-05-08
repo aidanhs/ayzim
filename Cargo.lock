@@ -7,6 +7,7 @@ dependencies = [
  "phf 0.7.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "phf_builder 0.7.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "smallvec 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "string_cache 0.2.13",
  "string_cache_codegen 0.2.13",
 ]
@@ -179,6 +180,11 @@ dependencies = [
  "num 0.1.32 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 0.6.15 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "smallvec"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "string_cache"
