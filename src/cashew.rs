@@ -8,7 +8,6 @@ use std::ops::{Deref, DerefMut};
 
 use odds::vec::VecExt;
 use phf;
-use phf_builder;
 use serde_json;
 use smallvec::SmallVec;
 
@@ -1384,29 +1383,23 @@ fn dump(s: &str, node: Ref, pretty: bool) {
 struct ValueBuilder;
 
 lazy_static! {
-    static ref STATABLE: phf::Set<IString> = {
-        let mut set = phf_builder::Set::new();
-        for s in &[
-            is!("assign"),
-            is!("call"),
-            is!("binary"),
-            is!("unary-prefix"),
-            is!("if"),
-            is!("name"),
-            is!("num"),
-            is!("conditional"),
-            is!("dot"),
-            is!("new"),
-            is!("sub"),
-            is!("seq"),
-            is!("string"),
-            is!("object"),
-            is!("array"),
-        ] {
-            set.entry(s.clone());
-        }
-        set.build()
-    };
+    static ref STATABLE: phf::Set<IString> = iss![
+        "assign",
+        "call",
+        "binary",
+        "unary-prefix",
+        "if",
+        "name",
+        "num",
+        "conditional",
+        "dot",
+        "new",
+        "sub",
+        "seq",
+        "string",
+        "object",
+        "array",
+    ];
 }
 
 // cashew builder

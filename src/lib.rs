@@ -21,6 +21,17 @@ use std::time;
 
 include!(concat!(env!("OUT_DIR"), "/static_atoms.rs"));
 
+macro_rules! iss {
+    [ $( $x:tt ),+, ] => { iss![ $( $x ),+ ] };
+    [ $( $x:tt ),* ] => {{
+        let mut set = $crate::phf_builder::Set::new();
+        $(
+            set.entry(is!($x));
+        )+
+        set.build()
+    }};
+}
+
 mod cashew;
 
 static mut preciseF32: bool = false;
