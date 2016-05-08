@@ -21,6 +21,7 @@ use std::time;
 
 include!(concat!(env!("OUT_DIR"), "/static_atoms.rs"));
 
+// RSTODO: not sure why tt can't be expr in this macro?
 macro_rules! iss {
     [ $( $x:tt ),+, ] => { iss![ $( $x ),+ ] };
     [ $( $x:tt ),* ] => {{
@@ -33,6 +34,7 @@ macro_rules! iss {
 }
 
 mod cashew;
+mod parser;
 
 static mut preciseF32: bool = false;
 static mut receiveJSON: bool = false;

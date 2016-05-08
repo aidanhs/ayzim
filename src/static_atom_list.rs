@@ -87,4 +87,12 @@ pub static ATOMS: &'static [&'static str] = &[
     "object",
     "throw",
     "=",
+
+    // parser.cpp additional in 'keywords'
+    "try",
+    "catch",
+    "finally",
+    "true",
+    "false",
+    "null",
 ];
