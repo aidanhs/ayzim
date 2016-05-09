@@ -5,10 +5,19 @@
 // lets them reuse parts of it. You will segfault if the input string cannot be
 // reused and written to.
 
+use std::ptr;
+use std::slice;
+use std::str;
+use std::{i32, u32};
+
+use libc;
+use libc::{c_char, c_int};
+
 use phf;
 use phf_builder;
 
 use super::IString;
+use super::cashew::Ref;
 
 lazy_static! {
     static ref KEYWORDS: phf::Set<IString> = iss![
@@ -65,8 +74,9 @@ lazy_static! {
     };
 }
 
-const OPERATOR_INITS: &'static [u8] = b"+-*/%<>&^|~=!,?:.";
-const SEPARATORS: &'static [u8] = b"([;{}";
+// Used in hasChar, must be a cstring
+const OPERATOR_INITS: &'static [u8] = b"+-*/%<>&^|~=!,?:.\0";
+const SEPARATORS: &'static [u8] = b"([;{}\0";
 
 #[derive(Copy, Clone)]
 enum OpClassTy {
@@ -95,196 +105,250 @@ impl OpClass {
     }
 }
 
+macro_rules! pp {
+    { $p:ident += $off:expr } => {{ *$p = (*$p).offset($off) }};
+    { $p:ident + $off:expr } => {{ (*$p).offset($off) }};
+    { $p:ident[$off:expr] } => {{ *(*$p).offset($off) }};
+}
+macro_rules! p {
+    { $p:ident += $off:expr } => {{ $p = $p.offset($off) }};
+    { $p:ident + $off:expr } => {{ $p.offset($off) }};
+    { $p:ident[$off:expr] } => {{ *$p.offset($off) }};
+}
+
 fn isIdentInit(x: u8) -> bool {
     (x >= b'a' && x <= b'z') || (x >= b'A' && x <= b'Z') || x == b'_' || x == b'$'
 }
+// RSTODO: use isDigit?
 fn isIdentPart(x: u8) -> bool {
     isIdentInit(x) || (x >= b'0' && x <= b'9')
 }
+fn isSpace(x: u8) -> bool {
+    // space, tab, linefeed/newline or return
+    x == 32 || x == 9 || x == 10 || x == 13
+}
+fn isDigit(x: u8) -> bool {
+    x >= b'0' && x <= b'9'
+}
+// RSTODO: this is an absolute disgrace
+// https://github.com/rust-lang/rfcs/pull/1218
+// https://doc.rust-lang.org/book/casting-between-types.html#numeric-casts (note UB)
+// use https://crates.io/crates/conv ?
+fn is32Bit(x: f64) -> bool {
+    assert!(x.is_normal() || x == 0f64);
+    if x > u32::MAX as f64 || x < i32::MIN as f64 { return false }
+    if x.is_sign_positive() { return x as u32 as f64 == x }
+    return x as i32 as f64 == x
+}
+unsafe fn hasChar(list: *const u8, x: u8) -> bool {
+    while p!{list[0]} != b'\0' {
+        if p!{list[0]} == x {
+            return true
+        }
+    }
+    false
+}
 
-//// parser
+enum FragData {
+    Keyword(IString),
+    Operator(IString),
+    Ident(IString),
+    String(IString),
+    Int(f64),
+    Double(f64),
+    Separator(IString),
+}
+
+// https://github.com/rust-lang/rust/issues/32836
+// An atomic fragment of something. Stops at a natural boundary.
+struct Frag {
+    data: FragData,
+    size: usize,
+}
+
+impl Frag {
+    fn isNumber(&self) -> bool {
+        match self.data {
+            FragData::Int(_) | FragData::Double(_) => true,
+            _ => false,
+        }
+    }
+
+    unsafe fn from_str(mut src: *const u8) -> Frag {
+        let start = src;
+        let fragdata = if isIdentInit(p!{src[0]}) {
+            // read an identifier or a keyword
+            p!{src+=1};
+            while isIdentPart(*src) {
+                p!{src+=1};
+            }
+            let b = slice::from_raw_parts(start, src as usize - start as usize);
+            let s = str::from_utf8_unchecked(b);
+            let is = IString::from(s);
+            if KEYWORDS.contains(&is) {
+                FragData::Keyword(is)
+            } else {
+                FragData::Ident(is)
+            }
+        } else if isDigit(p!{src[0]}) ||
+                (p!{src[0]} == b'.' && isDigit(p!{src[1]})) {
+            let num = if p!{src[0]} == b'0' &&
+                    (p!{src[1]} == b'x' || p!{src[1]} == b'X') {
+                // Explicitly parse hex numbers of form "0x...", because strtod
+                // supports hex number strings only in C++11, and Visual Studio 2013
+                // does not yet support that functionality.
+                p!{src+=2};
+                let mut num = 0;
+                loop {
+                    if p!{src[0]} >= b'0' && p!{src[0]} <= b'9' {
+                        num *= 16; num += p!{src[0]} - b'0';
+                    } else if p!{src[0]} >= b'a' && p!{src[0]} <= b'f' {
+                        num *= 16; num += p!{src[0]} - b'a' + 10;
+                    } else if p!{src[0]} >= b'A' && p!{src[0]} <= b'F' {
+                        num *= 16; num += p!{src[0]} - b'F' + 10;
+                    } else {
+                        break
+                    }
+                    p!{src+=1};
+                }
+                num as f64
+            } else {
+                let mut ptr = ptr::null_mut();
+                let num = libc::strtod(start as *const c_char, &mut ptr as *mut _);
+                src = ptr as *const _;
+                num
+            };
+            // asm.js must have a '.' for double values. however, we also tolerate
+            // uglify's tendency to emit without a '.' (and fix it later with a +).
+            // for valid asm.js input, the '.' should be enough, and for uglify
+            // in the emscripten optimizer pipeline, we use simple_ast where
+            // INT/DOUBLE is quite the same at this point anyhow
+            let b = slice::from_raw_parts(start, src as usize - start as usize);
+            if !b.contains(&b'.') && is32Bit(num) {
+                FragData::Int(num)
+            } else {
+                FragData::Double(num)
+            }
+        } else if hasChar(OPERATOR_INITS.as_ptr(), p!{src[0]}) {
+            let is = match p!{src[0]} {
+                b'!' => if p!{src[1]} == b'=' { is!("!=") } else { is!("!") },
+                b'%' => is!("%"),
+                b'&' => is!("&"),
+                b'*' => is!("*"),
+                b'+' => is!("+"),
+                b',' => is!(","),
+                b'-' => is!("-"),
+                b'.' => is!("."),
+                b'/' => is!("/"),
+                b':' => is!(":"),
+                b'<' => match p!{src[1]} {
+                            b'<' => is!("<<"),
+                            b'=' => is!("<="),
+                            _ => is!("<"),
+                        },
+                b'=' => if p!{src[1]} == b'=' { is!("==") } else { is!("=") },
+                b'>' => match p!{src[1]} {
+                            b'>' => if p!{src[2]} == b'>' { is!(">>>") } else { is!(">>") },
+                            b'=' => is!(">="),
+                            _ => is!(">"),
+                        },
+                b'?' => is!("?"),
+                b'^' => is!("^"),
+                b'|' => is!("|"),
+                b'~' => is!("~"),
+                _ => unreachable!(),
+            };
+            debug_assert!({
+                let b = is.as_bytes();
+                b == slice::from_raw_parts(start, b.len())
+            });
+            p!{src+=is.len() as isize};
+            FragData::Operator(is)
+        } else if hasChar(SEPARATORS.as_ptr(), p!{src[0]}) {
+            let b = slice::from_raw_parts(src, 1);
+            let s = str::from_utf8_unchecked(b);
+            let is = IString::from(s);
+            p!{src+=1};
+            FragData::Separator(is)
+        } else if p!{src[0]} == b'"' || p!{src[0]} == b'\'' {
+            src = libc::strchr(p!{src+1} as *const c_char, p!{src[0]} as c_int)
+                as *const _;
+            p!{src+=1};
+            let b = slice::from_raw_parts(src, src as usize - start as usize);
+            let s = str::from_utf8_unchecked(b);
+            let is = IString::from(s);
+            FragData::String(is)
+        } else {
+            Parser::dump("frag parsing".as_ptr(), src);
+            panic!()
+        };
+        Frag {
+            data: fragdata,
+            size: src as usize - start as usize,
+        }
+    }
+}
+
+enum ExpressionElement {
+    Node(Ref),
+    Op(IString),
+}
+
+// RSTODO: may not be needed?
+//  ExpressionElement(NodeRef n) : isNode(true), node(n) {}
+//  ExpressionElement(IString o) : isNode(false), op(o) {}
 //
-//template<class NodeRef, class Builder>
-//class Parser {
-//
-//  static bool isSpace(char x) { return x == 32 || x == 9 || x == 10 || x == 13; } /* space, tab, linefeed/newline, or return */
-//  static void skipSpace(char*& curr) {
-//    while (*curr) {
-//      if (isSpace(*curr)) {
-//        curr++;
-//        continue;
-//      }
-//      if (curr[0] == '/' && curr[1] == '/') {
-//        curr += 2;
-//        while (*curr && *curr != '\n') curr++;
-//        if (*curr) curr++;
-//        continue;
-//      }
-//      if (curr[0] == '/' && curr[1] == '*') {
-//        curr += 2;
-//        while (*curr && (curr[0] != '*' || curr[1] != '/')) curr++;
-//        curr += 2;
-//        continue;
-//      }
-//      return;
-//    }
+//  NodeRef getNode() {
+//    assert(isNode);
+//    return node;
 //  }
-//
-//  static bool isDigit(char x) { return x >= '0' && x <= '9'; }
-//
-//  static bool hasChar(const char* list, char x) { while (*list) if (*list++ == x) return true; return false; }
-//
-//  static bool is32Bit(double x) {
-//    return x == (int)x || x == (unsigned int)x;
+//  IString getOp() {
+//    assert(!isNode);
+//    return op;
 //  }
-//
-//  // An atomic fragment of something. Stops at a natural boundary.
-//  enum FragType {
-//    KEYWORD = 0,
-//    OPERATOR = 1,
-//    IDENT = 2,
-//    STRING = 3, // without quotes
-//    INT = 4,
-//    DOUBLE = 5,
-//    SEPARATOR = 6
-//  };
-//
-//  struct Frag {
-//#ifndef _MSC_VER // MSVC does not allow unrestricted unions: http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2008/n2544.pdf
-//    union {
-//#endif
-//      IString str;
-//      double num;
-//#ifndef _MSC_VER
-//    };
-//#endif
-//    int size;
-//    FragType type;
-//
-//    bool isNumber() const {
-//      return type == INT || type == DOUBLE;
-//    }
-//
-//    explicit Frag(char* src) {
-//      char *start = src;
-//      if (isIdentInit(*src)) {
-//        // read an identifier or a keyword
-//        src++;
-//        while (isIdentPart(*src)) {
-//          src++;
-//        }
-//        if (*src == 0) {
-//          str.set(start);
-//        } else {
-//          char temp = *src;
-//          *src = 0;
-//          str.set(start, false);
-//          *src = temp;
-//        }
-//        type = keywords.has(str) ? KEYWORD : IDENT;
-//      } else if (isDigit(*src) || (src[0] == '.' && isDigit(src[1]))) {
-//        if (src[0] == '0' && (src[1] == 'x' || src[1] == 'X')) {
-//          // Explicitly parse hex numbers of form "0x...", because strtod
-//          // supports hex number strings only in C++11, and Visual Studio 2013 does
-//          // not yet support that functionality.
-//          src += 2;
-//          num = 0;
-//          while (1) {
-//            if (*src >= '0' && *src <= '9') { num *= 16; num += *src - '0'; }
-//            else if (*src >= 'a' && *src <= 'f') { num *= 16; num += *src - 'a' + 10; }
-//            else if (*src >= 'A' && *src <= 'F') { num *= 16; num += *src - 'F' + 10; }
-//            else break;
-//            src++;
-//          }
-//        } else {
-//          num = strtod(start, &src);
-//        }
-//        // asm.js must have a '.' for double values. however, we also tolerate
-//        // uglify's tendency to emit without a '.' (and fix it later with a +).
-//        // for valid asm.js input, the '.' should be enough, and for uglify
-//        // in the emscripten optimizer pipeline, we use simple_ast where INT/DOUBLE
-//        // is quite the same at this point anyhow
-//        type = (std::find(start, src, '.') == src && is32Bit(num)) ? INT : DOUBLE;
-//        assert(src > start);
-//      } else if (hasChar(OPERATOR_INITS, *src)) {
-//        switch (*src) {
-//          case '!': str = src[1] == '=' ? NE : L_NOT; break;
-//          case '%': str = MOD; break;
-//          case '&': str = AND; break;
-//          case '*': str = MUL; break;
-//          case '+': str = PLUS; break;
-//          case ',': str = COMMA; break;
-//          case '-': str = MINUS; break;
-//          case '.': str = PERIOD; break;
-//          case '/': str = DIV; break;
-//          case ':': str = COLON; break;
-//          case '<': str = src[1] == '<' ? LSHIFT : (src[1] == '=' ? LE : LT); break;
-//          case '=': str = src[1] == '=' ? EQ : SET; break;
-//          case '>': str = src[1] == '>' ? (src[2] == '>' ? TRSHIFT : RSHIFT) : (src[1] == '=' ? GE : GT); break;
-//          case '?': str = QUESTION; break;
-//          case '^': str = XOR; break;
-//          case '|': str = OR; break;
-//          case '~': str = B_NOT; break;
-//          default: abort();
-//        }
-//        size = strlen(str.str);
-//#ifndef NDEBUG
-//        char temp = start[size];
-//        start[size] = 0;
-//        assert(strcmp(str.str, start) == 0);
-//        start[size] = temp;
-//#endif
-//        type = OPERATOR;
-//        return;
-//      } else if (hasChar(SEPARATORS, *src)) {
-//        type = SEPARATOR;
-//        char temp = src[1];
-//        src[1] = 0;
-//        str.set(src, false);
-//        src[1] = temp;
-//        src++;
-//      } else if (*src == '"' || *src == '\'') {
-//        char *end = strchr(src+1, *src);
-//        *end = 0;
-//        str.set(src+1);
-//        src = end+1;
-//        type = STRING;
-//      } else {
-//        dump("frag parsing", src);
-//        abort();
-//      }
-//      size = src - start;
-//    }
-//  };
-//
-//  struct ExpressionElement {
-//    bool isNode;
-//#ifndef _MSC_VER // MSVC does not allow unrestricted unions: http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2008/n2544.pdf
-//    union {
-//#endif
-//      NodeRef node;
-//      IString op;
-//#ifndef _MSC_VER
-//    };
-//#endif
-//    ExpressionElement(NodeRef n) : isNode(true), node(n) {}
-//    ExpressionElement(IString o) : isNode(false), op(o) {}
-//
-//    NodeRef getNode() {
-//      assert(isNode);
-//      return node;
-//    }
-//    IString getOp() {
-//      assert(!isNode);
-//      return op;
-//    }
-//  };
-//
-//  // This is a list of the current stack of node-operator-node-operator-etc.
-//  // this works by each parseExpression call appending to the vector; then recursing out, and the toplevel sorts it all
-//  typedef std::vector<ExpressionElement> ExpressionParts;
-//  std::vector<ExpressionParts> expressionPartsStack;
-//
+
+// parser
+
+struct Parser {
+    // This is a list of the current stack of node-operator-node-operator-etc.
+    // this works by each parseExpression call appending to the vector; then
+    // recursing out, and the toplevel sorts it all
+    expressionPartsStack: Vec<Vec<ExpressionElement>>,
+
+    allSource: *const u8,
+    allSize: usize,
+}
+
+impl Parser {
+    unsafe fn skipSpace(curr: &mut *const u8) {
+        while pp!{curr[0]} != b'\0' {
+            if isSpace(pp!{curr[0]}) {
+                pp!{curr+=1};
+                continue
+            }
+            if pp!{curr[0]} == b'/' && pp!{curr[1]} == b'/' {
+                pp!{curr+=2};
+                while pp!{curr[0]} != b'\0' && pp!{curr[0]} != b'\n' {
+                    pp!{curr+=1};
+                }
+                if pp!{curr[0]} != b'\0' {
+                    pp!{curr+=1};
+                }
+                continue
+            }
+            if pp!{curr[0]} == b'/' && pp!{curr[1]} == b'*' {
+                pp!{curr+=2};
+                while pp!{curr[0]} != b'\0' &&
+                        (pp!{curr[0]} != b'*' || pp!{curr[1]} != b'/') {
+                    pp!{curr+=1};
+                }
+                pp!{curr+=2};
+                continue
+            }
+        }
+        return
+    }
+
 //  // Parses an element in a list of such elements, e.g. list of statements in a block, or list of parameters in a call
 //  NodeRef parseElement(char*& src, const char* seps=";") {
 //    //dump("parseElement", src);
@@ -835,12 +899,31 @@ fn isIdentPart(x: u8) -> bool {
 //    src++;
 //    return ret;
 //  }
-//
-//  // Debugging
-//
-//  char *allSource;
-//  int allSize;
-//
+
+    fn new() -> Parser {
+        Parser {
+            expressionPartsStack: vec![vec![]],
+            allSource: ptr::null(),
+            allSize: 0,
+        }
+    }
+
+//  // Highest-level parsing, as of a JavaScript script file.
+//  NodeRef parseToplevel(char* src) {
+//    allSource = src;
+//    allSize = strlen(src);
+//    NodeRef toplevel = Builder::makeToplevel();
+//    Builder::setBlockContent(toplevel, parseBlock(src));
+//    return toplevel;
+//  }
+//};
+
+    // Debugging
+
+    // RSTODO
+    fn dump(_msg: *const u8, _curr: *const u8) {
+        panic!()
+    }
 //  static void dump(const char *where, char* curr) {
 //    /*
 //    printf("%s:\n=============\n", where);
@@ -863,24 +946,5 @@ fn isIdentPart(x: u8) -> bool {
 //    }
 //    fprintf(stderr, "\n\n");
 //  }
-//
-//public:
-//
-//  Parser() : allSource(nullptr), allSize(0) {
-//    expressionPartsStack.resize(1);
-//  }
-//
-//  // Highest-level parsing, as of a JavaScript script file.
-//  NodeRef parseToplevel(char* src) {
-//    allSource = src;
-//    allSize = strlen(src);
-//    NodeRef toplevel = Builder::makeToplevel();
-//    Builder::setBlockContent(toplevel, parseBlock(src));
-//    return toplevel;
-//  }
-//};
-//
-//} // namespace cashew
-//
-//#endif // __parser_h__
+}
 

@@ -1,6 +1,9 @@
 #![feature(stmt_expr_attributes, const_fn)]
 #![allow(non_snake_case, non_camel_case_types)]
 
+// RSTODO: review all numeric casts
+// https://github.com/rust-lang/rfcs/pull/1218
+
 // RSTODO: remove
 #![allow(dead_code)]
 
@@ -12,6 +15,7 @@ extern crate odds;
 extern crate phf;
 extern crate phf_builder;
 extern crate smallvec;
+extern crate libc;
 
 use std::env;
 use std::fs;

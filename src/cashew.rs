@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 use super::IString;
 
 #[derive(Copy, Clone)]
-struct Ref {
+pub struct Ref {
     inst: *mut Value,
 }
 
@@ -65,8 +65,6 @@ const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 
 // Arena allocation, free it all on process exit
 
-type ArrayStorage = Vec<Ref>;
-
 const ARENA_CHUNK_SIZE: usize = 1000;
 struct Arena {
     chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
@@ -101,9 +99,10 @@ lazy_static! {
     static ref ARENA: Arena = Arena::new();
 }
 
-type ObjectStorage = HashMap<IString, Ref>;
+pub type ArrayStorage = Vec<Ref>;
+pub type ObjectStorage = HashMap<IString, Ref>;
 
-enum Value {
+pub enum Value {
     null,
     str(IString),
     num(f64),
