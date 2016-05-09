@@ -279,7 +279,8 @@ impl Frag {
             let is = IString::from(s);
             FragData::String(is)
         } else {
-            Parser::dump("frag parsing".as_ptr(), src);
+            // RSTODO
+            //Parser::dump("frag parsing".as_ptr(), src);
             panic!()
         };
         Frag {
@@ -349,7 +350,11 @@ impl Parser {
         return
     }
 
-//  // Parses an element in a list of such elements, e.g. list of statements in a block, or list of parameters in a call
+    // Parses an element in a list of such elements, e.g. list of statements in a block, or list of parameters in a call
+    // RSTODO
+    fn parseElement(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseElement(char*& src, const char* seps=";") {
 //    //dump("parseElement", src);
 //    skipSpace(src);
@@ -380,7 +385,11 @@ impl Parser {
 //    }
 //    return nullptr;
 //  }
-//
+
+    // RSTODO
+    fn parseFrag(&mut self, _frag: &Frag) -> Ref {
+        panic!()
+    }
 //  NodeRef parseFrag(Frag& frag) {
 //    switch (frag.type) {
 //      case IDENT:  return Builder::makeName(frag.str);
@@ -391,7 +400,11 @@ impl Parser {
 //    }
 //    return nullptr;
 //  }
-//
+
+    // RSTODO
+    fn parseAfterKeyword(&mut self, _frag: &Frag, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseAfterKeyword(Frag& frag, char*& src, const char* seps) {
 //    skipSpace(src);
 //    if (frag.str == FUNCTION) return parseFunction(src, seps);
@@ -409,7 +422,11 @@ impl Parser {
 //    abort();
 //    return nullptr;
 //  }
-//
+
+    // RSTODO
+    fn parseFunction(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseFunction(char*& src, const char* seps) {
 //    Frag name(src);
 //    if (name.type == IDENT) {
@@ -442,7 +459,11 @@ impl Parser {
 //    // TODO: parse expression?
 //    return ret;
 //  }
-//
+
+    // RSTODO
+    fn parseVar(&mut self, _src: &mut *const u8, _seps: *const u8, _is_const: bool) -> Ref {
+        panic!()
+    }
 //  NodeRef parseVar(char*& src, const char* seps, bool is_const) {
 //    NodeRef ret = Builder::makeVar(is_const);
 //    while (1) {
@@ -470,7 +491,11 @@ impl Parser {
 //    src++;
 //    return ret;
 //  }
-//
+
+    // RSTODO
+    fn parseReturn(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseReturn(char*& src, const char* seps) {
 //    skipSpace(src);
 //    NodeRef value = !hasChar(seps, *src) ? parseElement(src, seps) : nullptr;
@@ -479,7 +504,11 @@ impl Parser {
 //    if (*src == ';') src++;
 //    return Builder::makeReturn(value);
 //  }
-//
+
+    // RSTODO
+    fn parseIf(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseIf(char*& src, const char* seps) {
 //    NodeRef condition = parseParenned(src);
 //    NodeRef ifTrue = parseMaybeBracketed(src, seps);
@@ -494,7 +523,11 @@ impl Parser {
 //    }
 //    return Builder::makeIf(condition, ifTrue, ifFalse);
 //  }
-//
+
+    // RSTODO
+    fn parseDo(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseDo(char*& src, const char* seps) {
 //    NodeRef body = parseMaybeBracketed(src, seps);
 //    skipSpace(src);
@@ -504,27 +537,43 @@ impl Parser {
 //    NodeRef condition = parseParenned(src);
 //    return Builder::makeDo(body, condition);
 //  }
-//
+
+    // RSTODO
+    fn parseWhile(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseWhile(char*& src, const char* seps) {
 //    NodeRef condition = parseParenned(src);
 //    NodeRef body = parseMaybeBracketed(src, seps);
 //    return Builder::makeWhile(condition, body);
 //  }
-//
+
+    // RSTODO
+    fn parseBreak(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseBreak(char*& src, const char* seps) {
 //    skipSpace(src);
 //    Frag next(src);
 //    if (next.type == IDENT) src += next.size;
 //    return Builder::makeBreak(next.type == IDENT ? next.str : IString());
 //  }
-//
+
+    // RSTODO
+    fn parseContinue(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseContinue(char*& src, const char* seps) {
 //    skipSpace(src);
 //    Frag next(src);
 //    if (next.type == IDENT) src += next.size;
 //    return Builder::makeContinue(next.type == IDENT ? next.str : IString());
 //  }
-//
+
+    // RSTODO
+    fn parseSwitch(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseSwitch(char*& src, const char* seps) {
 //    NodeRef ret = Builder::makeSwitch(parseParenned(src));
 //    skipSpace(src);
@@ -580,11 +629,19 @@ impl Parser {
 //    src++;
 //    return ret;
 //  }
-//
+
+    // RSTODO
+    fn parseNew(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseNew(char*& src, const char* seps) {
 //    return Builder::makeNew(parseElement(src, seps));
 //  }
-//
+
+    // RSTODO
+    fn parseAfterIdent(&mut self, _frag: &Frag, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseAfterIdent(Frag& frag, char*& src, const char* seps) {
 //    skipSpace(src);
 //    if (*src == '(') return parseExpression(parseCall(parseFrag(frag), src), src, seps);
@@ -603,7 +660,11 @@ impl Parser {
 //    if (*src == '.') return parseExpression(parseDotting(parseFrag(frag), src), src, seps);
 //    return parseExpression(parseFrag(frag), src, seps);
 //  }
-//
+
+    // RSTODO
+    fn parseCall(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseCall(NodeRef target, char*& src) {
 //    expressionPartsStack.resize(expressionPartsStack.size()+1);
 //    assert(*src == '(');
@@ -626,7 +687,11 @@ impl Parser {
 //    expressionPartsStack.pop_back();
 //    return ret;
 //  }
-//
+
+    // RSTODO
+    fn parseIndexing(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseIndexing(NodeRef target, char*& src) {
 //    expressionPartsStack.resize(expressionPartsStack.size()+1);
 //    assert(*src == '[');
@@ -639,7 +704,11 @@ impl Parser {
 //    expressionPartsStack.pop_back();
 //    return ret;
 //  }
-//
+
+    // RSTODO
+    fn parseDotting(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseDotting(NodeRef target, char*& src) {
 //    assert(*src == '.');
 //    src++;
@@ -648,7 +717,11 @@ impl Parser {
 //    src += key.size;
 //    return Builder::makeDot(target, key.str);
 //  }
-//
+
+    // RSTODO
+    fn parseAfterParen(&mut self, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseAfterParen(char*& src) {
 //    expressionPartsStack.resize(expressionPartsStack.size()+1);
 //    skipSpace(src);
@@ -660,7 +733,11 @@ impl Parser {
 //    expressionPartsStack.pop_back();
 //    return ret;
 //  }
-//
+
+    // RSTODO
+    fn parseAfterBrace(&mut self, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseAfterBrace(char*& src) {
 //    expressionPartsStack.resize(expressionPartsStack.size()+1);
 //    NodeRef ret = Builder::makeArray();
@@ -681,7 +758,11 @@ impl Parser {
 //    src++;
 //    return ret;
 //  }
-//
+
+    // RSTODO
+    fn parseAfterCurly(&mut self, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseAfterCurly(char*& src) {
 //    expressionPartsStack.resize(expressionPartsStack.size()+1);
 //    NodeRef ret = Builder::makeObject();
@@ -708,21 +789,11 @@ impl Parser {
 //    src++;
 //    return ret;
 //  }
-//
-//  void dumpParts(ExpressionParts& parts, int i) {
-//    printf("expressionparts: %d (at %d)\n", parts.size(), i);
-//    printf("| ");
-//    for (int i = 0; i < parts.size(); i++) {
-//      if (parts[i].isNode) {
-//        parts[i].getNode()->stringify(std::cout);
-//        printf("    ");
-//      } else {
-//        printf("    _%s_    ", parts[i].getOp().str);
-//      }
-//    }
-//    printf("|\n");
-//  }
-//
+
+    // RSTODO
+    fn makeBinary(_left: Ref, _op: IString, _right: Ref) -> Ref {
+        panic!()
+    }
 //  NodeRef makeBinary(NodeRef left, IString op, NodeRef right) {
 //    if (op == PERIOD) {
 //      return Builder::makeDot(left, right);
@@ -730,7 +801,11 @@ impl Parser {
 //      return Builder::makeBinary(left, op ,right);
 //    }
 //  }
-//
+
+    // RSTODO
+    fn parseExpression(&mut self, _initial: ExpressionElement, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseExpression(ExpressionElement initial, char*&src, const char* seps) {
 //    //dump("parseExpression", src);
 //    ExpressionParts& parts = expressionPartsStack.back();
@@ -822,7 +897,11 @@ impl Parser {
 //      return ret;
 //    }
 //  }
-//
+
+    // RSTODO
+    fn parseBlock(&mut self, _src: &mut *const u8, _seps: *const u8, _keywordSep1: Option<IString>, _keywordSep2: Option<IString>) -> Ref {
+        panic!()
+    }
 //  // Parses a block of code (e.g. a bunch of statements inside {,}, or the top level of o file)
 //  NodeRef parseBlock(char*& src, const char* seps=";", IString keywordSep1=IString(), IString keywordSep2=IString()) {
 //    NodeRef block = Builder::makeBlock();
@@ -848,7 +927,11 @@ impl Parser {
 //    }
 //    return block;
 //  }
-//
+
+    // RSTODO
+    fn parseBracketedBlock(&mut self, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseBracketedBlock(char*& src) {
 //    skipSpace(src);
 //    assert(*src == '{');
@@ -858,7 +941,11 @@ impl Parser {
 //    src++;
 //    return block;
 //  }
-//
+
+    // RSTODO
+    fn parseElementOrStatement(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseElementOrStatement(char*& src, const char *seps) {
 //    skipSpace(src);
 //    if (*src == ';') {
@@ -883,12 +970,20 @@ impl Parser {
 //    }
 //    return ret;
 //  }
-//
+
+    // RSTODO
+    fn parseMaybeBracketed(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseMaybeBracketed(char*& src, const char *seps) {
 //    skipSpace(src);
 //    return *src == '{' ? parseBracketedBlock(src) : parseElementOrStatement(src, seps);
 //  }
-//
+
+    // RSTODO
+    fn parseParenned(&mut self, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  NodeRef parseParenned(char*& src) {
 //    skipSpace(src);
 //    assert(*src == '(');
@@ -908,6 +1003,10 @@ impl Parser {
         }
     }
 
+    // RSTODO
+    fn parseToplevel(&mut self, _src: &mut *const u8) -> Ref {
+        panic!()
+    }
 //  // Highest-level parsing, as of a JavaScript script file.
 //  NodeRef parseToplevel(char* src) {
 //    allSource = src;
@@ -921,7 +1020,7 @@ impl Parser {
     // Debugging
 
     // RSTODO
-    fn dump(_msg: *const u8, _curr: *const u8) {
+    fn dump(&mut self, _msg: *const u8, _curr: *const u8) {
         panic!()
     }
 //  static void dump(const char *where, char* curr) {
@@ -946,5 +1045,25 @@ impl Parser {
 //    }
 //    fprintf(stderr, "\n\n");
 //  }
+
+    // RSTODO
+    fn dumpParts(_parts: Vec<Vec<ExpressionElement>>, _i: usize) {
+        panic!()
+    }
+//  void dumpParts(ExpressionParts& parts, int i) {
+//    printf("expressionparts: %d (at %d)\n", parts.size(), i);
+//    printf("| ");
+//    for (int i = 0; i < parts.size(); i++) {
+//      if (parts[i].isNode) {
+//        parts[i].getNode()->stringify(std::cout);
+//        printf("    ");
+//      } else {
+//        printf("    _%s_    ", parts[i].getOp().str);
+//      }
+//    }
+//    printf("|\n");
+//  }
+//
+
 }
 
