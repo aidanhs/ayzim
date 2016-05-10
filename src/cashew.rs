@@ -7,7 +7,6 @@ use std::ptr;
 use std::ops::{Deref, DerefMut};
 
 use odds::vec::VecExt;
-use phf;
 use serde_json;
 use smallvec::SmallVec;
 
@@ -1379,30 +1378,35 @@ fn dump(s: &str, node: Ref, pretty: bool) {
 //  }
 //};
 
-struct ValueBuilder;
-
-lazy_static! {
-    static ref STATABLE: phf::Set<IString> = iss![
-        "assign",
-        "call",
-        "binary",
-        "unary-prefix",
-        "if",
-        "name",
-        "num",
-        "conditional",
-        "dot",
-        "new",
-        "sub",
-        "seq",
-        "string",
-        "object",
-        "array",
-    ];
-}
-
 // cashew builder
-impl ValueBuilder {
+pub mod builder {
+
+    use super::ARENA;
+    use super::super::IString;
+    use super::Ref;
+
+    use phf;
+
+    lazy_static! {
+        static ref STATABLE: phf::Set<IString> = iss![
+            "assign",
+            "call",
+            "binary",
+            "unary-prefix",
+            "if",
+            "name",
+            "num",
+            "conditional",
+            "dot",
+            "new",
+            "sub",
+            "seq",
+            "string",
+            "object",
+            "array",
+        ];
+    }
+
     fn makeRawString(s: IString) -> Ref {
         let mut r = ARENA.alloc();
         r.setIString(s);
@@ -1422,34 +1426,34 @@ impl ValueBuilder {
     }
 
     fn makeToplevel() -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("toplevel")))
-            .push_back(Self::makeRawArray(0));
+            .push_back(makeRawString(is!("toplevel")))
+            .push_back(makeRawArray(0));
         r
     }
 
-    fn makeString(s: IString) -> Ref {
-        let mut r = Self::makeRawArray(2);
+    pub fn makeString(s: IString) -> Ref {
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("string")))
-            .push_back(Self::makeRawString(s));
+            .push_back(makeRawString(is!("string")))
+            .push_back(makeRawString(s));
         r
     }
 
     fn makeBlock() -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("block")))
-            .push_back(Self::makeRawArray(0));
+            .push_back(makeRawString(is!("block")))
+            .push_back(makeRawArray(0));
         r
     }
 
-    fn makeName(name: IString) -> Ref {
-        let mut r = Self::makeRawArray(2);
+    pub fn makeName(name: IString) -> Ref {
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("name")))
-            .push_back(Self::makeRawString(name));
+            .push_back(makeRawString(is!("name")))
+            .push_back(makeRawString(name));
         r
     }
 
@@ -1467,11 +1471,11 @@ impl ValueBuilder {
     }
 
     fn makeCall(target: Ref) -> Ref {
-        let mut r = Self::makeRawArray(3);
+        let mut r = makeRawArray(3);
         r
-            .push_back(Self::makeRawString(is!("call")))
+            .push_back(makeRawString(is!("call")))
             .push_back(target)
-            .push_back(Self::makeRawArray(0));
+            .push_back(makeRawArray(0));
         r
     }
 
@@ -1482,9 +1486,9 @@ impl ValueBuilder {
 
     fn makeStatement(contents: Ref) -> Ref {
         if STATABLE.contains(&contents.get(0).getIString()) {
-            let mut r = Self::makeRawArray(2);
+            let mut r = makeRawArray(2);
             r
-                .push_back(Self::makeRawString(is!("stat")))
+                .push_back(makeRawString(is!("stat")))
                 .push_back(contents);
             r
         } else {
@@ -1492,18 +1496,18 @@ impl ValueBuilder {
         }
     }
 
-    fn makeDouble(num: f64) -> Ref {
+    pub fn makeDouble(num: f64) -> Ref {
         let mut n = ARENA.alloc();
         n.setNumber(num);
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("num")))
+            .push_back(makeRawString(is!("num")))
             .push_back(n);
         r
     }
 
-    fn makeInt(num: u32) -> Ref {
-        Self::makeDouble(num as f64)
+    pub fn makeInt(num: u32) -> Ref {
+        makeDouble(num as f64)
     }
 
     fn makeBinary(left: Ref, op: IString, right: Ref) -> Ref {
@@ -1511,27 +1515,27 @@ impl ValueBuilder {
             is!("=") => {
                 let mut b = ARENA.alloc();
                 b.setBool(true);
-                let mut r = Self::makeRawArray(4);
+                let mut r = makeRawArray(4);
                 r
-                    .push_back(Self::makeRawString(is!("assign")))
+                    .push_back(makeRawString(is!("assign")))
                     .push_back(b)
                     .push_back(left)
                     .push_back(right);
                 r
             },
             is!(",") => {
-                let mut r = Self::makeRawArray(3);
+                let mut r = makeRawArray(3);
                 r
-                    .push_back(Self::makeRawString(is!("seq")))
+                    .push_back(makeRawString(is!("seq")))
                     .push_back(left)
                     .push_back(right);
                 r
             },
             _ => {
-                let mut r = Self::makeRawArray(4);
+                let mut r = makeRawArray(4);
                 r
-                    .push_back(Self::makeRawString(is!("binary")))
-                    .push_back(Self::makeRawString(op))
+                    .push_back(makeRawString(is!("binary")))
+                    .push_back(makeRawString(op))
                     .push_back(left)
                     .push_back(right);
                 r
@@ -1541,42 +1545,42 @@ impl ValueBuilder {
 
 
     fn makePrefix(op: IString, right: Ref) -> Ref {
-        let mut r = Self::makeRawArray(3);
+        let mut r = makeRawArray(3);
         r
-            .push_back(Self::makeRawString(is!("unary-prefix")))
-            .push_back(Self::makeRawString(op))
+            .push_back(makeRawString(is!("unary-prefix")))
+            .push_back(makeRawString(op))
             .push_back(right);
         r
     }
 
 
     fn makeFunction(name: IString) -> Ref {
-        let mut r = Self::makeRawArray(4);
+        let mut r = makeRawArray(4);
         r
-            .push_back(Self::makeRawString(is!("defun")))
-            .push_back(Self::makeRawString(name))
-            .push_back(Self::makeRawArray(0))
-            .push_back(Self::makeRawArray(0));
+            .push_back(makeRawString(is!("defun")))
+            .push_back(makeRawString(name))
+            .push_back(makeRawArray(0))
+            .push_back(makeRawArray(0));
         r
     }
 
     fn appendArgumentToFunction(func: Ref, arg: IString) {
         assert_eq!(func.get(0).getIString(), is!("defun"));
-        func.get(2).push_back(Self::makeRawString(arg));
+        func.get(2).push_back(makeRawString(arg));
     }
 
     fn makeVar(_is_const: bool) -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("var")))
-            .push_back(Self::makeRawArray(0));
+            .push_back(makeRawString(is!("var")))
+            .push_back(makeRawArray(0));
         r
     }
 
     fn appendToVar(var: Ref, name: IString, value: Ref) {
         assert_eq!(var.get(0).getIString(), is!("var"));
-        let mut array = Self::makeRawArray(1);
-        array.push_back(Self::makeRawString(name));
+        let mut array = makeRawArray(1);
+        array.push_back(makeRawString(name));
         if value.is_something() {
             array.push_back(value);
         }
@@ -1584,19 +1588,19 @@ impl ValueBuilder {
     }
 
     fn makeReturn(value: Ref) -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("return")))
+            .push_back(makeRawString(is!("return")))
             .push_back(
-                if value.is_something() { value } else { Self::makeNull() }
+                if value.is_something() { value } else { makeNull() }
             );
         r
     }
 
     fn makeIndexing(target: Ref, index: Ref) -> Ref {
-        let mut r = Self::makeRawArray(3);
+        let mut r = makeRawArray(3);
         r
-            .push_back(Self::makeRawString(is!("sub")))
+            .push_back(makeRawString(is!("sub")))
             .push_back(target)
             .push_back(index);
         r
@@ -1604,21 +1608,21 @@ impl ValueBuilder {
 
 
     fn makeIf(condition: Ref, ifTrue: Ref, ifFalse: Ref) -> Ref {
-        let mut r = Self::makeRawArray(4);
+        let mut r = makeRawArray(4);
         r
-            .push_back(Self::makeRawString(is!("if")))
+            .push_back(makeRawString(is!("if")))
             .push_back(condition)
             .push_back(ifTrue)
             .push_back(
-                if ifFalse.is_something() { ifFalse } else { Self::makeNull() }
+                if ifFalse.is_something() { ifFalse } else { makeNull() }
             );
         r
     }
 
     fn makeConditional(condition: Ref, ifTrue: Ref, ifFalse: Ref) -> Ref {
-        let mut r = Self::makeRawArray(4);
+        let mut r = makeRawArray(4);
         r
-            .push_back(Self::makeRawString(is!("conditional")))
+            .push_back(makeRawString(is!("conditional")))
             .push_back(condition)
             .push_back(ifTrue)
             .push_back(ifFalse);
@@ -1626,74 +1630,74 @@ impl ValueBuilder {
     }
 
     fn makeDo(body: Ref, condition: Ref) -> Ref {
-        let mut r = Self::makeRawArray(3);
+        let mut r = makeRawArray(3);
         r
-            .push_back(Self::makeRawString(is!("do")))
+            .push_back(makeRawString(is!("do")))
             .push_back(condition)
             .push_back(body);
         r
     }
 
     fn makeWhile(condition: Ref, body: Ref) -> Ref {
-        let mut r = Self::makeRawArray(3);
+        let mut r = makeRawArray(3);
         r
-            .push_back(Self::makeRawString(is!("while")))
+            .push_back(makeRawString(is!("while")))
             .push_back(condition)
             .push_back(body);
         r
     }
 
     fn makeBreak(label: Option<IString>) -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("break")))
+            .push_back(makeRawString(is!("break")))
             .push_back(match label {
-                Some(s) => Self::makeRawString(s),
-                None => Self::makeNull(),
+                Some(s) => makeRawString(s),
+                None => makeNull(),
             });
         r
     }
 
     fn makeContinue(label: Option<IString>) -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("continue")))
+            .push_back(makeRawString(is!("continue")))
             .push_back(match label {
-                Some(s) => Self::makeRawString(s),
-                None => Self::makeNull(),
+                Some(s) => makeRawString(s),
+                None => makeNull(),
             });
         r
     }
 
     fn makeLabel(name: IString, body: Ref) -> Ref {
-        let mut r = Self::makeRawArray(3);
+        let mut r = makeRawArray(3);
         r
-            .push_back(Self::makeRawString(is!("label")))
-            .push_back(Self::makeRawString(name))
+            .push_back(makeRawString(is!("label")))
+            .push_back(makeRawString(name))
             .push_back(body);
         r
     }
 
     fn makeSwitch(input: Ref) -> Ref {
-        let mut r = Self::makeRawArray(3);
+        let mut r = makeRawArray(3);
         r
-            .push_back(Self::makeRawString(is!("switch")))
+            .push_back(makeRawString(is!("switch")))
             .push_back(input)
-            .push_back(Self::makeRawArray(0));
+            .push_back(makeRawArray(0));
         r
     }
 
     fn appendCaseToSwitch(switch: Ref, arg: Ref) {
         assert_eq!(switch.get(0).getIString(), is!("switch"));
-        let mut array = Self::makeRawArray(2);
-        array.push_back(arg).push_back(Self::makeRawArray(0));
+        let mut array = makeRawArray(2);
+        array.push_back(arg).push_back(makeRawArray(0));
         switch.get(2).push_back(array);
     }
 
     fn appendDefaultToSwitch(switch: Ref) {
         assert_eq!(switch.get(0).getIString(), is!("switch"));
-        let mut array = Self::makeRawArray(2);
-        array.push_back(Self::makeNull()).push_back(Self::makeRawArray(0));
+        let mut array = makeRawArray(2);
+        array.push_back(makeNull()).push_back(makeRawArray(0));
         switch.get(2).push_back(array);
     }
 
@@ -1712,32 +1716,32 @@ impl ValueBuilder {
     }
 
     fn makeDot(obj: Ref, key: IString) -> Ref {
-        let mut r = Self::makeRawArray(3);
+        let mut r = makeRawArray(3);
         r
-            .push_back(Self::makeRawString(is!("dot")))
+            .push_back(makeRawString(is!("dot")))
             .push_back(obj)
-            .push_back(Self::makeRawString(key));
+            .push_back(makeRawString(key));
         r
     }
 
     fn makeDotRef(obj: Ref, key: Ref) -> Ref {
         assert_eq!(key.get(0).getIString(), is!("name"));
-        Self::makeDot(obj, key.get(1).getIString())
+        makeDot(obj, key.get(1).getIString())
     }
 
     fn makeNew(call: Ref) -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("new")))
+            .push_back(makeRawString(is!("new")))
             .push_back(call);
         r
     }
 
     fn makeArray() -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("array")))
-            .push_back(Self::makeRawArray(0));
+            .push_back(makeRawString(is!("array")))
+            .push_back(makeRawArray(0));
         r
     }
 
@@ -1747,17 +1751,17 @@ impl ValueBuilder {
     }
 
     fn makeObject() -> Ref {
-        let mut r = Self::makeRawArray(2);
+        let mut r = makeRawArray(2);
         r
-            .push_back(Self::makeRawString(is!("object")))
-            .push_back(Self::makeRawArray(0));
+            .push_back(makeRawString(is!("object")))
+            .push_back(makeRawArray(0));
         r
     }
 
     fn appendToObject(array: Ref, key: IString, value: Ref) {
         assert_eq!(array.get(0).getIString(), is!("object"));
-        let mut array = Self::makeRawArray(2);
-        array.push_back(Self::makeRawString(key)).push_back(value);
+        let mut array = makeRawArray(2);
+        array.push_back(makeRawString(key)).push_back(value);
         array.get(1).push_back(array);
     }
 }
