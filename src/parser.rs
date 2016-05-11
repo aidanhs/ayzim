@@ -346,8 +346,8 @@ impl Parser {
                 pp!{curr+=2};
                 continue
             }
+            return
         }
-        return
     }
 
     // Parses an element in a list of such elements, e.g. list of statements in a block, or list of parameters in a call
