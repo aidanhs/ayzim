@@ -17,6 +17,7 @@ use phf;
 use phf_builder;
 
 use super::IString;
+use super::cashew::builder;
 use super::cashew::Ref;
 
 lazy_static! {
@@ -140,6 +141,10 @@ fn is32Bit(x: f64) -> bool {
     if x.is_sign_positive() { return x as u32 as f64 == x }
     return x as i32 as f64 == x
 }
+fn f64tou32(x: f64) -> u32 {
+    assert!(is32Bit(x) && x >= 0f64);
+    x as u32
+}
 unsafe fn hasChar(list: *const u8, x: u8) -> bool {
     while p!{list[0]} != b'\0' {
         if p!{list[0]} == x {
@@ -171,6 +176,28 @@ impl Frag {
         match self.data {
             FragData::Int(_) | FragData::Double(_) => true,
             _ => false,
+        }
+    }
+
+    fn getStr(&self) -> IString {
+        match self.data {
+            FragData::Keyword(ref s) |
+            FragData::Operator(ref s) |
+            FragData::Ident(ref s) |
+            FragData::String(ref s) |
+            FragData::Separator(ref s) => s.clone(),
+            FragData::Int(_) |
+            FragData::Double(_) => panic!(),
+        }
+    }
+
+    fn parse(&self) -> Ref {
+        match self.data {
+            FragData::Ident(ref s) =>  builder::makeName(s.clone()),
+            FragData::String(ref s) => builder::makeString(s.clone()),
+            FragData::Int(f) =>    builder::makeInt(f64tou32(f)),
+            FragData::Double(f) => builder::makeDouble(f),
+            _ => panic!(),
         }
     }
 
@@ -290,14 +317,14 @@ impl Frag {
     }
 }
 
-enum ExpressionElement {
+enum ExprElt {
     Node(Ref),
     Op(IString),
 }
 
 // RSTODO: may not be needed?
-//  ExpressionElement(NodeRef n) : isNode(true), node(n) {}
-//  ExpressionElement(IString o) : isNode(false), op(o) {}
+//  ExprElt(NodeRef n) : isNode(true), node(n) {}
+//  ExprElt(IString o) : isNode(false), op(o) {}
 //
 //  NodeRef getNode() {
 //    assert(isNode);
@@ -314,186 +341,152 @@ struct Parser {
     // This is a list of the current stack of node-operator-node-operator-etc.
     // this works by each parseExpression call appending to the vector; then
     // recursing out, and the toplevel sorts it all
-    expressionPartsStack: Vec<Vec<ExpressionElement>>,
+    expressionPartsStack: Vec<Vec<ExprElt>>,
 
     allSource: *const u8,
     allSize: usize,
 }
 
-impl Parser {
-    unsafe fn skipSpace(curr: &mut *const u8) {
-        while pp!{curr[0]} != b'\0' {
-            if isSpace(pp!{curr[0]}) {
+unsafe fn skipSpace(curr: &mut *const u8) {
+    while pp!{curr[0]} != b'\0' {
+        if isSpace(pp!{curr[0]}) {
+            pp!{curr+=1};
+            continue
+        }
+        if pp!{curr[0]} == b'/' && pp!{curr[1]} == b'/' {
+            pp!{curr+=2};
+            while pp!{curr[0]} != b'\0' && pp!{curr[0]} != b'\n' {
                 pp!{curr+=1};
-                continue
             }
-            if pp!{curr[0]} == b'/' && pp!{curr[1]} == b'/' {
-                pp!{curr+=2};
-                while pp!{curr[0]} != b'\0' && pp!{curr[0]} != b'\n' {
-                    pp!{curr+=1};
-                }
-                if pp!{curr[0]} != b'\0' {
-                    pp!{curr+=1};
-                }
-                continue
+            if pp!{curr[0]} != b'\0' {
+                pp!{curr+=1};
             }
-            if pp!{curr[0]} == b'/' && pp!{curr[1]} == b'*' {
-                pp!{curr+=2};
-                while pp!{curr[0]} != b'\0' &&
-                        (pp!{curr[0]} != b'*' || pp!{curr[1]} != b'/') {
-                    pp!{curr+=1};
-                }
-                pp!{curr+=2};
-                continue
+            continue
+        }
+        if pp!{curr[0]} == b'/' && pp!{curr[1]} == b'*' {
+            pp!{curr+=2};
+            while pp!{curr[0]} != b'\0' &&
+                    (pp!{curr[0]} != b'*' || pp!{curr[1]} != b'/') {
+                pp!{curr+=1};
             }
-            return
+            pp!{curr+=2};
+            continue
+        }
+        return
+    }
+}
+
+impl Parser {
+    // Parses an element in a list of such elements, e.g. list of statements in a block, or list of parameters in a call
+    unsafe fn parseElement(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+        //dump("parseElement", src);
+        skipSpace(src);
+        let frag = Frag::from_str(*src);
+        pp!{src+=frag.size as isize};
+        match frag.data {
+            FragData::Keyword(_) => self.parseAfterKeyword(&frag, src, seps),
+            FragData::Ident(_) => self.parseAfterIdent(&frag, src, seps),
+            FragData::String(_) |
+            FragData::Int(_) |
+            FragData::Double(_) => self.parseExpression(ExprElt::Node(frag.parse()), src, seps),
+            FragData::Separator(s) => {
+                let eenode = match s {
+                    is!("(") => self.parseAfterParen(src),
+                    is!("[") => self.parseAfterBrace(src),
+                    is!("{") => self.parseAfterCurly(src),
+                    _ => panic!(),
+                };
+                self.parseExpression(ExprElt::Node(eenode), src, seps)
+            },
+            FragData::Operator(s) => self.parseExpression(ExprElt::Op(s), src, seps),
         }
     }
 
-    // Parses an element in a list of such elements, e.g. list of statements in a block, or list of parameters in a call
-    // RSTODO
-    fn parseElement(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
+    unsafe fn parseAfterKeyword(&mut self, frag: &Frag, src: &mut *const u8, seps: *const u8) -> Ref {
+        skipSpace(src);
+        match frag.getStr() {
+            is!("function") => self.parseFunction(src, seps),
+            is!("var") |
+            is!("const") => self.parseVar(src, seps, false),
+            is!("return") => self.parseReturn(src, seps),
+            is!("if") => self.parseIf(src, seps),
+            is!("do") => self.parseDo(src, seps),
+            is!("while") => self.parseWhile(src, seps),
+            is!("break") => self.parseBreak(src, seps),
+            is!("continue") => self.parseContinue(src, seps),
+            is!("switch") => self.parseSwitch(src, seps),
+            is!("new") => self.parseNew(src, seps),
+            _ => panic!(),
+        }
     }
-//  NodeRef parseElement(char*& src, const char* seps=";") {
-//    //dump("parseElement", src);
-//    skipSpace(src);
-//    Frag frag(src);
-//    src += frag.size;
-//    switch (frag.type) {
-//      case KEYWORD: {
-//        return parseAfterKeyword(frag, src, seps);
-//      }
-//      case IDENT: {
-//        return parseAfterIdent(frag, src, seps);
-//      }
-//      case STRING:
-//      case INT:
-//      case DOUBLE: {
-//        return parseExpression(parseFrag(frag), src, seps);
-//      }
-//      case SEPARATOR: {
-//        if (frag.str == OPEN_PAREN) return parseExpression(parseAfterParen(src), src, seps);
-//        if (frag.str == OPEN_BRACE) return parseExpression(parseAfterBrace(src), src, seps);
-//        if (frag.str == OPEN_CURLY) return parseExpression(parseAfterCurly(src), src, seps);
-//        abort();
-//      }
-//      case OPERATOR: {
-//        return parseExpression(frag.str, src, seps);
-//      }
-//      default: /* dump("parseElement", src); printf("bad frag type: %d\n", frag.type); */ abort();
-//    }
-//    return nullptr;
-//  }
+
+    // RSTODO: remove seps?
+    unsafe fn parseFunction(&mut self, src: &mut *const u8, _seps: *const u8) -> Ref {
+        let name_str = match Frag::from_str(*src) {
+            Frag { data: FragData::Ident(s), size: n } => { pp!{src+=n as isize}; s },
+            Frag { data: FragData::Separator(is!("(")), .. } => is!(""),
+            _ => panic!(),
+        };
+        let ret = builder::makeFunction(name_str);
+        skipSpace(src);
+        assert!(pp!{src[0]} == b'(');
+        pp!{src+=1};
+        loop {
+            skipSpace(src);
+            if pp!{src[0]} == b')' { break }
+            if let Frag { data: FragData::Ident(s), size: n } = Frag::from_str(*src) {
+                pp!{src+=n as isize};
+                builder::appendArgumentToFunction(ret, s)
+            } else {
+                panic!()
+            }
+            skipSpace(src);
+            match pp!{src[0]} {
+                b')' => break,
+                b',' => { pp!{src+=1}; continue },
+                _ => panic!(),
+            }
+        }
+        pp!{src+=1};
+        builder::setBlockContent(ret, self.parseBracketedBlock(src));
+        // TODO: parse expression?
+        ret
+    }
+
+    // RSTODO: remove seps?
+    unsafe fn parseVar(&mut self, src: &mut *const u8, _seps: *const u8, is_const: bool) -> Ref {
+        let ret = builder::makeVar(is_const);
+        loop {
+            skipSpace(src);
+            if pp!{src[0]} == b';' { break }
+            let name_str = if let Frag { data: FragData::Ident(s), size: n } = Frag::from_str(*src) {
+                pp!{src+=n as isize};
+                s
+            } else {
+                panic!()
+            };
+            skipSpace(src);
+            let value = if pp!{src[0]} == b'=' {
+                pp!{src+=1};
+                skipSpace(src);
+                Some(self.parseElement(src, b";,\0".as_ptr()))
+            } else {
+                None
+            };
+            builder::appendToVar(ret, name_str, value);
+            skipSpace(src);
+            match pp!{src[0]} {
+                b';' => break,
+                b',' => { pp!{src+=1}; continue },
+                _ => panic!(),
+            }
+        }
+        pp!{src+=1};
+        ret
+    }
 
     // RSTODO
-    fn parseFrag(&mut self, _frag: &Frag) -> Ref {
-        panic!()
-    }
-//  NodeRef parseFrag(Frag& frag) {
-//    switch (frag.type) {
-//      case IDENT:  return Builder::makeName(frag.str);
-//      case STRING: return Builder::makeString(frag.str);
-//      case INT:    return Builder::makeInt(uint32_t(frag.num));
-//      case DOUBLE: return Builder::makeDouble(frag.num);
-//      default: abort();
-//    }
-//    return nullptr;
-//  }
-
-    // RSTODO
-    fn parseAfterKeyword(&mut self, _frag: &Frag, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseAfterKeyword(Frag& frag, char*& src, const char* seps) {
-//    skipSpace(src);
-//    if (frag.str == FUNCTION) return parseFunction(src, seps);
-//    else if (frag.str == VAR) return parseVar(src, seps, false);
-//    else if (frag.str == CONST) return parseVar(src, seps, true);
-//    else if (frag.str == RETURN) return parseReturn(src, seps);
-//    else if (frag.str == IF) return parseIf(src, seps);
-//    else if (frag.str == DO) return parseDo(src, seps);
-//    else if (frag.str == WHILE) return parseWhile(src, seps);
-//    else if (frag.str == BREAK) return parseBreak(src, seps);
-//    else if (frag.str == CONTINUE) return parseContinue(src, seps);
-//    else if (frag.str == SWITCH) return parseSwitch(src, seps);
-//    else if (frag.str == NEW) return parseNew(src, seps);
-//    dump(frag.str.str, src);
-//    abort();
-//    return nullptr;
-//  }
-
-    // RSTODO
-    fn parseFunction(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseFunction(char*& src, const char* seps) {
-//    Frag name(src);
-//    if (name.type == IDENT) {
-//      src += name.size;
-//    } else {
-//      assert(name.type == SEPARATOR && name.str[0] == '(');
-//      name.str = IString();
-//    }
-//    NodeRef ret = Builder::makeFunction(name.str);
-//    skipSpace(src);
-//    assert(*src == '(');
-//    src++;
-//    while (1) {
-//      skipSpace(src);
-//      if (*src == ')') break;
-//      Frag arg(src);
-//      assert(arg.type == IDENT);
-//      src += arg.size;
-//      Builder::appendArgumentToFunction(ret, arg.str);
-//      skipSpace(src);
-//      if (*src == ')') break;
-//      if (*src == ',') {
-//        src++;
-//        continue;
-//      }
-//      abort();
-//    }
-//    src++;
-//    Builder::setBlockContent(ret, parseBracketedBlock(src));
-//    // TODO: parse expression?
-//    return ret;
-//  }
-
-    // RSTODO
-    fn parseVar(&mut self, _src: &mut *const u8, _seps: *const u8, _is_const: bool) -> Ref {
-        panic!()
-    }
-//  NodeRef parseVar(char*& src, const char* seps, bool is_const) {
-//    NodeRef ret = Builder::makeVar(is_const);
-//    while (1) {
-//      skipSpace(src);
-//      if (*src == ';') break;
-//      Frag name(src);
-//      assert(name.type == IDENT);
-//      NodeRef value;
-//      src += name.size;
-//      skipSpace(src);
-//      if (*src == '=') {
-//        src++;
-//        skipSpace(src);
-//        value = parseElement(src, ";,");
-//      }
-//      Builder::appendToVar(ret, name.str, value);
-//      skipSpace(src);
-//      if (*src == ';') break;
-//      if (*src == ',') {
-//        src++;
-//        continue;
-//      }
-//      abort();
-//    }
-//    src++;
-//    return ret;
-//  }
-
-    // RSTODO
-    fn parseReturn(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseReturn(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseReturn(char*& src, const char* seps) {
@@ -506,7 +499,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseIf(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseIf(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseIf(char*& src, const char* seps) {
@@ -525,7 +518,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseDo(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseDo(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseDo(char*& src, const char* seps) {
@@ -539,7 +532,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseWhile(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseWhile(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseWhile(char*& src, const char* seps) {
@@ -549,7 +542,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseBreak(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseBreak(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseBreak(char*& src, const char* seps) {
@@ -560,7 +553,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseContinue(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseContinue(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseContinue(char*& src, const char* seps) {
@@ -571,7 +564,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseSwitch(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseSwitch(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseSwitch(char*& src, const char* seps) {
@@ -631,7 +624,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseNew(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseNew(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseNew(char*& src, const char* seps) {
@@ -639,7 +632,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseAfterIdent(&mut self, _frag: &Frag, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseAfterIdent(&mut self, _frag: &Frag, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseAfterIdent(Frag& frag, char*& src, const char* seps) {
@@ -662,7 +655,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseCall(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
+    unsafe fn parseCall(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseCall(NodeRef target, char*& src) {
@@ -689,7 +682,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseIndexing(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
+    unsafe fn parseIndexing(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseIndexing(NodeRef target, char*& src) {
@@ -706,7 +699,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseDotting(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
+    unsafe fn parseDotting(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseDotting(NodeRef target, char*& src) {
@@ -719,7 +712,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseAfterParen(&mut self, _src: &mut *const u8) -> Ref {
+    unsafe fn parseAfterParen(&mut self, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseAfterParen(char*& src) {
@@ -735,7 +728,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseAfterBrace(&mut self, _src: &mut *const u8) -> Ref {
+    unsafe fn parseAfterBrace(&mut self, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseAfterBrace(char*& src) {
@@ -760,7 +753,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseAfterCurly(&mut self, _src: &mut *const u8) -> Ref {
+    unsafe fn parseAfterCurly(&mut self, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseAfterCurly(char*& src) {
@@ -791,7 +784,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn makeBinary(_left: Ref, _op: IString, _right: Ref) -> Ref {
+    unsafe fn makeBinary(_left: Ref, _op: IString, _right: Ref) -> Ref {
         panic!()
     }
 //  NodeRef makeBinary(NodeRef left, IString op, NodeRef right) {
@@ -803,10 +796,10 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseExpression(&mut self, _initial: ExpressionElement, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseExpression(&mut self, _initial: ExprElt, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
-//  NodeRef parseExpression(ExpressionElement initial, char*&src, const char* seps) {
+//  NodeRef parseExpression(ExprElt initial, char*&src, const char* seps) {
 //    //dump("parseExpression", src);
 //    ExpressionParts& parts = expressionPartsStack.back();
 //    skipSpace(src);
@@ -899,7 +892,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseBlock(&mut self, _src: &mut *const u8, _seps: *const u8, _keywordSep1: Option<IString>, _keywordSep2: Option<IString>) -> Ref {
+    unsafe fn parseBlock(&mut self, _src: &mut *const u8, _seps: *const u8, _keywordSep1: Option<IString>, _keywordSep2: Option<IString>) -> Ref {
         panic!()
     }
 //  // Parses a block of code (e.g. a bunch of statements inside {,}, or the top level of o file)
@@ -929,7 +922,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseBracketedBlock(&mut self, _src: &mut *const u8) -> Ref {
+    unsafe fn parseBracketedBlock(&mut self, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseBracketedBlock(char*& src) {
@@ -943,7 +936,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseElementOrStatement(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseElementOrStatement(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseElementOrStatement(char*& src, const char *seps) {
@@ -972,7 +965,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseMaybeBracketed(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseMaybeBracketed(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseMaybeBracketed(char*& src, const char *seps) {
@@ -981,7 +974,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn parseParenned(&mut self, _src: &mut *const u8) -> Ref {
+    unsafe fn parseParenned(&mut self, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  NodeRef parseParenned(char*& src) {
@@ -1004,7 +997,7 @@ impl Parser {
     }
 
     // RSTODO
-    fn parseToplevel(&mut self, _src: &mut *const u8) -> Ref {
+    unsafe fn parseToplevel(&mut self, _src: &mut *const u8) -> Ref {
         panic!()
     }
 //  // Highest-level parsing, as of a JavaScript script file.
@@ -1020,7 +1013,7 @@ impl Parser {
     // Debugging
 
     // RSTODO
-    fn dump(&mut self, _msg: *const u8, _curr: *const u8) {
+    unsafe fn dump(&mut self, _msg: *const u8, _curr: *const u8) {
         panic!()
     }
 //  static void dump(const char *where, char* curr) {
@@ -1047,7 +1040,7 @@ impl Parser {
 //  }
 
     // RSTODO
-    fn dumpParts(_parts: Vec<Vec<ExpressionElement>>, _i: usize) {
+    unsafe fn dumpParts(_parts: Vec<Vec<ExprElt>>, _i: usize) {
         panic!()
     }
 //  void dumpParts(ExpressionParts& parts, int i) {

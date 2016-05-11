@@ -1457,7 +1457,7 @@ pub mod builder {
         r
     }
 
-    fn setBlockContent(target: Ref, block: Ref) {
+    pub fn setBlockContent(target: Ref, block: Ref) {
         match target.get(0).getIString() {
             is!("toplevel") => { target.get(1).setArray(block.get(1).getArray()); },
             is!("defun") => { target.get(3).setArray(block.get(1).getArray()); },
@@ -1554,7 +1554,7 @@ pub mod builder {
     }
 
 
-    fn makeFunction(name: IString) -> Ref {
+    pub fn makeFunction(name: IString) -> Ref {
         let mut r = makeRawArray(4);
         r
             .push_back(makeRawString(is!("defun")))
@@ -1564,12 +1564,12 @@ pub mod builder {
         r
     }
 
-    fn appendArgumentToFunction(func: Ref, arg: IString) {
+    pub fn appendArgumentToFunction(func: Ref, arg: IString) {
         assert_eq!(func.get(0).getIString(), is!("defun"));
         func.get(2).push_back(makeRawString(arg));
     }
 
-    fn makeVar(_is_const: bool) -> Ref {
+    pub fn makeVar(_is_const: bool) -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("var")))
@@ -1577,11 +1577,11 @@ pub mod builder {
         r
     }
 
-    fn appendToVar(var: Ref, name: IString, value: Ref) {
+    pub fn appendToVar(var: Ref, name: IString, maybe_value: Option<Ref>) {
         assert_eq!(var.get(0).getIString(), is!("var"));
         let mut array = makeRawArray(1);
         array.push_back(makeRawString(name));
-        if value.is_something() {
+        if let Some(value) = maybe_value {
             array.push_back(value);
         }
         var.get(1).push_back(array);
