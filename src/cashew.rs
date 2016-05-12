@@ -1470,7 +1470,7 @@ pub mod builder {
         block.get(1).push_back(element);
     }
 
-    fn makeCall(target: Ref) -> Ref {
+    pub fn makeCall(target: Ref) -> Ref {
         let mut r = makeRawArray(3);
         r
             .push_back(makeRawString(is!("call")))
@@ -1479,7 +1479,7 @@ pub mod builder {
         r
     }
 
-    fn appendToCall(call: Ref, element: Ref) {
+    pub fn appendToCall(call: Ref, element: Ref) {
         assert_eq!(call.get(0).getIString(), is!("call"));
         call.get(2).push_back(element);
     }
@@ -1544,7 +1544,7 @@ pub mod builder {
     }
 
 
-    fn makePrefix(op: IString, right: Ref) -> Ref {
+    pub fn makePrefix(op: IString, right: Ref) -> Ref {
         let mut r = makeRawArray(3);
         r
             .push_back(makeRawString(is!("unary-prefix")))
@@ -1587,13 +1587,11 @@ pub mod builder {
         var.get(1).push_back(array);
     }
 
-    fn makeReturn(value: Ref) -> Ref {
+    pub fn makeReturn(value: Option<Ref>) -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("return")))
-            .push_back(
-                if value.is_something() { value } else { makeNull() }
-            );
+            .push_back(value.unwrap_or_else(makeNull));
         r
     }
 
@@ -1607,15 +1605,13 @@ pub mod builder {
     }
 
 
-    fn makeIf(condition: Ref, ifTrue: Ref, ifFalse: Ref) -> Ref {
+    pub fn makeIf(condition: Ref, ifTrue: Ref, ifFalse: Option<Ref>) -> Ref {
         let mut r = makeRawArray(4);
         r
             .push_back(makeRawString(is!("if")))
             .push_back(condition)
             .push_back(ifTrue)
-            .push_back(
-                if ifFalse.is_something() { ifFalse } else { makeNull() }
-            );
+            .push_back(ifFalse.unwrap_or_else(makeNull));
         r
     }
 
@@ -1629,7 +1625,7 @@ pub mod builder {
         r
     }
 
-    fn makeDo(body: Ref, condition: Ref) -> Ref {
+    pub fn makeDo(body: Ref, condition: Ref) -> Ref {
         let mut r = makeRawArray(3);
         r
             .push_back(makeRawString(is!("do")))
@@ -1638,7 +1634,7 @@ pub mod builder {
         r
     }
 
-    fn makeWhile(condition: Ref, body: Ref) -> Ref {
+    pub fn makeWhile(condition: Ref, body: Ref) -> Ref {
         let mut r = makeRawArray(3);
         r
             .push_back(makeRawString(is!("while")))
@@ -1647,7 +1643,7 @@ pub mod builder {
         r
     }
 
-    fn makeBreak(label: Option<IString>) -> Ref {
+    pub fn makeBreak(label: Option<IString>) -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("break")))
@@ -1658,7 +1654,7 @@ pub mod builder {
         r
     }
 
-    fn makeContinue(label: Option<IString>) -> Ref {
+    pub fn makeContinue(label: Option<IString>) -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("continue")))
@@ -1669,7 +1665,7 @@ pub mod builder {
         r
     }
 
-    fn makeLabel(name: IString, body: Ref) -> Ref {
+    pub fn makeLabel(name: IString, body: Ref) -> Ref {
         let mut r = makeRawArray(3);
         r
             .push_back(makeRawString(is!("label")))
@@ -1678,7 +1674,7 @@ pub mod builder {
         r
     }
 
-    fn makeSwitch(input: Ref) -> Ref {
+    pub fn makeSwitch(input: Ref) -> Ref {
         let mut r = makeRawArray(3);
         r
             .push_back(makeRawString(is!("switch")))
@@ -1687,21 +1683,21 @@ pub mod builder {
         r
     }
 
-    fn appendCaseToSwitch(switch: Ref, arg: Ref) {
+    pub fn appendCaseToSwitch(switch: Ref, arg: Ref) {
         assert_eq!(switch.get(0).getIString(), is!("switch"));
         let mut array = makeRawArray(2);
         array.push_back(arg).push_back(makeRawArray(0));
         switch.get(2).push_back(array);
     }
 
-    fn appendDefaultToSwitch(switch: Ref) {
+    pub fn appendDefaultToSwitch(switch: Ref) {
         assert_eq!(switch.get(0).getIString(), is!("switch"));
         let mut array = makeRawArray(2);
         array.push_back(makeNull()).push_back(makeRawArray(0));
         switch.get(2).push_back(array);
     }
 
-    fn appendCodeToSwitch(switch: Ref, code: Ref, explicitBlock: bool) {
+    pub fn appendCodeToSwitch(switch: Ref, code: Ref, explicitBlock: bool) {
         assert_eq!(switch.get(0).getIString(), is!("switch"));
         assert_eq!(code.get(0).getIString(), is!("block"));
         let mut switchtarget = switch.get(2).back().unwrap().back().unwrap();
@@ -1729,7 +1725,7 @@ pub mod builder {
         makeDot(obj, key.get(1).getIString())
     }
 
-    fn makeNew(call: Ref) -> Ref {
+    pub fn makeNew(call: Ref) -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("new")))

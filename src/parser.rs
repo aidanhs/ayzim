@@ -154,6 +154,8 @@ unsafe fn hasChar(list: *const u8, x: u8) -> bool {
     false
 }
 
+// not eq because float NaN is not reflexive
+#[derive(PartialEq)]
 enum FragData {
     Keyword(IString),
     Operator(IString),
@@ -466,13 +468,12 @@ impl Parser {
                 panic!()
             };
             skipSpace(src);
-            let value = if pp!{src[0]} == b'=' {
+            let mut value = None;
+            if pp!{src[0]} == b'=' {
                 pp!{src+=1};
                 skipSpace(src);
-                Some(self.parseElement(src, b";,\0".as_ptr()))
-            } else {
-                None
-            };
+                value = Some(self.parseElement(src, b";,\0".as_ptr()))
+            }
             builder::appendToVar(ret, name_str, value);
             skipSpace(src);
             match pp!{src[0]} {
@@ -485,201 +486,192 @@ impl Parser {
         ret
     }
 
-    // RSTODO
-    unsafe fn parseReturn(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
+    unsafe fn parseReturn(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+        skipSpace(src);
+        let mut value = None;
+        if !hasChar(seps, pp!{src[0]}) {
+            value = Some(self.parseElement(src, seps))
+        }
+        assert!(hasChar(seps, pp!{src[0]}));
+        if pp!{src[0]} == b';' { pp!{src+=1} }
+        builder::makeReturn(value)
     }
-//  NodeRef parseReturn(char*& src, const char* seps) {
-//    skipSpace(src);
-//    NodeRef value = !hasChar(seps, *src) ? parseElement(src, seps) : nullptr;
-//    skipSpace(src);
-//    assert(hasChar(seps, *src));
-//    if (*src == ';') src++;
-//    return Builder::makeReturn(value);
-//  }
+
+    unsafe fn parseIf(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+        let condition = self.parseParenned(src);
+        let ifTrue = self.parseMaybeBracketed(src, seps);
+        skipSpace(src);
+        let mut ifFalse = None;
+        if !hasChar(seps, pp!{src[0]}) {
+            let next = Frag::from_str(*src);
+            if let Frag { data: FragData::Keyword(is!("else")), size: n } = next {
+                pp!{src+=n as isize};
+                ifFalse = Some(self.parseMaybeBracketed(src, seps))
+            }
+        }
+        builder::makeIf(condition, ifTrue, ifFalse)
+    }
+
+    unsafe fn parseDo(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+        let body = self.parseMaybeBracketed(src, seps);
+        skipSpace(src);
+        let next = Frag::from_str(*src);
+        if let Frag { data: FragData::Keyword(is!("while")), size: n } = next {
+            pp!{src+=n as isize};
+        } else {
+            panic!()
+        }
+        let condition = self.parseParenned(src);
+        builder::makeDo(body, condition)
+    }
+
+    unsafe fn parseWhile(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+        let condition = self.parseParenned(src);
+        let body = self.parseMaybeBracketed(src, seps);
+        builder::makeWhile(condition, body)
+    }
+
+    // RSTODO: remove seps?
+    unsafe fn parseBreak(&mut self, src: &mut *const u8, _seps: *const u8) -> Ref {
+        skipSpace(src);
+        let next = Frag::from_str(*src);
+        let mut arg = None;
+        if let Frag { data: FragData::Ident(s), size: n } = next {
+            pp!{src+=n as isize};
+            arg = Some(s)
+        }
+        builder::makeBreak(arg)
+    }
+
+    // RSTODO: remove seps?
+    unsafe fn parseContinue(&mut self, src: &mut *const u8, _seps: *const u8) -> Ref {
+        skipSpace(src);
+        let next = Frag::from_str(*src);
+        let mut arg = None;
+        if let Frag { data: FragData::Ident(s), size: n } = next {
+            pp!{src+=n as isize};
+            arg = Some(s)
+        }
+        builder::makeContinue(arg)
+
+    }
+
+    // RSTODO: remove seps?
+    unsafe fn parseSwitch(&mut self, src: &mut *const u8, _seps: *const u8) -> Ref {
+        let ret = builder::makeSwitch(self.parseParenned(src));
+        skipSpace(src);
+        assert!(pp!{src[0]} == b'{');
+        pp!{src+=1};
+        loop {
+            // find all cases and possibly a default
+            skipSpace(src);
+            if pp!{src[0]} == b'}' { break }
+            let next = Frag::from_str(*src);
+            match next {
+                Frag { data: FragData::Keyword(is!("case")), size: n } => {
+                    pp!{src+=n as isize};
+                    skipSpace(src);
+                    let value = Frag::from_str(*src);
+                    let arg = if value.isNumber() {
+                        pp!{src+=value.size as isize};
+                        value.parse()
+                    } else {
+                        assert!(value.data == FragData::Operator(is!("-")));
+                        pp!{src+=value.size as isize};
+                        skipSpace(src);
+                        let value2 = Frag::from_str(*src);
+                        assert!(value2.isNumber());
+                        pp!{src+=value2.size as isize};
+                        builder::makePrefix(is!("-"), value2.parse())
+                    };
+                    builder::appendCaseToSwitch(ret, arg);
+                    skipSpace(src);
+                    assert!(pp!{src[0]} == b':');
+                    pp!{src+=1};
+                    continue
+                },
+                Frag { data: FragData::Keyword(is!("default")), size: n } => {
+                    pp!{src+=n as isize};
+                    builder::appendDefaultToSwitch(ret);
+                    skipSpace(src);
+                    assert!(pp!{src[0]} == b':');
+                    pp!{src+=1};
+                    continue
+                },
+                // otherwise, may be some keyword that happens to start a block
+                // (e.g. case 1: _return_ 5)
+                _ => ()
+            }
+            // not case X: or default: or }, so must be some code
+            skipSpace(src);
+            let explicitBlock = pp!{src[0]} == b'{';
+            let subBlock = if explicitBlock {
+                self.parseBracketedBlock(src)
+            } else {
+                self.parseBlock(src, b";}\0".as_ptr(), Some(is!("case")), Some(is!("default")))
+            };
+            builder::appendCodeToSwitch(ret, subBlock, explicitBlock);
+        }
+        skipSpace(src);
+        assert!(pp!{src[0]} == b'}');
+        pp!{src+=1};
+        ret
+    }
+
+    unsafe fn parseNew(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+        builder::makeNew(self.parseElement(src, seps))
+    }
 
     // RSTODO
-    unsafe fn parseIf(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
+    unsafe fn parseAfterIdent(&mut self, frag: &Frag, src: &mut *const u8, seps: *const u8) -> Ref {
+        skipSpace(src);
+        match pp!{src[0]} {
+            b'(' => {
+                let exprelt = ExprElt::Node(self.parseCall(frag.parse(), src));
+                self.parseExpression(exprelt, src, seps)
+            },
+            b'[' => {
+                let exprelt = ExprElt::Node(self.parseIndexing(frag.parse(), src));
+                self.parseExpression(exprelt, src, seps)
+            },
+            b':' if self.expressionPartsStack.last().unwrap().len() == 0 => {
+                pp!{src+=1};
+                skipSpace(src);
+                let inner = if pp!{src[0]} == b'{' {
+                    // context lets us know this is not an object, but a block
+                    self.parseBracketedBlock(src)
+                } else {
+                    self.parseElement(src, seps)
+                };
+                builder::makeLabel(frag.getStr(), inner)
+            },
+            b'.' => {
+                let exprelt = ExprElt::Node(self.parseDotting(frag.parse(), src));
+                self.parseExpression(exprelt, src, seps)
+            },
+            _ => self.parseExpression(ExprElt::Node(frag.parse()), src, seps),
+        }
     }
-//  NodeRef parseIf(char*& src, const char* seps) {
-//    NodeRef condition = parseParenned(src);
-//    NodeRef ifTrue = parseMaybeBracketed(src, seps);
-//    skipSpace(src);
-//    NodeRef ifFalse;
-//    if (!hasChar(seps, *src)) {
-//      Frag next(src);
-//      if (next.type == KEYWORD && next.str == ELSE) {
-//        src += next.size;
-//        ifFalse = parseMaybeBracketed(src, seps);
-//      }
-//    }
-//    return Builder::makeIf(condition, ifTrue, ifFalse);
-//  }
 
-    // RSTODO
-    unsafe fn parseDo(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
+    // RSTODO: are the expressionPartsStack bits in this function nops?
+    unsafe fn parseCall(&mut self, target: Ref, src: &mut *const u8) -> Ref {
+        self.expressionPartsStack.push(vec![]);
+        assert!(pp!{src[0]} == b'(');
+        pp!{src+=1};
+        let ret = builder::makeCall(target);
+        loop {
+            skipSpace(src);
+            if pp!{src[0]} == b')' { break }
+            builder::appendToCall(ret, self.parseElement(src, b",)\0".as_ptr()));
+            skipSpace(src);
+            if pp!{src[0]} == b')' { break }
+            if pp!{src[0]} == b',' { pp!{src+=1}; continue }
+            panic!()
+        }
+        pp!{src+=1};
+        assert!(self.expressionPartsStack.pop().unwrap().len() == 0);
+        ret
     }
-//  NodeRef parseDo(char*& src, const char* seps) {
-//    NodeRef body = parseMaybeBracketed(src, seps);
-//    skipSpace(src);
-//    Frag next(src);
-//    assert(next.type == KEYWORD && next.str == WHILE);
-//    src += next.size;
-//    NodeRef condition = parseParenned(src);
-//    return Builder::makeDo(body, condition);
-//  }
-
-    // RSTODO
-    unsafe fn parseWhile(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseWhile(char*& src, const char* seps) {
-//    NodeRef condition = parseParenned(src);
-//    NodeRef body = parseMaybeBracketed(src, seps);
-//    return Builder::makeWhile(condition, body);
-//  }
-
-    // RSTODO
-    unsafe fn parseBreak(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseBreak(char*& src, const char* seps) {
-//    skipSpace(src);
-//    Frag next(src);
-//    if (next.type == IDENT) src += next.size;
-//    return Builder::makeBreak(next.type == IDENT ? next.str : IString());
-//  }
-
-    // RSTODO
-    unsafe fn parseContinue(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseContinue(char*& src, const char* seps) {
-//    skipSpace(src);
-//    Frag next(src);
-//    if (next.type == IDENT) src += next.size;
-//    return Builder::makeContinue(next.type == IDENT ? next.str : IString());
-//  }
-
-    // RSTODO
-    unsafe fn parseSwitch(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseSwitch(char*& src, const char* seps) {
-//    NodeRef ret = Builder::makeSwitch(parseParenned(src));
-//    skipSpace(src);
-//    assert(*src == '{');
-//    src++;
-//    while (1) {
-//      // find all cases and possibly a default
-//      skipSpace(src);
-//      if (*src == '}') break;
-//      Frag next(src);
-//      if (next.type == KEYWORD) {
-//        if (next.str == CASE) {
-//          src += next.size;
-//          skipSpace(src);
-//          NodeRef arg;
-//          Frag value(src);
-//          if (value.isNumber()) {
-//            arg = parseFrag(value);
-//            src += value.size;
-//          } else {
-//            assert(value.type == OPERATOR);
-//            assert(value.str == MINUS);
-//            src += value.size;
-//            skipSpace(src);
-//            Frag value2(src);
-//            assert(value2.isNumber());
-//            arg = Builder::makePrefix(MINUS, parseFrag(value2));
-//            src += value2.size;
-//          }
-//          Builder::appendCaseToSwitch(ret, arg);
-//          skipSpace(src);
-//          assert(*src == ':');
-//          src++;
-//          continue;
-//        } else if (next.str == DEFAULT) {
-//          src += next.size;
-//          Builder::appendDefaultToSwitch(ret);
-//          skipSpace(src);
-//          assert(*src == ':');
-//          src++;
-//          continue;
-//        }
-//        // otherwise, may be some keyword that happens to start a block (e.g. case 1: _return_ 5)
-//      }
-//      // not case X: or default: or }, so must be some code
-//      skipSpace(src);
-//      bool explicitBlock = *src == '{';
-//      NodeRef subBlock = explicitBlock ? parseBracketedBlock(src) : parseBlock(src, ";}", CASE, DEFAULT);
-//      Builder::appendCodeToSwitch(ret, subBlock, explicitBlock);
-//    }
-//    skipSpace(src);
-//    assert(*src == '}');
-//    src++;
-//    return ret;
-//  }
-
-    // RSTODO
-    unsafe fn parseNew(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseNew(char*& src, const char* seps) {
-//    return Builder::makeNew(parseElement(src, seps));
-//  }
-
-    // RSTODO
-    unsafe fn parseAfterIdent(&mut self, _frag: &Frag, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseAfterIdent(Frag& frag, char*& src, const char* seps) {
-//    skipSpace(src);
-//    if (*src == '(') return parseExpression(parseCall(parseFrag(frag), src), src, seps);
-//    if (*src == '[') return parseExpression(parseIndexing(parseFrag(frag), src), src, seps);
-//    if (*src == ':' && expressionPartsStack.back().size() == 0) {
-//      src++;
-//      skipSpace(src);
-//      NodeRef inner;
-//      if (*src == '{') { // context lets us know this is not an object, but a block
-//        inner = parseBracketedBlock(src);
-//      } else {
-//        inner = parseElement(src, seps);
-//      }
-//      return Builder::makeLabel(frag.str, inner);
-//    }
-//    if (*src == '.') return parseExpression(parseDotting(parseFrag(frag), src), src, seps);
-//    return parseExpression(parseFrag(frag), src, seps);
-//  }
-
-    // RSTODO
-    unsafe fn parseCall(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
-        panic!()
-    }
-//  NodeRef parseCall(NodeRef target, char*& src) {
-//    expressionPartsStack.resize(expressionPartsStack.size()+1);
-//    assert(*src == '(');
-//    src++;
-//    NodeRef ret = Builder::makeCall(target);
-//    while (1) {
-//      skipSpace(src);
-//      if (*src == ')') break;
-//      Builder::appendToCall(ret, parseElement(src, ",)"));
-//      skipSpace(src);
-//      if (*src == ')') break;
-//      if (*src == ',') {
-//        src++;
-//        continue;
-//      }
-//      abort();
-//    }
-//    src++;
-//    assert(expressionPartsStack.back().size() == 0);
-//    expressionPartsStack.pop_back();
-//    return ret;
-//  }
 
     // RSTODO
     unsafe fn parseIndexing(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
