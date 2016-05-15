@@ -1427,7 +1427,7 @@ pub mod builder {
         r
     }
 
-    fn makeToplevel() -> Ref {
+    pub fn makeToplevel() -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("toplevel")))
@@ -1443,7 +1443,7 @@ pub mod builder {
         r
     }
 
-    fn makeBlock() -> Ref {
+    pub fn makeBlock() -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("block")))
@@ -1467,7 +1467,7 @@ pub mod builder {
         }
     }
 
-    fn appendToBlock(block: Ref, element: Ref) {
+    pub fn appendToBlock(block: Ref, element: Ref) {
         assert_eq!(block.get(0).getIString(), is!("block"));
         block.get(1).push_back(element);
     }
@@ -1486,7 +1486,7 @@ pub mod builder {
         call.get(2).push_back(element);
     }
 
-    fn makeStatement(contents: Ref) -> Ref {
+    pub fn makeStatement(contents: Ref) -> Ref {
         if STATABLE.contains(&contents.get(0).getIString()) {
             let mut r = makeRawArray(2);
             r

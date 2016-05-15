@@ -903,102 +903,89 @@ impl Parser {
         if let ExprElt::Node(n) = part { n } else { panic!() }
     }
 
-    // RSTODO
-    unsafe fn parseBlock(&mut self, _src: &mut *const u8, _seps: *const u8, _keywordSep1: Option<IString>, _keywordSep2: Option<IString>) -> Ref {
-        panic!()
+    // Parses a block of code (e.g. a bunch of statements inside {,}, or the top level of o file)
+    unsafe fn parseBlock(&mut self, src: &mut *const u8, seps: *const u8, keywordSep1: Option<IString>, keywordSep2: Option<IString>) -> Ref {
+        let block = builder::makeBlock();
+        //dump("parseBlock", src);
+        loop {
+            skipSpace(src);
+            if pp!{src[0]} == b'\0' { break }
+            if pp!{src[0]} == b';' {
+                pp!{src+=1}; // skip a statement in this block
+                continue
+            }
+            if hasChar(seps, pp!{src[0]}) { break }
+            // RSTODO: combine these two conditions?
+            if let Some(ref ks) = keywordSep1 {
+                let next = Frag::from_str(*src);
+                if FragData::Keyword(ks.clone()) == next.data { break }
+            }
+            if let Some(ref ks) = keywordSep2 {
+                let next = Frag::from_str(*src);
+                if FragData::Keyword(ks.clone()) == next.data { break }
+            }
+            let element = self.parseElementOrStatement(src, seps);
+            builder::appendToBlock(block, element);
+        }
+        block
     }
-//  // Parses a block of code (e.g. a bunch of statements inside {,}, or the top level of o file)
-//  NodeRef parseBlock(char*& src, const char* seps=";", IString keywordSep1=IString(), IString keywordSep2=IString()) {
-//    NodeRef block = Builder::makeBlock();
-//    //dump("parseBlock", src);
-//    while (1) {
-//      skipSpace(src);
-//      if (*src == 0) break;
-//      if (*src == ';') {
-//        src++; // skip a statement in this block
-//        continue;
-//      }
-//      if (hasChar(seps, *src)) break;
-//      if (!!keywordSep1) {
-//        Frag next(src);
-//        if (next.type == KEYWORD && next.str == keywordSep1) break;
-//      }
-//      if (!!keywordSep2) {
-//        Frag next(src);
-//        if (next.type == KEYWORD && next.str == keywordSep2) break;
-//      }
-//      NodeRef element = parseElementOrStatement(src, seps);
-//      Builder::appendToBlock(block, element);
-//    }
-//    return block;
-//  }
 
-    // RSTODO
-    unsafe fn parseBracketedBlock(&mut self, _src: &mut *const u8) -> Ref {
-        panic!()
+    unsafe fn parseBracketedBlock(&mut self, src: &mut *const u8) -> Ref {
+        skipSpace(src);
+        assert!(pp!{src[0]} == b'{');
+        pp!{src+=1};
+        // the two are not symmetrical, ; is just internally separating, } is
+        // the final one - parseBlock knows all this
+        let block = self.parseBlock(src, b";}\0".as_ptr(), None, None);
+        assert!(pp!{src[0]} == b'}');
+        pp!{src+=1};
+        block
     }
-//  NodeRef parseBracketedBlock(char*& src) {
-//    skipSpace(src);
-//    assert(*src == '{');
-//    src++;
-//    NodeRef block = parseBlock(src, ";}"); // the two are not symmetrical, ; is just internally separating, } is the final one - parseBlock knows all this
-//    assert(*src == '}');
-//    src++;
-//    return block;
-//  }
 
-    // RSTODO
-    unsafe fn parseElementOrStatement(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
+    unsafe fn parseElementOrStatement(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+        skipSpace(src);
+        if pp!{src[0]} == b';' {
+            pp!{src+=1};
+        }
+        if pp!{src[0]} == b'{' { // detect a trivial {} in a statement context
+            let before = *src;
+            pp!{src+=1};
+            skipSpace(src);
+            if pp!{src[0]} == b'}' {
+                pp!{src+=1};
+                // we don't need the brackets here, but oh well
+                return builder::makeBlock()
+            }
+            *src = before;
+        }
+        let mut ret = self.parseElement(src, seps);
+        skipSpace(src);
+        if pp!{src[0]} == b';' {
+            ret = builder::makeStatement(ret);
+            pp!{src+=1};
+        }
+        ret
     }
-//  NodeRef parseElementOrStatement(char*& src, const char *seps) {
-//    skipSpace(src);
-//    if (*src == ';') {
-//      src++;
-//      return Builder::makeBlock(); // we don't need the brackets here, but oh well
-//    }
-//    if (*src == '{') { // detect a trivial {} in a statement context
-//      char *before = src;
-//      src++;
-//      skipSpace(src);
-//      if (*src == '}') {
-//        src++;
-//        return Builder::makeBlock(); // we don't need the brackets here, but oh well
-//      }
-//      src = before;
-//    }
-//    NodeRef ret = parseElement(src, seps);
-//    skipSpace(src);
-//    if (*src == ';') {
-//      ret = Builder::makeStatement(ret);
-//      src++;
-//    }
-//    return ret;
-//  }
 
-    // RSTODO
-    unsafe fn parseMaybeBracketed(&mut self, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
+    unsafe fn parseMaybeBracketed(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+        skipSpace(src);
+        if pp!{src[0]} == b'{' {
+            self.parseBracketedBlock(src)
+        } else {
+            self.parseElementOrStatement(src, seps)
+        }
     }
-//  NodeRef parseMaybeBracketed(char*& src, const char *seps) {
-//    skipSpace(src);
-//    return *src == '{' ? parseBracketedBlock(src) : parseElementOrStatement(src, seps);
-//  }
 
-    // RSTODO
-    unsafe fn parseParenned(&mut self, _src: &mut *const u8) -> Ref {
-        panic!()
+    unsafe fn parseParenned(&mut self, src: &mut *const u8) -> Ref {
+        skipSpace(src);
+        assert!(pp!{src[0]} == b'(');
+        pp!{src+=1};
+        let ret = self.parseElement(src, b")\0".as_ptr());
+        skipSpace(src);
+        assert!(pp!{src[0]} == b')');
+        pp!{src+=1};
+        ret
     }
-//  NodeRef parseParenned(char*& src) {
-//    skipSpace(src);
-//    assert(*src == '(');
-//    src++;
-//    NodeRef ret = parseElement(src, ")");
-//    skipSpace(src);
-//    assert(*src == ')');
-//    src++;
-//    return ret;
-//  }
 
     fn new() -> Parser {
         Parser {
@@ -1009,18 +996,14 @@ impl Parser {
     }
 
     // RSTODO
-    unsafe fn parseToplevel(&mut self, _src: &mut *const u8) -> Ref {
-        panic!()
+    unsafe fn parseToplevel(&mut self, src: &mut *const u8) -> Ref {
+        self.allSource = *src;
+        self.allSize = libc::strlen(*src as *const i8);
+        let toplevel = builder::makeToplevel();
+        let block = self.parseBlock(src, b";\0".as_ptr(), None, None);
+        builder::setBlockContent(toplevel, block);
+        toplevel
     }
-//  // Highest-level parsing, as of a JavaScript script file.
-//  NodeRef parseToplevel(char* src) {
-//    allSource = src;
-//    allSize = strlen(src);
-//    NodeRef toplevel = Builder::makeToplevel();
-//    Builder::setBlockContent(toplevel, parseBlock(src));
-//    return toplevel;
-//  }
-//};
 
     // Debugging
 
