@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::io;
 use std::iter;
-use std::mem;
 use std::ptr;
 use std::ops::{Deref, DerefMut};
 
@@ -24,7 +23,7 @@ impl Ref {
     fn get_val(&self) -> &Value {
         unsafe { &(*self.inst) }
     }
-    fn get_val_mut(&self) -> &mut Value {
+    fn get_val_mut(&mut self) -> &mut Value {
         unsafe { &mut (*self.inst) }
     }
     fn is_something(&self) -> bool {
@@ -59,6 +58,8 @@ impl DerefMut for Ref {
         self.get_val_mut()
     }
 }
+// RSTODO: not really sync
+unsafe impl Sync for Ref {}
 
 const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 
@@ -67,7 +68,7 @@ const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 // http://contain-rs.github.io/raw-vec/raw_vec/struct.RawVec.html
 // https://github.com/BurntSushi/mempool
 const ARENA_CHUNK_SIZE: usize = 1000;
-struct Arena {
+pub struct Arena {
     chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
     index: usize, // in last chunk
 
@@ -84,11 +85,9 @@ impl Arena {
         vec![]
     }
     // RSTODO: placeholder
-    fn alloc(&self) -> Ref {
-        let mut v = Value::new();
-        let r = Ref::new(&mut v);
-        mem::forget(v);
-        r
+    pub fn alloc(&self) -> Ref {
+        let v = Box::new(Value::new());
+        Ref::new(Box::into_raw(v))
     }
 }
 
@@ -97,7 +96,7 @@ impl Arena {
 unsafe impl Sync for Arena {}
 
 lazy_static! {
-    static ref ARENA: Arena = Arena::new();
+    pub static ref ARENA: Arena = Arena::new();
 }
 
 pub type ArrayStorage = Vec<Ref>;
@@ -115,21 +114,24 @@ pub enum Value {
 impl Eq for Value {}
 impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
-        match *self {
-            Value::str(_) |
-            Value::num(_) |
-            Value::null |
-            Value::boo(_) => self == other,
+        match (self, other) {
+            (&Value::null, &Value::null) => true,
+            (&Value::num(n1), &Value::num(n2)) => n1 == n2,
+            (&Value::str(ref s1), &Value::str(ref s2)) => s1 == s2,
+            (&Value::boo(b1), &Value::boo(b2)) => b1 == b2,
             // if you want a deep compare, use deepCompare
-            Value::arr(_) |
-            Value::obj(_) => self as *const Value == other as *const Value,
+            (&Value::arr(_), _) |
+            (&Value::obj(_), _) => self as *const _ == other as *const _,
+            _ => false,
         }
     }
 }
 
 impl Drop for Value {
     fn drop(&mut self) {
-        self.free();
+        // drop is called when assigning over a value - make sure it's been cleared
+        // back to null
+        if let Value::null = *self {} else { panic!() }
     }
 }
 
@@ -138,12 +140,25 @@ impl Value {
     fn new() -> Value {
         Value::null
     }
+    // RSTODO: move this into drop?
     fn free(&mut self) {
-        if let &mut Value::arr(ref mut a) = self {
-            a.truncate(0);
-            a.shrink_to_fit();
+        match *self {
+            // arrays are in arena, don't drop
+            Value::arr(ref mut a) => {
+                a.truncate(0);
+                a.shrink_to_fit();
+            },
+            // hashmaps aren't in arena, drop
+            Value::obj(ref mut o) => unsafe { ptr::drop_in_place(o as *mut _) },
+            // IStrings may be dynamically allocated, so drop
+            // RSTODO: may be easier to just leave them around?
+            Value::str(ref mut s) => unsafe { ptr::drop_in_place(s as *mut _) },
+            Value::null |
+            Value::num(_) |
+            Value::boo(_) => (),
         }
-        *self = Value::null;
+        // Any drops and memory freeing has been done above
+        unsafe { ptr::write(self as *mut _, Value::null) }
     }
 
     fn from_str(s: &str) -> Value {
@@ -307,8 +322,8 @@ impl Value {
         }
     }
 
-    fn parse(&mut self, curr: &str) {
-        let json: serde_json::Value = serde_json::from_str(curr).unwrap();
+    pub fn parse(&mut self, curr: &[u8]) {
+        let json: serde_json::Value = serde_json::from_slice(curr).unwrap();
         self.parse_json(&json);
     }
     fn parse_json(&mut self, json: &serde_json::Value) {

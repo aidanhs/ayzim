@@ -20,7 +20,7 @@ extern crate libc;
 use std::env;
 use std::fs;
 use std::io::Read;
-#[cfg(profiling)]
+#[cfg(feature = "profiling")]
 use std::time;
 
 include!(concat!(env!("OUT_DIR"), "/static_atoms.rs"));
@@ -40,6 +40,8 @@ macro_rules! iss {
 mod cashew;
 mod parser;
 
+use cashew::ARENA;
+
 static mut preciseF32: bool = false;
 static mut receiveJSON: bool = false;
 static mut emitJSON: bool = false;
@@ -58,11 +60,11 @@ pub fn libmain() {
             else if arg == "last" { last = true; }
         }
     }
-    #[cfg(profiling)]
-    let start = {
+    #[cfg(feature = "profiling")]
+    let (profstg, profstart) = {
         let profstg = "reading and parsing";
         println!("starting {}", profstg);
-        time::SystemTime::now()
+        (profstg, time::SystemTime::now())
     };
 
     let mut input = {
@@ -72,29 +74,33 @@ pub fn libmain() {
         buf
     };
 
+    let mut extraInfo = ARENA.alloc();
     if let Some(extra_info_start) = input.find("// EXTRA_INFO:") {
         // RSTODO
-        //extraInfo = arena.alloc();
-        //extraInfo->parse(extraInfoStart + 14);
+        extraInfo.parse(&input.as_bytes()[extra_info_start+14..]);
         input.truncate(extra_info_start); // ignore extra info when parsing
     }
+
+    let mut doc = ARENA.alloc();
+    if unsafe { receiveJSON } {
+        // Parse JSON source into the document
+        doc.parse(input.as_bytes());
+    } else {
+        let mut builder = parser::Parser::new();
+        input.push('\0');
+        doc = unsafe { builder.parseToplevel(input.as_ptr()) };
+    }
+    // RSTODO: pretty sure comment below is irrelevant
+    // do not free input, its contents are used as strings
+
+    #[cfg(feature = "profiling")]
+    {
+        let t = profstart.elapsed().unwrap();
+        let t_ms = t.as_secs()*1000 + t.subsec_nanos() as u64/1_000_000;
+        println!("    {} took {} milliseconds", profstg, t_ms);
+    }
 }
-//  Ref doc;
-//
-//  if (receiveJSON) {
-//    // Parse JSON source into the document
-//    doc = arena.alloc();
-//    doc->parse(input);
-//  } else {
-//    cashew::Parser<Ref, ValueBuilder> builder;
-//    doc = builder.parseToplevel(input);
-//  }
-//  // do not free input, its contents are used as strings
-//
-//#ifdef PROFILING
-//    errv("    %s took %lu milliseconds", str.c_str(), (clock() - start)/1000);
-//#endif
-//
+
 //  // Run passes on the Document
 //  for (int i = 2; i < argc; i++) {
 //    std::string str(argv[i]);

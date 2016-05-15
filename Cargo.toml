@@ -17,3 +17,6 @@ cfor = "1.1"
 
 [build-dependencies]
 string_cache_codegen = { path = "../string-cache/string-cache-codegen" }
+
+[features]
+profiling = []

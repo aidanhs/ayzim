@@ -147,11 +147,12 @@ fn f64tou32(x: f64) -> u32 {
     assert!(is32Bit(x) && x >= 0f64);
     x as u32
 }
-unsafe fn hasChar(list: *const u8, x: u8) -> bool {
+unsafe fn hasChar(mut list: *const u8, x: u8) -> bool {
     while p!{list[0]} != b'\0' {
         if p!{list[0]} == x {
             return true
         }
+        p!{list+=1}
     }
     false
 }
@@ -341,7 +342,7 @@ enum ExprElt {
 
 // parser
 
-struct Parser {
+pub struct Parser {
     // This is a list of the current stack of node-operator-node-operator-etc.
     // this works by each parseExpression call appending to the vector; then
     // recursing out, and the toplevel sorts it all
@@ -771,7 +772,7 @@ impl Parser {
         }
         skipSpace(src);
         if pp!{src[0]} == b'\0' || hasChar(seps, pp!{src[0]}) {
-            let node = if let ExprElt::Node(node) = initial { node } else { panic!() };
+            let node = if let ExprElt::Node(n) = initial { n } else { panic!() };
             let parts = getParts(self);
             if parts.len() > 0 {
                 parts.push(initial); // cherry on top of the cake
@@ -793,7 +794,7 @@ impl Parser {
                     b'[' => self.parseIndexing(n, src),
                     _ => {
                         //self.dump("bad parseExpression state", *src);
-                        panic!()
+                        panic!("bad parseExpression state")
                     },
                 });
                 return self.parseExpression(initial, src, seps)
@@ -822,7 +823,7 @@ impl Parser {
                     if ops.ty == OpClassTy::Binary && i > 0 && i < parts.len()-1 {
                         let (n1, n2) = match (&parts[i-1], &parts[i+1]) {
                             (&ExprElt::Node(n1), &ExprElt::Node(n2)) => (n1, n2),
-                            _ => panic!(),
+                            _ => panic!("not both nodes in rtl binary"),
                         };
                         // RSTODO: if assigned at i-1, only need one drain?
                         parts[i] = ExprElt::Node(Self::makeBinary(n1, op, n2));
@@ -838,7 +839,7 @@ impl Parser {
                         }
                         let n1 = match parts[i+1] {
                             ExprElt::Node(n1) => n1,
-                            _ => panic!(),
+                            _ => panic!("not node in rtl prefix"),
                         };
                         parts[i] = ExprElt::Node(builder::makePrefix(op, n1));
                         parts.remove(i+1);
@@ -851,11 +852,11 @@ impl Parser {
                         match parts[i-2] {
                             ExprElt::Op(is!("?")) => (),
                             ExprElt::Op(_) => continue,
-                            ExprElt::Node(_) => panic!(),
+                            ExprElt::Node(_) => panic!("node in rtl tertiary"),
                         }
-                        let (n1, n2, n3) = match (&parts[i-3], &parts[i-2], &parts[i+1]) {
+                        let (n1, n2, n3) = match (&parts[i-3], &parts[i-1], &parts[i+1]) {
                             (&ExprElt::Node(n1), &ExprElt::Node(n2), &ExprElt::Node(n3)) => (n1, n2, n3),
-                            _ => panic!(),
+                            _ => panic!("not all three nodes in rtl tertiary"),
                         };
                         parts[i-3] = ExprElt::Node(builder::makeConditional(n1, n2, n3));
                         parts.drain(i-2..i+2).count();
@@ -873,7 +874,7 @@ impl Parser {
                     if ops.ty == OpClassTy::Binary && i > 0 && i < parts.len()-1 {
                         let (n1, n2) = match (&parts[i-1], &parts[i+1]) {
                             (&ExprElt::Node(n1), &ExprElt::Node(n2)) => (n1, n2),
-                            _ => panic!(),
+                            _ => panic!("not both nodes in ltr binary"),
                         };
                         // RSTODO: if assigned at i-1, only need one drain?
                         parts[i] = ExprElt::Node(Self::makeBinary(n1, op, n2));
@@ -888,7 +889,7 @@ impl Parser {
                         }
                         let n1 = match parts[i+1] {
                             ExprElt::Node(n1) => n1,
-                            _ => panic!(),
+                            _ => panic!("not node in ltr prefix"),
                         };
                         parts[i] = ExprElt::Node(builder::makePrefix(op, n1));
                         parts.remove(i+1);
@@ -987,7 +988,7 @@ impl Parser {
         ret
     }
 
-    fn new() -> Parser {
+    pub fn new() -> Parser {
         Parser {
             expressionPartsStack: vec![vec![]],
             allSource: ptr::null(),
@@ -995,12 +996,12 @@ impl Parser {
         }
     }
 
-    // RSTODO
-    unsafe fn parseToplevel(&mut self, src: &mut *const u8) -> Ref {
-        self.allSource = *src;
-        self.allSize = libc::strlen(*src as *const i8);
+    pub unsafe fn parseToplevel(&mut self, src: *const u8) -> Ref {
+        self.allSource = src;
+        self.allSize = libc::strlen(src as *const i8);
         let toplevel = builder::makeToplevel();
-        let block = self.parseBlock(src, b";\0".as_ptr(), None, None);
+        let mut cursrc = src;
+        let block = self.parseBlock(&mut cursrc, b";\0".as_ptr(), None, None);
         builder::setBlockContent(toplevel, block);
         toplevel
     }
