@@ -5,6 +5,8 @@
 // lets them reuse parts of it. You will segfault if the input string cannot be
 // reused and written to.
 
+// RSTODO: nom parser?
+
 use std::ptr;
 use std::slice;
 use std::str;
@@ -79,7 +81,7 @@ lazy_static! {
 const OPERATOR_INITS: &'static [u8] = b"+-*/%<>&^|~=!,?:.\0";
 const SEPARATORS: &'static [u8] = b"([;{}\0";
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 enum OpClassTy {
     Binary = 0,
     Prefix = 1,
@@ -673,215 +675,233 @@ impl Parser {
         ret
     }
 
-    // RSTODO
-    unsafe fn parseIndexing(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
-        panic!()
+    unsafe fn parseIndexing(&mut self, target: Ref, src: &mut *const u8) -> Ref {
+        self.expressionPartsStack.push(vec![]);
+        assert!(pp!{src[0]} == b'[');
+        pp!{src+=1};
+        let elt = self.parseElement(src, b"]\0".as_ptr());
+        let ret = builder::makeIndexing(target, elt);
+        skipSpace(src);
+        assert!(pp!{src[0]} == b']');
+        pp!{src+=1};
+        assert!(self.expressionPartsStack.pop().unwrap().len() == 0);
+        ret
     }
-//  NodeRef parseIndexing(NodeRef target, char*& src) {
-//    expressionPartsStack.resize(expressionPartsStack.size()+1);
-//    assert(*src == '[');
-//    src++;
-//    NodeRef ret = Builder::makeIndexing(target, parseElement(src, "]"));
-//    skipSpace(src);
-//    assert(*src == ']');
-//    src++;
-//    assert(expressionPartsStack.back().size() == 0);
-//    expressionPartsStack.pop_back();
-//    return ret;
-//  }
 
-    // RSTODO
-    unsafe fn parseDotting(&mut self, _target: Ref, _src: &mut *const u8) -> Ref {
-        panic!()
+    unsafe fn parseDotting(&mut self, target: Ref, src: &mut *const u8) -> Ref {
+        assert!(pp!{src[0]} == b'[');
+        pp!{src+=1};
+        if let Frag { data: FragData::Ident(s), size: n } = Frag::from_str(*src) {
+            pp!{src+=n as isize};
+            builder::makeDot(target, s)
+        } else {
+            panic!()
+        }
     }
-//  NodeRef parseDotting(NodeRef target, char*& src) {
-//    assert(*src == '.');
-//    src++;
-//    Frag key(src);
-//    assert(key.type == IDENT);
-//    src += key.size;
-//    return Builder::makeDot(target, key.str);
-//  }
 
-    // RSTODO
-    unsafe fn parseAfterParen(&mut self, _src: &mut *const u8) -> Ref {
-        panic!()
+    unsafe fn parseAfterParen(&mut self, src: &mut *const u8) -> Ref {
+        self.expressionPartsStack.push(vec![]);
+        skipSpace(src);
+        let ret = self.parseElement(src, b")\0".as_ptr());
+        skipSpace(src);
+        assert!(pp!{src[0]} == b')');
+        pp!{src+=1};
+        assert!(self.expressionPartsStack.pop().unwrap().len() == 0);
+        ret
     }
-//  NodeRef parseAfterParen(char*& src) {
-//    expressionPartsStack.resize(expressionPartsStack.size()+1);
-//    skipSpace(src);
-//    NodeRef ret = parseElement(src, ")");
-//    skipSpace(src);
-//    assert(*src == ')');
-//    src++;
-//    assert(expressionPartsStack.back().size() == 0);
-//    expressionPartsStack.pop_back();
-//    return ret;
-//  }
 
-    // RSTODO
-    unsafe fn parseAfterBrace(&mut self, _src: &mut *const u8) -> Ref {
-        panic!()
+    unsafe fn parseAfterBrace(&mut self, src: &mut *const u8) -> Ref {
+        self.expressionPartsStack.push(vec![]);
+        let ret = builder::makeArray();
+        loop {
+            skipSpace(src);
+            assert!(pp!{src[0]} != b'\0');
+            if pp!{src[0]} == b']' { break }
+            builder::appendToArray(ret, self.parseElement(src, b",]\0".as_ptr()));
+            skipSpace(src);
+            if pp!{src[0]} == b']' { break }
+            if pp!{src[0]} == b',' { pp!{src+=1}; continue }
+            panic!()
+        }
+        pp!{src+=1};
+        ret
     }
-//  NodeRef parseAfterBrace(char*& src) {
-//    expressionPartsStack.resize(expressionPartsStack.size()+1);
-//    NodeRef ret = Builder::makeArray();
-//    while (1) {
-//      skipSpace(src);
-//      assert(*src);
-//      if (*src == ']') break;
-//      NodeRef element = parseElement(src, ",]");
-//      Builder::appendToArray(ret, element);
-//      skipSpace(src);
-//      if (*src == ']') break;
-//      if (*src == ',') {
-//        src++;
-//        continue;
-//      }
-//      abort();
-//    }
-//    src++;
-//    return ret;
-//  }
 
-    // RSTODO
-    unsafe fn parseAfterCurly(&mut self, _src: &mut *const u8) -> Ref {
-        panic!()
+    unsafe fn parseAfterCurly(&mut self, src: &mut *const u8) -> Ref {
+        self.expressionPartsStack.push(vec![]);
+        let ret = builder::makeObject();
+        loop {
+            skipSpace(src);
+            assert!(pp!{src[0]} != b'\0');
+            if pp!{src[0]} == b'}' { break }
+            let (s, n) = match Frag::from_str(*src) { // key
+                Frag { data: FragData::Ident(s), size: n } |
+                Frag { data: FragData::String(s), size: n } => (s, n),
+                _ => panic!(),
+            };
+            pp!{src+=n as isize};
+            skipSpace(src);
+            assert!(pp!{src[0]} == b':');
+            pp!{src+=1};
+            let value = self.parseElement(src, b",}\0".as_ptr());
+            builder::appendToObject(ret, s, value);
+            skipSpace(src);
+            if pp!{src[0]} == b'}' { break }
+            if pp!{src[0]} == b',' { pp!{src+=1}; continue }
+            panic!()
+        }
+        pp!{src+=1};
+        ret
     }
-//  NodeRef parseAfterCurly(char*& src) {
-//    expressionPartsStack.resize(expressionPartsStack.size()+1);
-//    NodeRef ret = Builder::makeObject();
-//    while (1) {
-//      skipSpace(src);
-//      assert(*src);
-//      if (*src == '}') break;
-//      Frag key(src);
-//      assert(key.type == IDENT || key.type == STRING);
-//      src += key.size;
-//      skipSpace(src);
-//      assert(*src == ':');
-//      src++;
-//      NodeRef value = parseElement(src, ",}");
-//      Builder::appendToObject(ret, key.str, value);
-//      skipSpace(src);
-//      if (*src == '}') break;
-//      if (*src == ',') {
-//        src++;
-//        continue;
-//      }
-//      abort();
-//    }
-//    src++;
-//    return ret;
-//  }
 
-    // RSTODO
-    unsafe fn makeBinary(_left: Ref, _op: IString, _right: Ref) -> Ref {
-        panic!()
+    unsafe fn makeBinary(left: Ref, op: IString, right: Ref) -> Ref {
+        if op == is!(".") {
+            builder::makeDotRef(left, right)
+        } else {
+            builder::makeBinary(left, op, right)
+        }
     }
-//  NodeRef makeBinary(NodeRef left, IString op, NodeRef right) {
-//    if (op == PERIOD) {
-//      return Builder::makeDot(left, right);
-//    } else {
-//      return Builder::makeBinary(left, op ,right);
-//    }
-//  }
 
-    // RSTODO
-    unsafe fn parseExpression(&mut self, _initial: ExprElt, _src: &mut *const u8, _seps: *const u8) -> Ref {
-        panic!()
+    unsafe fn parseExpression(&mut self, initial: ExprElt, src: &mut *const u8, seps: *const u8) -> Ref {
+        //dump("parseExpression", src);
+        // RSTODO: this function is to make it less ugly to work around rust
+        // lexical lifetimes
+        fn getParts(s: &mut Parser) -> &mut Vec<ExprElt> {
+            s.expressionPartsStack.last_mut().unwrap()
+        }
+        skipSpace(src);
+        if pp!{src[0]} == b'\0' || hasChar(seps, pp!{src[0]}) {
+            let node = if let ExprElt::Node(node) = initial { node } else { panic!() };
+            let parts = getParts(self);
+            if parts.len() > 0 {
+                parts.push(initial); // cherry on top of the cake
+            }
+            return node
+        }
+        let top;
+        if let ExprElt::Node(n) = initial {
+            let next = Frag::from_str(*src);
+            if let Frag { data: FragData::Operator(s), size: n } = next {
+                let parts = getParts(self);
+                top = parts.len() == 0;
+                parts.push(initial);
+                pp!{src+=n as isize};
+                parts.push(ExprElt::Op(s))
+            } else {
+                let initial = ExprElt::Node(match pp!{src[0]} {
+                    b'(' => self.parseCall(n, src),
+                    b'[' => self.parseIndexing(n, src),
+                    _ => {
+                        //self.dump("bad parseExpression state", *src);
+                        panic!()
+                    },
+                });
+                return self.parseExpression(initial, src, seps)
+            }
+        } else {
+            let parts = getParts(self);
+            top = parts.len() == 0;
+            parts.push(initial)
+        }
+        let last = self.parseElement(src, seps);
+        if !top { return last }
+        let parts = getParts(self); // parts may have been invalidated by that call
+        // we are the toplevel. sort it all out
+        // collapse right to left, highest priority first
+        //dumpParts(parts, 0);
+        for ops in OP_CLASSES.iter() {
+            // RSTODO: consider unifying rtl and ltr
+            if ops.rtl {
+                // right to left
+                cfor!{let mut i = parts.len()-1; /* cond */; if i == 0 { break }, i -= 1; {
+                    let op = match parts[i] {
+                        ExprElt::Node(_) => continue,
+                        ExprElt::Op(ref op) => op.clone(),
+                    };
+                    if !ops.ops.contains(&op) { continue }
+                    if ops.ty == OpClassTy::Binary && i > 0 && i < parts.len()-1 {
+                        let (n1, n2) = match (&parts[i-1], &parts[i+1]) {
+                            (&ExprElt::Node(n1), &ExprElt::Node(n2)) => (n1, n2),
+                            _ => panic!(),
+                        };
+                        // RSTODO: if assigned at i-1, only need one drain?
+                        parts[i] = ExprElt::Node(Self::makeBinary(n1, op, n2));
+                        parts.remove(i+1);
+                        parts.remove(i-1);
+                        // RSTODO: could optimise here by decrementing to avoid
+                        // reprocessing? Note the unfortunate asymmetry with ltr
+                    } else if ops.ty == OpClassTy::Prefix && i < parts.len()-1 {
+                        if i > 0 {
+                            // cannot apply prefix operator if it would join
+                            // two nodes
+                            if let ExprElt::Node(_) = parts[i-1] { continue }
+                        }
+                        let n1 = match parts[i+1] {
+                            ExprElt::Node(n1) => n1,
+                            _ => panic!(),
+                        };
+                        parts[i] = ExprElt::Node(builder::makePrefix(op, n1));
+                        parts.remove(i+1);
+                    } else if ops.ty == OpClassTy::Tertiary {
+                        // we must be at  X ? Y : Z
+                        //                      ^
+                        //dumpParts(parts, i);
+                        if op != is!(":") { continue }
+                        assert!(i < parts.len()-1 && i >= 3);
+                        match parts[i-2] {
+                            ExprElt::Op(is!("?")) => (),
+                            ExprElt::Op(_) => continue,
+                            ExprElt::Node(_) => panic!(),
+                        }
+                        let (n1, n2, n3) = match (&parts[i-3], &parts[i-2], &parts[i+1]) {
+                            (&ExprElt::Node(n1), &ExprElt::Node(n2), &ExprElt::Node(n3)) => (n1, n2, n3),
+                            _ => panic!(),
+                        };
+                        parts[i-3] = ExprElt::Node(builder::makeConditional(n1, n2, n3));
+                        parts.drain(i-2..i+2).count();
+                        i = parts.len();
+                    } // TODO: postfix
+                }}
+            } else {
+                // left to right
+                cfor!{let mut i = 0; i < parts.len(); i += 1; {
+                    let op = match parts[i] {
+                        ExprElt::Node(_) => continue,
+                        ExprElt::Op(ref op) => op.clone(),
+                    };
+                    if !ops.ops.contains(&op) { continue }
+                    if ops.ty == OpClassTy::Binary && i > 0 && i < parts.len()-1 {
+                        let (n1, n2) = match (&parts[i-1], &parts[i+1]) {
+                            (&ExprElt::Node(n1), &ExprElt::Node(n2)) => (n1, n2),
+                            _ => panic!(),
+                        };
+                        // RSTODO: if assigned at i-1, only need one drain?
+                        parts[i] = ExprElt::Node(Self::makeBinary(n1, op, n2));
+                        parts.remove(i+1);
+                        parts.remove(i-1);
+                        i -= 1;
+                    } else if ops.ty == OpClassTy::Prefix && i < parts.len()-1 {
+                        if i > 0 {
+                            // cannot apply prefix operator if it would join
+                            // two nodes
+                            if let ExprElt::Node(_) = parts[i-1] { continue }
+                        }
+                        let n1 = match parts[i+1] {
+                            ExprElt::Node(n1) => n1,
+                            _ => panic!(),
+                        };
+                        parts[i] = ExprElt::Node(builder::makePrefix(op, n1));
+                        parts.remove(i+1);
+                        // allow a previous prefix operator to cascade
+                        i = if i > 2 { i-2 } else { 0 };
+                    } // TODO: tertiary, postfix
+                }}
+            }
+        }
+        let part = parts.pop().unwrap();
+        assert!(parts.is_empty());
+        if let ExprElt::Node(n) = part { n } else { panic!() }
     }
-//  NodeRef parseExpression(ExprElt initial, char*&src, const char* seps) {
-//    //dump("parseExpression", src);
-//    ExpressionParts& parts = expressionPartsStack.back();
-//    skipSpace(src);
-//    if (*src == 0 || hasChar(seps, *src)) {
-//      if (parts.size() > 0) {
-//        parts.push_back(initial); // cherry on top of the cake
-//      }
-//      return initial.getNode();
-//    }
-//    bool top = parts.size() == 0;
-//    if (initial.isNode) {
-//      Frag next(src);
-//      if (next.type == OPERATOR) {
-//        parts.push_back(initial);
-//        src += next.size;
-//        parts.push_back(next.str);
-//      } else {
-//        if (*src == '(') {
-//          initial = parseCall(initial.getNode(), src);
-//        } else if (*src == '[') {
-//          initial = parseIndexing(initial.getNode(), src);
-//        } else {
-//          dump("bad parseExpression state", src);
-//          abort();
-//        }
-//        return parseExpression(initial, src, seps);
-//      }
-//    } else {
-//      parts.push_back(initial);
-//    }
-//    NodeRef last = parseElement(src, seps);
-//    if (!top) return last;
-//    {
-//      ExpressionParts& parts = expressionPartsStack.back(); // |parts| may have been invalidated by that call
-//      // we are the toplevel. sort it all out
-//      // collapse right to left, highest priority first
-//      //dumpParts(parts, 0);
-//      for (auto& ops : operatorClasses) {
-//        if (ops.rtl) {
-//          // right to left
-//          for (int i = parts.size()-1; i >= 0; i--) {
-//            if (parts[i].isNode) continue;
-//            IString op = parts[i].getOp();
-//            if (!ops.ops.has(op)) continue;
-//            if (ops.type == OperatorClass::Binary && i > 0 && i < (int)parts.size()-1) {
-//              parts[i] = makeBinary(parts[i-1].getNode(), op, parts[i+1].getNode());
-//              parts.erase(parts.begin() + i + 1);
-//              parts.erase(parts.begin() + i - 1);
-//            } else if (ops.type == OperatorClass::Prefix && i < (int)parts.size()-1) {
-//              if (i > 0 && parts[i-1].isNode) continue; // cannot apply prefix operator if it would join two nodes
-//              parts[i] = Builder::makePrefix(op, parts[i+1].getNode());
-//              parts.erase(parts.begin() + i + 1);
-//            } else if (ops.type == OperatorClass::Tertiary) {
-//              // we must be at  X ? Y : Z
-//              //                      ^
-//              //dumpParts(parts, i);
-//              if (op != COLON) continue;
-//              assert(i < (int)parts.size()-1 && i >= 3);
-//              if (parts[i-2].getOp() != QUESTION) continue; // e.g. x ? y ? 1 : 0 : 2
-//              parts[i-3] = Builder::makeConditional(parts[i-3].getNode(), parts[i-1].getNode(), parts[i+1].getNode());
-//              parts.erase(parts.begin() + i - 2, parts.begin() + i + 2);
-//              i = parts.size(); // basically a reset, due to things like x ? y ? 1 : 0 : 2
-//            } // TODO: postfix
-//          }
-//        } else {
-//          // left to right
-//          for (int i = 0; i < (int)parts.size(); i++) {
-//            if (parts[i].isNode) continue;
-//            IString op = parts[i].getOp();
-//            if (!ops.ops.has(op)) continue;
-//            if (ops.type == OperatorClass::Binary && i > 0 && i < (int)parts.size()-1) {
-//              parts[i] = makeBinary(parts[i-1].getNode(), op, parts[i+1].getNode());
-//              parts.erase(parts.begin() + i + 1);
-//              parts.erase(parts.begin() + i - 1);
-//              i--;
-//            } else if (ops.type == OperatorClass::Prefix && i < (int)parts.size()-1) {
-//              if (i > 0 && parts[i-1].isNode) continue; // cannot apply prefix operator if it would join two nodes
-//              parts[i] = Builder::makePrefix(op, parts[i+1].getNode());
-//              parts.erase(parts.begin() + i + 1);
-//              i = std::max(i-2, 0); // allow a previous prefix operator to cascade
-//            } // TODO: tertiary, postfix
-//          }
-//        }
-//      }
-//      assert(parts.size() == 1);
-//      NodeRef ret = parts[0].getNode();
-//      parts.clear();
-//      return ret;
-//    }
-//  }
 
     // RSTODO
     unsafe fn parseBlock(&mut self, _src: &mut *const u8, _seps: *const u8, _keywordSep1: Option<IString>, _keywordSep2: Option<IString>) -> Ref {
@@ -1005,7 +1025,7 @@ impl Parser {
     // Debugging
 
     // RSTODO
-    unsafe fn dump(&mut self, _msg: *const u8, _curr: *const u8) {
+    unsafe fn dump(&mut self, _msg: &str, _curr: *const u8) {
         panic!()
     }
 //  static void dump(const char *where, char* curr) {

@@ -7,8 +7,8 @@
 // RSTODO: remove
 #![allow(dead_code)]
 
-#[macro_use]
-extern crate lazy_static;
+#[macro_use] extern crate cfor;
+#[macro_use] extern crate lazy_static;
 extern crate string_cache;
 extern crate serde_json;
 extern crate odds;

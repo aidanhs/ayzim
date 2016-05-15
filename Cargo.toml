@@ -13,6 +13,7 @@ phf = "0.7.14"
 phf_builder = "0.7.14"
 smallvec = "0.1.7"
 libc = "0.2.11"
+cfor = "1.1"
 
 [build-dependencies]
 string_cache_codegen = { path = "../string-cache/string-cache-codegen" }

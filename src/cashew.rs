@@ -64,6 +64,8 @@ const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 
 // Arena allocation, free it all on process exit
 
+// http://contain-rs.github.io/raw-vec/raw_vec/struct.RawVec.html
+// https://github.com/BurntSushi/mempool
 const ARENA_CHUNK_SIZE: usize = 1000;
 struct Arena {
     chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
@@ -1510,7 +1512,7 @@ pub mod builder {
         makeDouble(num as f64)
     }
 
-    fn makeBinary(left: Ref, op: IString, right: Ref) -> Ref {
+    pub fn makeBinary(left: Ref, op: IString, right: Ref) -> Ref {
         match op {
             is!("=") => {
                 let mut b = ARENA.alloc();
@@ -1595,7 +1597,7 @@ pub mod builder {
         r
     }
 
-    fn makeIndexing(target: Ref, index: Ref) -> Ref {
+    pub fn makeIndexing(target: Ref, index: Ref) -> Ref {
         let mut r = makeRawArray(3);
         r
             .push_back(makeRawString(is!("sub")))
@@ -1615,7 +1617,7 @@ pub mod builder {
         r
     }
 
-    fn makeConditional(condition: Ref, ifTrue: Ref, ifFalse: Ref) -> Ref {
+    pub fn makeConditional(condition: Ref, ifTrue: Ref, ifFalse: Ref) -> Ref {
         let mut r = makeRawArray(4);
         r
             .push_back(makeRawString(is!("conditional")))
@@ -1711,7 +1713,7 @@ pub mod builder {
         }
     }
 
-    fn makeDot(obj: Ref, key: IString) -> Ref {
+    pub fn makeDot(obj: Ref, key: IString) -> Ref {
         let mut r = makeRawArray(3);
         r
             .push_back(makeRawString(is!("dot")))
@@ -1720,7 +1722,7 @@ pub mod builder {
         r
     }
 
-    fn makeDotRef(obj: Ref, key: Ref) -> Ref {
+    pub fn makeDotRef(obj: Ref, key: Ref) -> Ref {
         assert_eq!(key.get(0).getIString(), is!("name"));
         makeDot(obj, key.get(1).getIString())
     }
@@ -1733,7 +1735,7 @@ pub mod builder {
         r
     }
 
-    fn makeArray() -> Ref {
+    pub fn makeArray() -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("array")))
@@ -1741,12 +1743,12 @@ pub mod builder {
         r
     }
 
-    fn appendToArray(array: Ref, element: Ref) {
+    pub fn appendToArray(array: Ref, element: Ref) {
         assert_eq!(array.get(0).getIString(), is!("array"));
         array.get(1).push_back(element);
     }
 
-    fn makeObject() -> Ref {
+    pub fn makeObject() -> Ref {
         let mut r = makeRawArray(2);
         r
             .push_back(makeRawString(is!("object")))
@@ -1754,7 +1756,7 @@ pub mod builder {
         r
     }
 
-    fn appendToObject(array: Ref, key: IString, value: Ref) {
+    pub fn appendToObject(array: Ref, key: IString, value: Ref) {
         assert_eq!(array.get(0).getIString(), is!("object"));
         let mut array = makeRawArray(2);
         array.push_back(makeRawString(key)).push_back(value);
