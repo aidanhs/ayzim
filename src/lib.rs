@@ -15,6 +15,7 @@ extern crate odds;
 extern crate phf;
 extern crate phf_builder;
 extern crate smallvec;
+extern crate typed_arena;
 extern crate libc;
 
 use std::env;

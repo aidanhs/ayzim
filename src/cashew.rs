@@ -8,6 +8,7 @@ use std::ops::{Deref, DerefMut};
 use odds::vec::VecExt;
 use serde_json;
 use smallvec::SmallVec;
+use typed_arena;
 
 use super::IString;
 
@@ -66,28 +67,33 @@ const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 // Arena allocation, free it all on process exit
 
 // http://contain-rs.github.io/raw-vec/raw_vec/struct.RawVec.html
-// https://github.com/BurntSushi/mempool
+// RSTODO: is the value arena actually better than jemalloc?
+// RSTODO: Would an array arena be good? It would add extra indirection
 const ARENA_CHUNK_SIZE: usize = 1000;
 pub struct Arena {
-    chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
-    index: usize, // in last chunk
-
-    arr_chunks: Vec<Box<[ArrayStorage; ARENA_CHUNK_SIZE]>>,
-    arr_index: usize,
+    arena: typed_arena::Arena<Value>,
+    //arr_arena: typed_arena::Arena<ArrayStorage>,
+    //chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
+    //index: usize, // in last chunk
+    //arr_chunks: Vec<Box<[ArrayStorage; ARENA_CHUNK_SIZE]>>,
+    //arr_index: usize,
 }
 
 impl Arena {
     fn new() -> Arena {
-        Arena { chunks: vec![], index: 0, arr_chunks: vec![], arr_index: 0 }
+        //Arena { chunks: vec![], index: 0, arr_chunks: vec![], arr_index: 0 }
+        Arena {
+            arena: typed_arena::Arena::with_capacity(1000),
+            //arr_arena: typed_arena::Arena::with_capacity(1000),
+        }
     }
     // RSTODO: placeholder
     fn allocArray(&self) -> ArrayStorage {
+        //self.arr_arena.alloc(ArrayStorage::new())
         vec![]
     }
-    // RSTODO: placeholder
     pub fn alloc(&self) -> Ref {
-        let v = Box::new(Value::new());
-        Ref::new(Box::into_raw(v))
+        Ref::new(self.arena.alloc(Value::new()))
     }
 }
 
