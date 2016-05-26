@@ -39,6 +39,7 @@ macro_rules! iss {
 }
 
 mod cashew;
+mod optimizer;
 mod parser;
 
 use cashew::ARENA;
