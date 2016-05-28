@@ -1,390 +1,33 @@
-//#ifndef __optimizer_h__
-//#define __optimizer_h__
-//
-//#include "simple_ast.h"
-//
-//extern bool preciseF32,
-//            receiveJSON,
-//            emitJSON,
-//            minifyWhitespace,
-//            last;
-//
-//extern cashew::Ref extraInfo;
-//
-//void eliminateDeadFuncs(cashew::Ref ast);
-//void eliminate(cashew::Ref ast, bool memSafe=false);
-//void eliminateMemSafe(cashew::Ref ast);
-//void simplifyExpressions(cashew::Ref ast);
-//void optimizeFrounds(cashew::Ref ast);
-//void simplifyIfs(cashew::Ref ast);
-//void registerize(cashew::Ref ast);
-//void registerizeHarder(cashew::Ref ast);
-//void minifyLocals(cashew::Ref ast);
-//void asmLastOpts(cashew::Ref ast);
-//
-////
-//
-//enum AsmType {
-//  ASM_INT = 0,
-//  ASM_DOUBLE,
-//  ASM_FLOAT,
-//  ASM_FLOAT32X4,
-//  ASM_FLOAT64X2,
-//  ASM_INT8X16,
-//  ASM_INT16X8,
-//  ASM_INT32X4,
-//  ASM_BOOL8X16,
-//  ASM_BOOL16X8,
-//  ASM_BOOL32X4,
-//  ASM_BOOL64X2,
-//  ASM_NONE // number of types
-//};
-//
-//struct AsmData;
-//
-//AsmType detectType(cashew::Ref node, AsmData *asmData=nullptr, bool inVarDef=false);
-//
-//struct AsmData {
-//  struct Local {
-//    Local() {}
-//    Local(AsmType type, bool param) : type(type), param(param) {}
-//    AsmType type;
-//    bool param; // false if a var
-//  };
-//  typedef std::unordered_map<cashew::IString, Local> Locals;
-//
-//  Locals locals;
-//  std::vector<cashew::IString> params; // in order
-//  std::vector<cashew::IString> vars; // in order
-//  AsmType ret;
-//
-//  cashew::Ref func;
-//
-//  AsmType getType(const cashew::IString& name) {
-//    auto ret = locals.find(name);
-//    if (ret != locals.end()) return ret->second.type;
-//    return ASM_NONE;
-//  }
-//  void setType(const cashew::IString& name, AsmType type) {
-//    locals[name].type = type;
-//  }
-//
-//  bool isLocal(const cashew::IString& name) {
-//    return locals.count(name) > 0;
-//  }
-//  bool isParam(const cashew::IString& name) {
-//    return isLocal(name) && locals[name].param;
-//  }
-//  bool isVar(const cashew::IString& name) {
-//    return isLocal(name) && !locals[name].param;
-//  }
-//
-//  AsmData() {} // if you want to fill in the data yourself
-//  AsmData(cashew::Ref f); // if you want to read data from f, and modify it as you go (parallel to denormalize)
-//
-//  void denormalize();
-//
-//  void addParam(cashew::IString name, AsmType type) {
-//    locals[name] = Local(type, true);
-//    params.push_back(name);
-//  }
-//  void addVar(cashew::IString name, AsmType type) {
-//    locals[name] = Local(type, false);
-//    vars.push_back(name);
-//  }
-//
-//  void deleteVar(cashew::IString name) {
-//    locals.erase(name);
-//    for (size_t i = 0; i < vars.size(); i++) {
-//      if (vars[i] == name) {
-//        vars.erase(vars.begin() + i);
-//        break;
-//      }
-//    }
-//  }
-//};
-//
-//bool isInteger(double x);
-//
-//bool isInteger32(double x);
-//
-//extern cashew::IString ASM_FLOAT_ZERO;
-//
-//extern cashew::IString SIMD_INT8X16_CHECK,
-//               SIMD_INT16X8_CHECK,
-//               SIMD_INT32X4_CHECK,
-//               SIMD_FLOAT32X4_CHECK,
-//               SIMD_FLOAT64X2_CHECK,
-//               SIMD_BOOL8X16_CHECK,
-//               SIMD_BOOL16X8_CHECK,
-//               SIMD_BOOL32X4_CHECK,
-//               SIMD_BOOL64X2_CHECK;
-//
-//int parseInt(const char *str);
-//
-//struct HeapInfo {
-//  bool valid, unsign, floaty;
-//  int bits;
-//  AsmType type;
-//};
-//
-//HeapInfo parseHeap(const char *name);
-//
-//enum AsmSign {
-//  ASM_FLEXIBLE = 0, // small constants can be signed or unsigned, variables are also flexible
-//  ASM_SIGNED = 1,
-//  ASM_UNSIGNED = 2,
-//  ASM_NONSIGNED = 3,
-//};
-//
-//extern AsmSign detectSign(cashew::Ref node);
-//
-//#endif // __optimizer_h__
+use std::collections::HashMap;
+use std::i32;
+use std::iter;
 
+use odds::vec::VecExt;
 
-//#include "optimizer.h"
-//
-//using namespace cashew;
-//
-//IString ASM_FLOAT_ZERO;
-//
-//IString SIMD_INT8X16_CHECK("SIMD_Int8x16_check"),
-//        SIMD_INT16X8_CHECK("SIMD_Int16x8_check"),
-//        SIMD_INT32X4_CHECK("SIMD_Int32x4_check"),
-//        SIMD_FLOAT32X4_CHECK("SIMD_Float32x4_check"),
-//        SIMD_FLOAT64X2_CHECK("SIMD_Float64x2_check"),
-//        SIMD_BOOL8X16_CHECK("SIMD_Bool8x16_check"),
-//        SIMD_BOOL16X8_CHECK("SIMD_Bool16x8_check"),
-//        SIMD_BOOL32X4_CHECK("SIMD_Bool32x4_check"),
-//        SIMD_BOOL64X2_CHECK("SIMD_Bool64x2_check");
-//
-//bool isInteger(double x) {
-//  return fmod(x, 1) == 0;
-//}
-//
-//bool isInteger32(double x) {
-//  return isInteger(x) && (x == (int32_t)x || x == (uint32_t)x);
-//}
-//
-//int parseInt(const char *str) {
-//  int ret = *str - '0';
-//  while (*(++str)) {
-//    ret *= 10;
-//    ret += *str - '0';
-//  }
-//  return ret;
-//}
-//
-//HeapInfo parseHeap(const char *name) {
-//  HeapInfo ret;
-//  if (name[0] != 'H' || name[1] != 'E' || name[2] != 'A' || name[3] != 'P') {
-//    ret.valid = false;
-//    return ret;
-//  }
-//  ret.valid = true;
-//  ret.unsign = name[4] == 'U';
-//  ret.floaty = name[4] == 'F';
-//  ret.bits = parseInt(name + (ret.unsign || ret.floaty ? 5 : 4));
-//  ret.type = !ret.floaty ? ASM_INT : (ret.bits == 64 ? ASM_DOUBLE : ASM_FLOAT);
-//  return ret;
-//}
-//
-//AsmType detectType(Ref node, AsmData *asmData, bool inVarDef) {
-//  switch (node[0]->getCString()[0]) {
-//    case 'n': {
-//      if (node[0] == NUM) {
-//        if (!isInteger(node[1]->getNumber())) return ASM_DOUBLE;
-//        return ASM_INT;
-//      } else if (node[0] == NAME) {
-//        if (asmData) {
-//          AsmType ret = asmData->getType(node[1]->getCString());
-//          if (ret != ASM_NONE) return ret;
-//        }
-//        if (!inVarDef) {
-//          if (node[1] == INF || node[1] == NaN) return ASM_DOUBLE;
-//          if (node[1] == TEMP_RET0) return ASM_INT;
-//          return ASM_NONE;
-//        }
-//        // We are in a variable definition, where Math_fround(0) optimized into a global constant becomes f0 = Math_fround(0)
-//        if (ASM_FLOAT_ZERO.isNull()) ASM_FLOAT_ZERO = node[1]->getIString();
-//        else assert(node[1] == ASM_FLOAT_ZERO);
-//        return ASM_FLOAT;
-//      }
-//      break;
-//    }
-//    case 'u': {
-//      if (node[0] == UNARY_PREFIX) {
-//        switch (node[1]->getCString()[0]) {
-//          case '+': return ASM_DOUBLE;
-//          case '-': return detectType(node[2], asmData, inVarDef);
-//          case '!': case '~': return ASM_INT;
-//        }
-//        break;
-//      }
-//      break;
-//    }
-//    case 'c': {
-//      if (node[0] == CALL) {
-//        if (node[1][0] == NAME) {
-//          IString name = node[1][1]->getIString();
-//          if (name == MATH_FROUND) return ASM_FLOAT;
-//          else if (name == SIMD_FLOAT32X4 || name == SIMD_FLOAT32X4_CHECK) return ASM_FLOAT32X4;
-//          else if (name == SIMD_FLOAT64X2 || name == SIMD_FLOAT64X2_CHECK) return ASM_FLOAT64X2;
-//          else if (name == SIMD_INT8X16   || name == SIMD_INT8X16_CHECK) return ASM_INT8X16;
-//          else if (name == SIMD_INT16X8   || name == SIMD_INT16X8_CHECK) return ASM_INT16X8;
-//          else if (name == SIMD_INT32X4   || name == SIMD_INT32X4_CHECK) return ASM_INT32X4;
-//          else if (name == SIMD_BOOL8X16  || name == SIMD_BOOL8X16_CHECK) return ASM_BOOL8X16;
-//          else if (name == SIMD_BOOL16X8  || name == SIMD_BOOL16X8_CHECK) return ASM_BOOL16X8;
-//          else if (name == SIMD_BOOL32X4  || name == SIMD_BOOL32X4_CHECK) return ASM_BOOL32X4;
-//          else if (name == SIMD_BOOL64X2  || name == SIMD_BOOL64X2_CHECK) return ASM_BOOL64X2;
-//        }
-//        return ASM_NONE;
-//      } else if (node[0] == CONDITIONAL) {
-//        return detectType(node[2], asmData, inVarDef);
-//      }
-//      break;
-//    }
-//    case 'b': {
-//      if (node[0] == BINARY) {
-//        switch (node[1]->getCString()[0]) {
-//          case '+': case '-':
-//          case '*': case '/': case '%': return detectType(node[2], asmData, inVarDef);
-//          case '|': case '&': case '^': case '<': case '>': // handles <<, >>, >>=, <=, >=
-//          case '=': case '!': { // handles ==, !=
-//            return ASM_INT;
-//          }
-//        }
-//      }
-//      break;
-//    }
-//    case 's': {
-//      if (node[0] == SEQ) {
-//        return detectType(node[2], asmData, inVarDef);
-//      } else if (node[0] == SUB) {
-//        assert(node[1][0] == NAME);
-//        HeapInfo info = parseHeap(node[1][1]->getCString());
-//        if (info.valid) return ASM_NONE;
-//        return info.floaty ? ASM_DOUBLE : ASM_INT; // XXX ASM_FLOAT?
-//      }
-//      break;
-//    }
-//  }
-//  //dump("horrible", node);
-//  //assert(0);
-//  return ASM_NONE;
-//}
-//
-//AsmSign detectSign(Ref node) {
-//  IString type = node[0]->getIString();
-//  if (type == BINARY) {
-//    IString op = node[1]->getIString();
-//    switch (op.str[0]) {
-//      case '>': {
-//        if (op == TRSHIFT) return ASM_UNSIGNED;
-//        // fallthrough
-//      }
-//      case '|': case '&': case '^': case '<': case '=': case '!': return ASM_SIGNED;
-//      case '+': case '-': return ASM_FLEXIBLE;
-//      case '*': case '/': return ASM_NONSIGNED; // without a coercion, these are double
-//      default: abort();
-//    }
-//  } else if (type == UNARY_PREFIX) {
-//    IString op = node[1]->getIString();
-//    switch (op.str[0]) {
-//      case '-': return ASM_FLEXIBLE;
-//      case '+': return ASM_NONSIGNED; // XXX double
-//      case '~': return ASM_SIGNED;
-//      default: abort();
-//    }
-//  } else if (type == NUM) {
-//    double value = node[1]->getNumber();
-//    if (value < 0) return ASM_SIGNED;
-//    if (value > uint32_t(-1) || fmod(value, 1) != 0) return ASM_NONSIGNED;
-//    if (value == int32_t(value)) return ASM_FLEXIBLE;
-//    return ASM_UNSIGNED;
-//  } else if (type == NAME) {
-//    return ASM_FLEXIBLE;
-//  } else if (type == CONDITIONAL) {
-//    return detectSign(node[2]);
-//  } else if (type == CALL) {
-//    if (node[1][0] == NAME && node[1][1] == MATH_FROUND) return ASM_NONSIGNED;
-//  }
-//  abort();
-//}
+use super::IString;
+use super::cashew::Ref;
+use super::cashew::{ARENA, EMPTYREF};
+use super::cashew::traversePre;
+use super::cashew::builder;
+use super::num::{is32Bit, isInteger, isInteger32, f64toi32};
 
-
-
-
-
-//#include <cstdint>
-//#include <cstdio>
-//#include <cmath>
-//#include <string>
-//#include <algorithm>
-//#include <map>
-//
-//#include "simple_ast.h"
-//#include "optimizer.h"
-//
-//using namespace cashew;
-//
-//typedef std::vector<IString> StringVec;
-//
-////==================
-//// Globals
-////==================
-//
-//Ref extraInfo;
-//
-////==================
-//// Infrastructure
-////==================
-//
-//template<class T, class V>
-//int indexOf(T list, V value) {
-//  for (size_t i = 0; i < list.size(); i++) {
-//    if (list[i] == value) return i;
-//  }
-//  return -1;
-//}
-//
-//int jsD2I(double x) {
-//  return (int)((int64_t)x);
-//}
-//
-//char *strdupe(const char *str) {
-//  char *ret = (char *)malloc(strlen(str)+1); // leaked!
-//  strcpy(ret, str);
-//  return ret;
-//}
-//
-//IString getHeapStr(int x, bool unsign) {
-//  switch (x) {
-//    case 8: return unsign ? HEAPU8 : HEAP8;
-//    case 16: return unsign ? HEAPU16 : HEAP16;
-//    case 32: return unsign ? HEAPU32 : HEAP32;
-//  }
-//  assert(0);
-//  return ":(";
-//}
-//
-//Ref deStat(Ref node) {
-//  if (node[0] == STAT) return node[1];
-//  return node;
-//}
-//
-//Ref getStatements(Ref node) {
-//  if (node[0] == DEFUN) {
-//    return node[3];
-//  } else if (node[0] == BLOCK) {
-//    return node->size() > 1 ? node[1] : nullptr;
-//  } else {
-//    return arena.alloc();
-//  }
-//}
-//
-//// Types
-//
+const NUM_ASMTYPES: usize = 12;
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum AsmType {
+  AsmInt,
+  AsmDouble,
+  AsmFloat,
+  AsmFloat32x4,
+  AsmFloat64x2,
+  AsmInt8x16,
+  AsmInt16x8,
+  AsmInt32x4,
+  AsmBool8x16,
+  AsmBool16x8,
+  AsmBool32x4,
+  AsmBool64x2,
+}
+// RSTODO
 //AsmType intToAsmType(int type) {
 //  if (type >= 0 && type <= ASM_NONE) return (AsmType)type;
 //  else {
@@ -392,284 +35,601 @@
 //    return ASM_NONE;
 //  }
 //}
-//
-//// forward decls
-//Ref makeEmpty();
-//bool isEmpty(Ref node);
-//Ref makeAsmCoercedZero(AsmType type);
-//Ref makeArray(int size_hint);
-//Ref makeBool(bool b);
-//Ref makeNum(double x);
-//Ref makeName(IString str);
-//Ref makeAsmCoercion(Ref node, AsmType type);
-//Ref make1(IString type, Ref a);
-//Ref make3(IString type, Ref a, Ref b, Ref c);
-//
-//AsmData::AsmData(Ref f) {
-//  func = f;
-//
-//  // process initial params
-//  Ref stats = func[3];
-//  size_t i = 0;
-//  while (i < stats->size()) {
-//    Ref node = stats[i];
-//    if (node[0] != STAT || node[1][0] != ASSIGN || node[1][2][0] != NAME) break;
-//    node = node[1];
-//    Ref name = node[2][1];
-//    int index = func[2]->indexOf(name);
-//    if (index < 0) break; // not an assign into a parameter, but a global
-//    IString& str = name->getIString();
-//    if (locals.count(str) > 0) break; // already done that param, must be starting function body
-//    locals[str] = Local(detectType(node[3]), true);
-//    params.push_back(str);
-//    stats[i] = makeEmpty();
-//    i++;
-//  }
-//  // process initial variable definitions and remove '= 0' etc parts - these
-//  // are not actually assignments in asm.js
-//  while (i < stats->size()) {
-//    Ref node = stats[i];
-//    if (node[0] != VAR) break;
-//    for (size_t j = 0; j < node[1]->size(); j++) {
-//      Ref v = node[1][j];
-//      IString& name = v[0]->getIString();
-//      Ref value = v[1];
-//      if (locals.count(name) == 0) {
-//        locals[name] = Local(detectType(value, nullptr, true), false);
-//        vars.push_back(name);
-//        v->setSize(1); // make an un-assigning var
-//      } else {
-//        assert(j == 0); // cannot break in the middle
-//        goto outside;
-//      }
-//    }
-//    i++;
-//  }
-//  outside:
-//  // look for other var definitions and collect them
-//  while (i < stats->size()) {
-//    traversePre(stats[i], [&](Ref node) {
-//      Ref type = node[0];
-//      if (type == VAR) {
-//        dump("bad, seeing a var in need of fixing", func);
-//        abort(); //, 'should be no vars to fix! ' + func[1] + ' : ' + JSON.stringify(node));
-//      }
-//    });
-//    i++;
-//  }
-//  // look for final RETURN statement to get return type.
-//  Ref retStmt = stats->back();
-//  if (!!retStmt && retStmt[0] == RETURN && !!retStmt[1]) {
-//    ret = detectType(retStmt[1]);
-//  } else {
-//    ret = ASM_NONE;
-//  }
-//}
-//
-//void AsmData::denormalize() {
-//  Ref stats = func[3];
-//  // Remove var definitions, if any
-//  for (size_t i = 0; i < stats->size(); i++) {
-//    if (stats[i][0] == VAR) {
-//      stats[i] = makeEmpty();
-//    } else {
-//      if (!isEmpty(stats[i])) break;
-//    }
-//  }
-//  // calculate variable definitions
-//  Ref varDefs = makeArray(vars.size());
-//  for (auto v : vars) {
-//    varDefs->push_back(make1(v, makeAsmCoercedZero(locals[v].type)));
-//  }
-//  // each param needs a line; reuse emptyNodes as much as we can
-//  size_t numParams = params.size();
-//  size_t emptyNodes = 0;
-//  while (emptyNodes < stats->size()) {
-//    if (!isEmpty(stats[emptyNodes])) break;
-//    emptyNodes++;
-//  }
-//  size_t neededEmptyNodes = numParams + (varDefs->size() ? 1 : 0); // params plus one big var if there are vars
-//  if (neededEmptyNodes > emptyNodes) {
-//    stats->insert(0, neededEmptyNodes - emptyNodes);
-//  } else if (neededEmptyNodes < emptyNodes) {
-//    stats->splice(0, emptyNodes - neededEmptyNodes);
-//  }
-//  // add param coercions
-//  int next = 0;
-//  for (auto param : func[2]->getArray()) {
-//    IString str = param->getIString();
-//    assert(locals.count(str) > 0);
-//    stats[next++] = make1(STAT, make3(ASSIGN, makeBool(true), makeName(str.c_str()), makeAsmCoercion(makeName(str.c_str()), locals[str].type)));
-//  }
-//  if (varDefs->size()) {
-//    stats[next] = make1(VAR, varDefs);
-//  }
-//  /*
-//  if (inlines->size() > 0) {
-//    var i = 0;
-//    traverse(func, function(node, type) {
-//      if (type == CALL && node[1][0] == NAME && node[1][1] == 'inlinejs') {
-//        node[1] = inlines[i++]; // swap back in the body
-//      }
-//    });
-//  }
-//  */
-//  // ensure that there's a final RETURN statement if needed.
-//  if (ret != ASM_NONE) {
-//    Ref retStmt = stats->back();
-//    if (!retStmt || retStmt[0] != RETURN) {
-//      stats->push_back(make1(RETURN, makeAsmCoercedZero(ret)));
-//    }
-//  }
-//  //printErr('denormalized \n\n' + astToSrc(func) + '\n\n');
-//}
-//
-//// Constructions TODO: share common constructions, and assert they remain frozen
-//
-//Ref makeArray(int size_hint=0) {
-//  return &arena.alloc()->setArray(size_hint);
-//}
-//
-//Ref makeBool(bool b) {
-//  return &arena.alloc()->setBool(b);
-//}
-//
-//Ref makeString(const IString& s) {
-//  return &arena.alloc()->setString(s);
-//}
-//
-//Ref makeEmpty() {
-//  return ValueBuilder::makeToplevel();
-//}
-//
-//Ref makeNum(double x) {
-//  return ValueBuilder::makeDouble(x);
-//}
-//
-//Ref makeName(IString str) {
-//  return ValueBuilder::makeName(str);
-//}
-//
+
+struct Local {
+    ty: AsmType,
+    param: bool, // false if a var
+}
+
+impl Local {
+    fn new(ty: AsmType, param: bool) -> Self {
+        Local { ty: ty, param: param }
+    }
+}
+
+struct AsmData {
+    locals: HashMap<IString, Local>,
+    params: Vec<IString>, // in order
+    vars: Vec<IString>, // in order
+    ret: Option<AsmType>,
+
+    func: Ref,
+    floatZero: Option<IString>,
+}
+
+impl AsmData {
+    // if you want to read data from f, and modify it as you go (parallel to denormalize)
+    fn new(f: Ref) -> AsmData {
+        let func = f;
+        let mut locals = HashMap::new();
+        let mut params = vec![];
+        let mut vars = vec![];
+        let mut floatZero = None;
+
+        let mut statsNode = func.get(3);
+        let stats: &mut Vec<Ref> = statsNode.getArrayMut();
+
+        // process initial params
+        for stat in &mut *stats {
+            if stat.get(0).getIString() != is!("stat") { break }
+            if stat.get(1).get(0).getIString() != is!("assign") { break }
+            if stat.get(1).get(2).get(0).getIString() != is!("name") { break }
+            let node = stat.get(1);
+            let name = node.get(2).get(1);
+            let index = func.get(2).indexOf(name);
+            // not an assign into a parameter, but a global?
+            if index < 0 { break }
+            let str = name.getIString();
+            // already done that param, must be starting function body?
+            if locals.contains_key(&str) { break }
+            params.push(str.clone());
+            let localty = detectType(node.get(3), None, &mut floatZero, false);
+            // RSTODO: valid to not have type?
+            locals.insert(str, Local::new(localty.unwrap(), true));
+            *stat = makeEmpty();
+        }
+
+        // process initial variable definitions and remove '= 0' etc parts -
+        // these are not actually assignments in asm.js
+        'outside: for stat in &mut *stats {
+            if stat.get(0).getIString() != is!("var") { break }
+            let mut first = true;
+            for v in stat.get(1).getArrayMut() {
+                let name = v.get(0).getIString();
+                let val = v.get(1);
+                if !locals.contains_key(&name) {
+                    vars.push(name.clone());
+                    let localty = detectType(val, None, &mut floatZero, false);
+                    // RSTODO: valid to not have type?
+                    locals.insert(name, Local::new(localty.unwrap(), false));
+                    v.setSize(1); // make an un-assigning var
+                } else {
+                    assert!(first); // cannot break in the middle
+                    break 'outside
+                }
+                first = false
+            }
+        }
+
+        // look for other var definitions and collect them
+        for &mut stat in &mut *stats {
+            traversePre(stat, |node: Ref| {
+                let ty = node.get(0).getIString();
+                if ty == is!("var") {
+                    panic!()
+                    // dump("bad, seeing a var in need of fixing", func);
+                    //, 'should be no vars to fix! ' + func[1] + ' : ' + JSON.stringify(node));
+                }
+            })
+        }
+
+        // look for final RETURN statement to get return type.
+        let ret = stats.last().map(|retStmt| {
+            if retStmt.get(0).getIString() == is!("return") && retStmt.get(1).is_something() {
+                detectType(retStmt.get(1), None, &mut floatZero, false)
+            } else {
+                None
+            }
+        }).unwrap_or(None);
+
+        AsmData {
+            locals: locals,
+            params: params,
+            vars: vars,
+            ret: ret,
+
+            func: f,
+            floatZero: floatZero,
+        }
+    }
+
+    fn denormalize(&mut self) {
+        let mut statsNode = self.func.get(3);
+        let stats = statsNode.getArrayMut();
+
+        // Remove var definitions, if any
+        for stat in &mut *stats {
+            if stat.get(0).getIString() == is!("var") {
+                *stat = makeEmpty()
+            } else if !isEmpty(*stat) {
+                break
+            }
+        }
+
+        // calculate variable definitions
+        let mut varDefs = makeArray(self.vars.len());
+        for v in &self.vars {
+            let localty = self.locals.get(v).unwrap().ty;
+            let zero = makeAsmCoercedZero(localty, self.floatZero.clone());
+            varDefs.push_back(make1(v.clone(), zero));
+        }
+
+        // each param needs a line; reuse emptyNodes as much as we can
+        let numParams = self.params.len();
+        let mut emptyNodes = 0;
+        while emptyNodes < stats.len() {
+            if !isEmpty(stats[emptyNodes]) { break }
+            emptyNodes += 1
+        }
+        // params plus one big var if there are vars
+        let neededEmptyNodes = numParams + if varDefs.size() > 0 { 1 } else { 0 };
+        if neededEmptyNodes > emptyNodes {
+            let num = neededEmptyNodes - emptyNodes;
+            let empties: Vec<_> = iter::repeat(EMPTYREF).take(num).collect();
+            stats.splice(0..0, empties.into_iter());
+        } else {
+            let num = emptyNodes - neededEmptyNodes;
+            stats.splice(0..num, iter::empty());
+        }
+
+        // add param coercions
+        let mut next = 0;
+        for param in self.func.get(2).getArray() {
+            let str = param.getIString();
+            let localty = self.locals.get(&str).unwrap().ty;
+            let coercion = makeAsmCoercion(makeName(str.clone()), localty);
+            let stat = make3Ref(is!("assign"), makeBool(true), makeName(str.clone()), coercion);
+            stats[next] = make1(is!("stat"), stat);
+            next += 1;
+        }
+        if varDefs.size() > 0 {
+            stats[next] = make1(is!("var"), varDefs);
+        }
+        /*
+        if (inlines->size() > 0) {
+          var i = 0;
+          traverse(func, function(node, type) {
+            if (type == CALL && node[1][0] == NAME && node[1][1] == 'inlinejs') {
+              node[1] = inlines[i++]; // swap back in the body
+            }
+          });
+        }
+        */
+
+        // ensure that there's a final RETURN statement if needed.
+        if let Some(ret) = self.ret {
+            let needsret = if let Some(retStmt) = stats.last() {
+                retStmt.get(0).getIString() != is!("return")
+            } else {
+                true
+            };
+            if needsret {
+                let zero = makeAsmCoercedZero(ret, self.floatZero.clone());
+                stats.push(make1(is!("return"), zero))
+            }
+        }
+
+        //printErr('denormalized \n\n' + astToSrc(func) + '\n\n');
+    }
+
+    fn getType(&self, name: IString) -> Option<AsmType> {
+        self.locals.get(&name).map(|l| l.ty)
+    }
+    fn setType(&mut self, name: IString, ty: AsmType) {
+        self.locals.get_mut(&name).unwrap().ty = ty;
+    }
+
+    fn isLocal(&self, name: IString) -> bool {
+        self.locals.contains_key(&name)
+    }
+    fn isParam(&self, name: IString) -> bool {
+        self.locals.get(&name).map(|l| l.param).unwrap_or(false)
+    }
+    fn isVar(&self, name: IString) -> bool {
+        self.locals.get(&name).map(|l| !l.param).unwrap_or(false)
+    }
+
+    fn addParam(&mut self, name: IString, ty: AsmType) {
+        let old = self.locals.insert(name.clone(), Local::new(ty, true));
+        assert!(old.is_none());
+        self.params.push(name);
+    }
+    fn addVar(&mut self, name: IString, ty: AsmType) {
+        let old = self.locals.insert(name.clone(), Local::new(ty, false));
+        assert!(old.is_none());
+        self.vars.push(name);
+    }
+
+    fn deleteVar(&mut self, name: IString) {
+        self.locals.remove(&name);
+        let pos = self.vars.iter().position(|v| v == &name).unwrap();
+        self.vars.remove(pos);
+    }
+}
+
+struct HeapInfo {
+    unsign: bool,
+    floaty: bool,
+    bits: u32,
+    ty: AsmType,
+}
+
+enum AsmSign {
+  AsmFlexible, // small constants can be signed or unsigned, variables are also flexible
+  AsmSigned,
+  AsmUnsigned,
+  AsmNonsigned,
+}
+
+fn parseHeap(name_str: &str) -> Option<HeapInfo> {
+    if &name_str[..4] != "HEAP" { return None }
+    let name = name_str.as_bytes();
+    let (unsign, floaty) = (name[4] == b'U', name[4] == b'F');
+    let bit_ofs = if unsign || floaty { 5 } else { 4 };
+    let bits = name_str[bit_ofs..].parse().unwrap();
+    let ty = if !floaty {
+        AsmType::AsmInt
+    } else if bits == 64 {
+        AsmType::AsmDouble
+    } else {
+        AsmType::AsmFloat
+    };
+    Some(HeapInfo { unsign: unsign, floaty: floaty, bits: bits, ty: ty })
+}
+
+fn detectType(node: Ref, asmData: Option<AsmData>, asmFloatZero: &mut Option<IString>, inVarDef: bool) -> Option<AsmType> {
+    return match node.get(0).getIString() {
+        is!("num") => {
+            Some(if !isInteger(node.get(1).getNumber()) {
+                AsmType::AsmDouble
+            } else {
+                AsmType::AsmInt
+            })
+        },
+        is!("name") => {
+            if let Some(asmData) = asmData {
+                let ret = asmData.getType(node.get(0).getIString());
+                if ret.is_some() { return ret }
+            }
+            Some(if !inVarDef {
+                match node.get(1).getIString() {
+                    is!("inf") |
+                    is!("nan") => AsmType::AsmDouble,
+                    is!("tempRet0") => AsmType::AsmInt,
+                    _ => return None,
+                }
+            } else {
+                // We are in a variable definition, where Math_fround(0) optimized into a global constant becomes f0 = Math_fround(0)
+                let nodestr = node.get(1).getIString();
+                if let Some(ref asmFloatZero) = *asmFloatZero {
+                    assert!(*asmFloatZero == nodestr)
+                } else {
+                    *asmFloatZero = Some(nodestr)
+                }
+                AsmType::AsmFloat
+            })
+        },
+        is!("unary-prefix") => {
+            // RSTODO: istring match? Are there any 2 char unary prefixes?
+            match node.get(1).getStr().as_bytes()[0] {
+                b'+' => Some(AsmType::AsmDouble),
+                b'-' => detectType(node.get(2), asmData, asmFloatZero, inVarDef),
+                b'!' |
+                b'~' => Some(AsmType::AsmInt),
+                _ => None,
+            }
+        },
+        is!("call") => {
+            match node.get(0).getIString() {
+                is!("name") => {
+                    Some(match node.get(1).get(1).getIString() {
+                        is!("Math_fround") => AsmType::AsmFloat,
+                        is!("SIMD_Float32x4") |
+                        is!("SIMD_Float32x4_check") => AsmType::AsmFloat32x4,
+                        is!("SIMD_Float64x2") |
+                        is!("SIMD_Float64x2_check") => AsmType::AsmFloat64x2,
+                        is!("SIMD_Int8x16") |
+                        is!("SIMD_Int8x16_check") => AsmType::AsmInt8x16,
+                        is!("SIMD_Int16x8") |
+                        is!("SIMD_Int16x8_check") => AsmType::AsmInt16x8,
+                        is!("SIMD_Int32x4") |
+                        is!("SIMD_Int32x4_check") => AsmType::AsmInt32x4,
+                        is!("SIMD_Bool8x16") |
+                        is!("SIMD_Bool8x16_check") => AsmType::AsmBool8x16,
+                        is!("SIMD_Bool16x8") |
+                        is!("SIMD_Bool16x8_check") => AsmType::AsmBool16x8,
+                        is!("SIMD_Bool32x4") |
+                        is!("SIMD_Bool32x4_check") => AsmType::AsmBool32x4,
+                        is!("SIMD_Bool64x2") |
+                        is!("SIMD_Bool64x2_check") => AsmType::AsmBool64x2,
+                        _ => return None,
+                    })
+                },
+                is!("conditional") => {
+                    detectType(node.get(2), asmData, asmFloatZero, inVarDef)
+                },
+                _ => None
+            }
+        },
+        is!("binary") => {
+            match node.get(1).getStr().as_bytes()[0] {
+                b'+' | b'-' |
+                b'*' | b'/' |
+                b'%' => detectType(node.get(2), asmData, asmFloatZero, inVarDef),
+                b'|' | b'&' | b'^' |
+                b'<' | b'>' | // handles <<, >>, >>=, <=
+                b'=' | b'!' => Some(AsmType::AsmInt), // handles ==, !=
+                _ => None,
+            }
+        },
+        is!("seq") => detectType(node.get(2), asmData, asmFloatZero, inVarDef),
+        is!("sub") => {
+            assert!(node.get(1).get(0).getIString() == is!("name"));
+            Some(if let Some(info) = parseHeap(node.get(1).get(1).getStr()) {
+                // XXX ASM_FLOAT?
+                if info.floaty { AsmType::AsmDouble } else { AsmType::AsmInt }
+            } else {
+                return None
+            })
+        },
+        _ => None,
+    }
+    //dump("horrible", node);
+    //assert(0);
+}
+
+fn detectSign(node: Ref) -> AsmSign {
+    match node.get(0).getIString() {
+        is!("binary") => {
+            let opnode = node.get(1);
+            let opch = opnode.getStr().as_bytes()[0];
+            if opch == b'>' && opnode.getIString() == is!(">>>") {
+                return AsmSign::AsmUnsigned
+            }
+            match opch {
+                b'|' | b'&' | b'^' |
+                b'<' | b'>' |
+                b'=' | b'!' => AsmSign::AsmSigned,
+                b'+' | b'-' => AsmSign::AsmFlexible,
+                b'*' | b'/' => AsmSign::AsmNonsigned,
+                _ => panic!(),
+            }
+        },
+        is!("unary-prefix") => {
+            // RSTODO: istring match? Are there any 2 char unary prefixes?
+            match node.get(1).getStr().as_bytes()[0] {
+                b'-' => AsmSign::AsmFlexible,
+                b'+' => AsmSign::AsmNonsigned,
+                b'~' => AsmSign::AsmSigned,
+                _ => panic!(),
+            }
+        },
+        is!("num") => {
+            let value = node.get(1).getNumber();
+            if value < 0f64 {
+                AsmSign::AsmSigned
+            } else if !is32Bit(value) || !isInteger(value) {
+                AsmSign::AsmNonsigned
+            } else if value <= i32::MAX as f64 {
+                AsmSign::AsmFlexible
+            } else {
+                AsmSign::AsmUnsigned
+            }
+        },
+        is!("name") => AsmSign::AsmFlexible,
+        is!("conditional") => detectSign(node.get(2)),
+        is!("call") => {
+            assert!(node.get(1).get(0).getIString() == is!("name"));
+            assert!(node.get(1).get(1).getIString() == is!("Math_fround"));
+            AsmSign::AsmNonsigned
+        },
+        _ => panic!(),
+    }
+}
+
+//==================
+// Infrastructure
+//==================
+
+fn getHeapStr(x: u32, unsign: bool) -> IString {
+    match x {
+        8 => if unsign { is!("HEAPU8") } else { is!("HEAP8") },
+        16 => if unsign { is!("HEAPU16") } else { is!("HEAP16") },
+        32 => if unsign { is!("HEAPU32") } else { is!("HEAP32") },
+        _ => panic!(),
+    }
+}
+
+fn deStat(node: Ref) -> Ref {
+    if node.get(0).getIString() == is!("stat") { node.get(1) } else { node }
+}
+
+fn getStatements(node:Ref) -> Option<Ref> {
+    Some(match node.get(0).getIString() {
+        is!("defun") => node.get(3),
+        is!("block") => if node.size() > 1 { node.get(1) } else { return None },
+        _ => ARENA.alloc(),
+    })
+}
+
+
+// Constructions TODO: share common constructions, and assert they remain frozen
+
+fn makeArray(size_hint: usize) -> Ref {
+    let mut r = ARENA.alloc();
+    r.setArrayHint(size_hint);
+    r
+}
+
+fn makeBool(b: bool) -> Ref {
+    let mut r = ARENA.alloc();
+    r.setBool(b);
+    r
+}
+
+fn makeString(s: IString) -> Ref {
+    let mut r = ARENA.alloc();
+    r.setIString(s);
+    r
+}
+
+fn makeEmpty() -> Ref {
+    builder::makeToplevel()
+}
+
+fn makeNum(x: f64) -> Ref {
+    builder::makeDouble(x)
+}
+
+fn makeName(str: IString) -> Ref {
+  return builder::makeName(str);
+}
+
+// RSTODO
 //Ref makeBlock() {
 //  return ValueBuilder::makeBlock();
 //}
-//
-//Ref make1(IString s1, Ref a) {
-//  Ref ret(makeArray(2));
-//  ret->push_back(makeString(s1));
-//  ret->push_back(a);
-//  return ret;
-//}
-//
-//Ref make2(IString s1, IString s2, Ref a) {
-//  Ref ret(makeArray(2));
-//  ret->push_back(makeString(s1));
-//  ret->push_back(makeString(s2));
-//  ret->push_back(a);
-//  return ret;
-//}
-//
-//Ref make2(IString s1, Ref a, Ref b) {
-//  Ref ret(makeArray(3));
-//  ret->push_back(makeString(s1));
-//  ret->push_back(a);
-//  ret->push_back(b);
-//  return ret;
-//}
-//
-//Ref make3(IString type, IString a, Ref b, Ref c) {
-//  Ref ret(makeArray(4));
-//  ret->push_back(makeString(type));
-//  ret->push_back(makeString(a));
-//  ret->push_back(b);
-//  ret->push_back(c);
-//  return ret;
-//}
-//
-//Ref make3(IString type, Ref a, Ref b, Ref c) {
-//  Ref ret(makeArray(4));
-//  ret->push_back(makeString(type));
-//  ret->push_back(a);
-//  ret->push_back(b);
-//  ret->push_back(c);
-//  return ret;
-//}
-//
-//Ref makeAsmCoercedZero(AsmType type) {
-//  switch (type) {
-//    case ASM_INT: return makeNum(0); break;
-//    case ASM_DOUBLE: return make2(UNARY_PREFIX, PLUS, makeNum(0)); break;
-//    case ASM_FLOAT: {
-//      if (!ASM_FLOAT_ZERO.isNull()) {
-//        return makeName(ASM_FLOAT_ZERO);
-//      } else {
-//        return make2(CALL, makeName(MATH_FROUND), &(makeArray(1))->push_back(makeNum(0)));
-//      }
-//      break;
-//    }
-//    case ASM_FLOAT32X4: {
-//      return make2(CALL, makeName(SIMD_FLOAT32X4), &(makeArray(4))->push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    case ASM_FLOAT64X2: {
-//      return make2(CALL, makeName(SIMD_FLOAT64X2), &(makeArray(2))->push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    case ASM_INT8X16: {
-//      return make2(CALL, makeName(SIMD_INT8X16), &(makeArray(16))->push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    case ASM_INT16X8: {
-//      return make2(CALL, makeName(SIMD_INT16X8), &(makeArray(8))->push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    case ASM_INT32X4: {
-//      return make2(CALL, makeName(SIMD_INT32X4), &(makeArray(4))->push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    case ASM_BOOL8X16: {
-//      return make2(CALL, makeName(SIMD_BOOL8X16), &(makeArray(16))->push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    case ASM_BOOL16X8: {
-//      return make2(CALL, makeName(SIMD_BOOL16X8), &(makeArray(8))->push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    case ASM_BOOL32X4: {
-//      return make2(CALL, makeName(SIMD_BOOL32X4), &(makeArray(4))->push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    case ASM_BOOL64X2: {
-//      return make2(CALL, makeName(SIMD_BOOL64X2), &(makeArray(2))->push_back(makeNum(0)).push_back(makeNum(0)));
-//      break;
-//    }
-//    default: assert(0);
-//  }
-//  abort();
-//}
-//
-//Ref makeAsmCoercion(Ref node, AsmType type) {
-//  switch (type) {
-//    case ASM_INT: return make3(BINARY, OR, node, makeNum(0));
-//    case ASM_DOUBLE: return make2(UNARY_PREFIX, PLUS, node);
-//    case ASM_FLOAT: return make2(CALL, makeName(MATH_FROUND), &(makeArray(1))->push_back(node));
-//    case ASM_FLOAT32X4: return make2(CALL, makeName(SIMD_FLOAT32X4_CHECK), &(makeArray(1))->push_back(node));
-//    case ASM_FLOAT64X2: return make2(CALL, makeName(SIMD_FLOAT64X2_CHECK), &(makeArray(1))->push_back(node));
-//    case ASM_INT8X16: return make2(CALL, makeName(SIMD_INT8X16_CHECK), &(makeArray(1))->push_back(node));
-//    case ASM_INT16X8: return make2(CALL, makeName(SIMD_INT16X8_CHECK), &(makeArray(1))->push_back(node));
-//    case ASM_INT32X4: return make2(CALL, makeName(SIMD_INT32X4_CHECK), &(makeArray(1))->push_back(node));
-//    case ASM_NONE:
-//    default: return node; // non-validating code, emit nothing XXX this is dangerous, we should only allow this when we know we are not validating
-//  }
-//}
-//
-//// Checks
-//
-//bool isEmpty(Ref node) {
-//  return (node->size() == 2 && node[0] == TOPLEVEL && node[1]->size() == 0) ||
-//          (node->size() > 0 && node[0] == BLOCK && (!node[1] || node[1]->size() == 0));
-//}
-//
+
+fn make1(s1: IString, a: Ref) -> Ref {
+    let mut r = makeArray(2);
+    r
+        .push_back(makeString(s1))
+        .push_back(a);
+    r
+}
+
+fn make2IString(s1: IString, s2: IString, a: Ref) -> Ref {
+    let mut r = makeArray(3);
+    r
+        .push_back(makeString(s1))
+        .push_back(makeString(s2))
+        .push_back(a);
+    r
+}
+
+fn make2Ref(s1: IString, a: Ref, b: Ref) -> Ref {
+    let mut r = makeArray(3);
+    r
+        .push_back(makeString(s1))
+        .push_back(a)
+        .push_back(b);
+    r
+}
+
+fn make3IString(ty: IString, a: IString, b: Ref, c: Ref) -> Ref {
+    let mut r = makeArray(4);
+    r
+        .push_back(makeString(ty))
+        .push_back(makeString(a))
+        .push_back(b)
+        .push_back(c);
+    r
+}
+
+fn make3Ref(ty: IString, a: Ref, b: Ref, c: Ref) -> Ref {
+    let mut r = makeArray(4);
+    r
+        .push_back(makeString(ty))
+        .push_back(a)
+        .push_back(b)
+        .push_back(c);
+    r
+}
+
+// RSTODO: could be massively shortened by keeping a mapping from type to
+// istring method+number of zeros, and just using that? Would also benefit
+// method below
+fn makeAsmCoercedZero(ty: AsmType, asmFloatZero: Option<IString>) -> Ref {
+    fn zarr(n: usize) -> Ref {
+        let mut arr = makeArray(n);
+        for _ in 0..n { arr.push_back(makeNum(0f64)); }
+        arr
+    }
+    match ty {
+        AsmType::AsmInt => makeNum(0f64),
+        AsmType::AsmDouble => make2IString(is!("unary-prefix"), is!("+"), makeNum(0f64)),
+        AsmType::AsmFloat => {
+            if let Some(f0) = asmFloatZero {
+                makeName(f0)
+            } else {
+                make2Ref(is!("call"), makeName(is!("Math_fround")), zarr(1))
+            }
+        },
+        AsmType::AsmFloat32x4 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Float32x4")), zarr(4))
+        },
+        AsmType::AsmFloat64x2 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Float64x2")), zarr(2))
+        },
+        AsmType::AsmInt8x16 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Int8x16")), zarr(16))
+        },
+        AsmType::AsmInt16x8 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Int16x8")), zarr(8))
+        },
+        AsmType::AsmInt32x4 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Int32x4")), zarr(4))
+        },
+        AsmType::AsmBool8x16 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Bool8x16")), zarr(16))
+        },
+        AsmType::AsmBool16x8 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Bool16x8")), zarr(8))
+        },
+        AsmType::AsmBool32x4 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Bool32x4")), zarr(4))
+        },
+        AsmType::AsmBool64x2 => {
+            make2Ref(is!("call"), makeName(is!("SIMD_Bool64x2")), zarr(2))
+        },
+    }
+}
+
+fn makeAsmCoercion(node: Ref, ty: AsmType) -> Ref {
+    fn arr(n: Ref) -> Ref {
+        let mut arr = makeArray(1);
+        arr.push_back(n);
+        arr
+    }
+    match ty {
+        AsmType::AsmInt => make3IString(is!("binary"), is!("|"), node, makeNum(0f64)),
+        AsmType::AsmDouble => make2IString(is!("unary-prefix"), is!("+"), node),
+        AsmType::AsmFloat => make2Ref(is!("call"), makeName(is!("Math_fround")), arr(node)),
+        AsmType::AsmFloat32x4 => make2Ref(is!("call"), makeName(is!("SIMD_Float32x4_check")), arr(node)),
+        AsmType::AsmFloat64x2 => make2Ref(is!("call"), makeName(is!("SIMD_Float64x2_check")), arr(node)),
+        AsmType::AsmInt8x16 => make2Ref(is!("call"), makeName(is!("SIMD_Int8x16_check")), arr(node)),
+        AsmType::AsmInt16x8 => make2Ref(is!("call"), makeName(is!("SIMD_Int16x8_check")), arr(node)),
+        AsmType::AsmInt32x4 => make2Ref(is!("call"), makeName(is!("SIMD_Int32x4_check")), arr(node)),
+        // non-validating code, emit nothing XXX this is dangerous, we should only allow this when we know we are not validating
+        AsmType::AsmBool8x16 |
+        AsmType::AsmBool16x8 |
+        AsmType::AsmBool32x4 |
+        AsmType::AsmBool64x2 => node,
+    }
+}
+
+// Checks
+
+fn isEmpty(node: Ref) -> bool {
+    (node.size() == 2 &&
+        node.get(0).getIString() == is!("toplevel") &&
+        node.get(1).size() == 0) ||
+    (node.size() > 0 &&
+        node.get(0).getIString() == is!("block") &&
+        (!node.get(1).is_something() || node.get(1).size() == 0))
+}
+
+// RSTODO
 //bool commable(Ref node) { // TODO: hashing
 //  IString type = node[0]->getIString();
 //  if (type == ASSIGN || type == BINARY || type == UNARY_PREFIX || type == NAME || type == NUM || type == CALL || type == SEQ || type == CONDITIONAL || type == SUB) return true;
@@ -781,12 +741,16 @@
 //Ref flipCondition(Ref cond) {
 //  return simplifyNotCompsDirect(make2(UNARY_PREFIX, L_NOT, cond));
 //}
-//
-//void safeCopy(Ref target, Ref source) { // safely copy source onto target, even if source is a subnode of target
-//  Ref temp = source; // hold on to source
-//  *target = *temp;
-//}
-//
+
+// safely copy source onto target, even if source is a subnode of target
+// RSTODO: what does this actually doing? Does source need to be dropped?
+// does the C++ implementation copy vec contents?
+fn safeCopy(mut target: Ref, source: Ref) {
+    let temp = source; // hold on to source
+    *target = (*temp).clone();
+}
+
+// RSTODO
 //void clearEmptyNodes(Ref arr) {
 //  int skip = 0;
 //  for (size_t i = 0; i < arr->size(); i++) {
@@ -891,21 +855,12 @@
 //  });
 //  return size;
 //}
-//
-////==================
-//// Params
-////==================
-//
-//bool preciseF32 = false,
-//     receiveJSON = false,
-//     emitJSON = false,
-//     minifyWhitespace = false,
-//     last = false;
-//
-////=====================
-//// Optimization passes
-////=====================
-//
+
+//=====================
+// Optimization passes
+//=====================
+
+// RSTODO
 //#define HASES \
 //  bool has(const IString& str) { \
 //    return count(str) > 0; \

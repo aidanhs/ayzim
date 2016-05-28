@@ -28,7 +28,7 @@ impl Ref {
     fn get_val_mut(&mut self) -> &mut Value {
         unsafe { &mut (*self.inst) }
     }
-    fn is_something(&self) -> bool {
+    pub fn is_something(&self) -> bool {
         self.inst != ptr::null_mut() && !self.isNull()
     }
 // RSTODO
@@ -63,7 +63,7 @@ impl DerefMut for Ref {
 // RSTODO: not really sync
 unsafe impl Sync for Ref {}
 
-const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
+pub const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 
 // Arena allocation, free it all on process exit
 
@@ -109,6 +109,7 @@ lazy_static! {
 pub type ArrayStorage = Vec<Ref>;
 pub type ObjectStorage = HashMap<IString, Ref>;
 
+#[derive(Clone)]
 pub enum Value {
     null,
     str(IString),
@@ -189,7 +190,7 @@ impl Value {
         *self = Value::str(IString::from(s));
         self
     }
-    fn setIString(&mut self, a: IString) -> &mut Value {
+    pub fn setIString(&mut self, a: IString) -> &mut Value {
         self.free();
         *self = Value::str(a);
         self
@@ -206,7 +207,7 @@ impl Value {
         *self = Value::arr(sa);
         self
     }
-    fn setArrayHint(&mut self, size_hint: usize) -> &mut Value {
+    pub fn setArrayHint(&mut self, size_hint: usize) -> &mut Value {
         self.free();
         let mut sa = ARENA.allocArray();
         sa.reserve(size_hint);
@@ -218,7 +219,7 @@ impl Value {
         *self = Value::null;
         self
     }
-    fn setBool(&mut self, b: bool) -> &mut Value {
+    pub fn setBool(&mut self, b: bool) -> &mut Value {
         self.free();
         *self = Value::boo(b);
         self
@@ -229,7 +230,7 @@ impl Value {
         self
     }
 
-    fn isString(&self) -> bool {
+    pub fn isString(&self) -> bool {
         if let &Value::str(_) = self { true } else { false }
     }
     fn isNumber(&self) -> bool {
@@ -254,22 +255,22 @@ impl Value {
         if let &Value::boo(sb) = self { b == sb } else { false }
     }
 
-    fn getStr(&self) -> &str {
+    pub fn getStr(&self) -> &str {
         if let &Value::str(ref a) = self { &*a } else { panic!() }
     }
-    fn getIString(&self) -> IString {
+    pub fn getIString(&self) -> IString {
         if let &Value::str(ref a) = self { a.clone() } else { panic!() }
     }
-    fn getNumber(&self) -> f64 {
+    pub fn getNumber(&self) -> f64 {
         if let &Value::num(d) = self { d } else { panic!() }
     }
     fn getBool(&self) -> bool {
         if let &Value::boo(b) = self { b } else { panic!() }
     }
-    fn getArray(&self) -> &ArrayStorage {
+    pub fn getArray(&self) -> &ArrayStorage {
         if let &Value::arr(ref a) = self { a } else { panic!() }
     }
-    fn getArrayMut(&mut self) -> &mut ArrayStorage {
+    pub fn getArrayMut(&mut self) -> &mut ArrayStorage {
         if let &mut Value::arr(ref mut a) = self { a } else { panic!() }
     }
     fn getObject(&self) -> &ObjectStorage {
@@ -360,7 +361,7 @@ impl Value {
         };
     }
 
-    fn stringify<T>(&self, out: &mut T, pretty: bool) where T: Write {
+    pub fn stringify<T>(&self, out: &mut T, pretty: bool) where T: Write {
         let jsonobj = self.stringify_json();
         let outstr = if pretty {
             serde_json::ser::to_string_pretty(&jsonobj)
@@ -394,11 +395,11 @@ impl Value {
 
     // Array operations
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.getArray().len()
     }
 
-    fn setSize(&mut self, size: usize) {
+    pub fn setSize(&mut self, size: usize) {
         let a = self.getArrayMut();
         let old = a.len();
         if old < size {
@@ -409,11 +410,11 @@ impl Value {
         }
     }
 
-    fn get(&self, x: usize) -> Ref {
+    pub fn get(&self, x: usize) -> Ref {
         *self.getArray().get(x).unwrap()
     }
 
-    fn push_back(&mut self, r: Ref) -> &mut Value {
+    pub fn push_back(&mut self, r: Ref) -> &mut Value {
         self.getArrayMut().push(r);
         self
     }
@@ -430,6 +431,9 @@ impl Value {
         self.getArrayMut().splice(x..x+num, iter::empty());
     }
 
+    // RSTODO: https://github.com/rust-lang/rfcs/issues/1065
+    // RSTODO: should this be implemented on vec instead? See other uses of
+    // slice in the optimizer
     fn insertEmpties(&mut self, x: usize, num: usize) {
         let empties: Vec<_> = iter::repeat(EMPTYREF).take(num).collect();
         self.getArrayMut().splice(x..x, empties.into_iter());
@@ -439,7 +443,7 @@ impl Value {
         self.getArrayMut().insert(x, node);
     }
 
-    fn indexOf(&self, other: Ref) -> isize {
+    pub fn indexOf(&self, other: Ref) -> isize {
         match self.getArray().iter().position(|&r| *r == *other) {
             Some(i) => i as isize,
             None => -1,
@@ -547,7 +551,7 @@ fn visitable(node: Ref) -> bool {
 // https://github.com/rust-lang/rfcs/issues/372 would make this code nicer
 
 // Traverse, calling visit before the children
-fn traversePre<F>(node: Ref, visit: F) where F: Fn(Ref) {
+pub fn traversePre<F>(node: Ref, visit: F) where F: Fn(Ref) {
     if !visitable(node) { return }
     visit(node);
     let mut stack = StackedStack::<TraverseInfo>::new();
@@ -580,7 +584,7 @@ fn traversePre<F>(node: Ref, visit: F) where F: Fn(Ref) {
 }
 
 // Traverse, calling visitPre before the children and visitPost after
-fn traversePrePost<F>(node: Ref, visitPre: F, visitPost: F) where F: Fn(Ref) {
+pub fn traversePrePost<F1,F2>(node: Ref, visitPre: F1, visitPost: F2) where F1: Fn(Ref), F2: Fn(Ref) {
     if !visitable(node) { return }
     visitPre(node);
     let mut stack = StackedStack::<TraverseInfo>::new();
@@ -663,7 +667,7 @@ fn traverseFunctions<F>(ast: Ref, visit: F) where F: Fn(Ref) {
     }
 }
 
-fn dump(s: &str, node: Ref, pretty: bool) {
+pub fn dump(s: &str, node: Ref, pretty: bool) {
     let mut stderr = io::stderr();
     write!(stderr, "{}: ", s).unwrap();
     if node.is_something() { node.stringify(&mut stderr, pretty); }

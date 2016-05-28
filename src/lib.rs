@@ -20,9 +20,25 @@ extern crate libc;
 
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io;
+use std::io::{Read, Write};
 #[cfg(feature = "profiling")]
 use std::time;
+
+use optimizer::{
+    //eliminateDeadFuncs
+    //eliminate
+    //eliminateMemSafe
+    //simplifyExpressions
+    //optimizeFrounds
+    //simplifyIfs
+    //registerize
+    //registerizeHarder
+    //minifyLocals
+    //asmLastOpts
+};
+
+const DEBUG: bool = false;
 
 include!(concat!(env!("OUT_DIR"), "/static_atoms.rs"));
 
@@ -37,6 +53,14 @@ macro_rules! iss {
         set.build()
     }};
 }
+
+macro_rules! printlnerr(
+    ($($arg:tt)*) => {{
+        let r = writeln!(&mut ::std::io::stderr(), $($arg)*);
+        r.expect("failed printing to stderr");
+    }};
+);
+
 
 mod cashew;
 mod optimizer;
@@ -78,6 +102,7 @@ mod num {
 
 use cashew::ARENA;
 
+// RSTODO: make these not global static
 static mut preciseF32: bool = false;
 static mut receiveJSON: bool = false;
 static mut emitJSON: bool = false;
@@ -86,9 +111,10 @@ static mut last: bool = false;
 
 pub fn libmain() {
     let args: Vec<String> = env::args().collect();
+    // Read directives
     for arg in &args[2..] {
         unsafe {
-            if arg == "asm" {}
+            if arg == "asm" {} // the only possibility for us
             else if arg == "asmPreciseF32" { preciseF32 = true; }
             else if arg == "receiveJSON" { receiveJSON = true; }
             else if arg == "emitJSON" { emitJSON = true; }
@@ -96,10 +122,11 @@ pub fn libmain() {
             else if arg == "last" { last = true; }
         }
     }
+
     #[cfg(feature = "profiling")]
     let (profstg, profstart) = {
         let profstg = "reading and parsing";
-        println!("starting {}", profstg);
+        printlnerr!("starting {}", profstg);
         (profstg, time::SystemTime::now())
     };
 
@@ -112,7 +139,6 @@ pub fn libmain() {
 
     let mut extraInfo = ARENA.alloc();
     if let Some(extra_info_start) = input.find("// EXTRA_INFO:") {
-        // RSTODO
         extraInfo.parse(&input.as_bytes()[extra_info_start+14..]);
         input.truncate(extra_info_start); // ignore extra info when parsing
     }
@@ -133,60 +159,65 @@ pub fn libmain() {
     {
         let t = profstart.elapsed().unwrap();
         let t_ms = t.as_secs()*1000 + t.subsec_nanos() as u64/1_000_000;
-        println!("    {} took {} milliseconds", profstg, t_ms);
+        printlnerr!("    {} took {} milliseconds", profstg, t_ms);
+    }
+
+    // Run passes on the Document
+    for arg in &args[2..] {
+        #[cfg(feature = "profiling")]
+        let (profstg, profstart) = {
+            let profstg = arg;
+            printlnerr!("starting {}", profstg);
+            (profstg, time::SystemTime::now())
+        };
+        let mut worked = true;
+        match arg.as_str() {
+            "asm" => worked = false,
+            "asmPreciseF32" => worked = false,
+            "receiveJSON" |
+            "emitJSON" => worked = false,
+            //"eliminateDeadFuncs" => eliminateDeadFuncs(doc),
+            //"eliminate" => eliminate(doc),
+            //"eliminateMemSafe" => eliminateMemSafe(doc),
+            //"simplifyExpressions" => simplifyExpressions(doc),
+            //"optimizeFrounds" => optimizeFrounds(doc),
+            //"simplifyIfs" => simplifyIfs(doc),
+            //"registerize" => registerize(doc),
+            //"registerizeHarder" => registerizeHarder(doc),
+            //"minifyLocals" => minifyLocals(doc),
+            "minifyWhitespace" => worked = false,
+            //"asmLastOpts" => asmLastOpts(doc),
+            "last" => worked = false,
+            "noop" => worked = false,
+            _ => {
+                printlnerr!("Unrecognised argument: {}", arg);
+                panic!()
+            },
+        }
+
+        #[cfg(feature = "profiling")]
+        {
+            let t = profstart.elapsed().unwrap();
+            let t_ms = t.as_secs()*1000 + t.subsec_nanos() as u64/1_000_000;
+            printlnerr!("    {} took {} milliseconds", profstg, t_ms);
+        }
+
+        if DEBUG && worked {
+            printlnerr!("ast after {}", arg);
+            doc.stringify(&mut io::stderr(), false);
+            printlnerr!("");
+        }
+    }
+
+    // Emit
+    if unsafe { emitJSON } {
+        doc.stringify(&mut io::stdout(), false);
+        println!("");
+    } else {
+        unimplemented!()
+        // RSTODO
+        //JSPrinter jser(!minifyWhitespace, last, doc);
+        //jser.printAst();
+        //std::cout << jser.buffer << "\n";
     }
 }
-
-//  // Run passes on the Document
-//  for (int i = 2; i < argc; i++) {
-//    std::string str(argv[i]);
-//#ifdef PROFILING
-//    clock_t start = clock();
-//    errv("starting %s", str.c_str());
-//#endif
-//    bool worked = true;
-//    if (str == "asm") { worked = false; } // the default for us
-//    else if (str == "asmPreciseF32") { worked = false; }
-//    else if (str == "receiveJSON" || str == "emitJSON") { worked = false; }
-//    else if (str == "eliminateDeadFuncs") eliminateDeadFuncs(doc);
-//    else if (str == "eliminate") eliminate(doc);
-//    else if (str == "eliminateMemSafe") eliminateMemSafe(doc);
-//    else if (str == "simplifyExpressions") simplifyExpressions(doc);
-//    else if (str == "optimizeFrounds") optimizeFrounds(doc);
-//    else if (str == "simplifyIfs") simplifyIfs(doc);
-//    else if (str == "registerize") registerize(doc);
-//    else if (str == "registerizeHarder") registerizeHarder(doc);
-//    else if (str == "minifyLocals") minifyLocals(doc);
-//    else if (str == "minifyWhitespace") { worked = false; }
-//    else if (str == "asmLastOpts") asmLastOpts(doc);
-//    else if (str == "last") { worked = false; }
-//    else if (str == "noop") { worked = false; }
-//    else {
-//      fprintf(stderr, "unrecognized argument: %s\n", str.c_str());
-//      abort();
-//    }
-//#ifdef PROFILING
-//    errv("    %s took %lu milliseconds", str.c_str(), (clock() - start)/1000);
-//#endif
-//#ifdef DEBUGGING
-//    if (worked) {
-//      std::cerr << "ast after " << str << ":\n";
-//      doc->stringify(std::cerr);
-//      std::cerr << "\n";
-//    }
-//#endif
-//  }
-//
-//  // Emit
-//  if (emitJSON) {
-//    doc->stringify(std::cout);
-//    std::cout << "\n";
-//  } else {
-//    JSPrinter jser(!minifyWhitespace, last, doc);
-//    jser.printAst();
-//    std::cout << jser.buffer << "\n";
-//  }
-//  return 0;
-//}
-//
-//}
