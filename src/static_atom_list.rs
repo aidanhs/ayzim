@@ -95,4 +95,15 @@ pub static ATOMS: &'static [&'static str] = &[
     "true",
     "false",
     "null",
+
+    // optimizer-shared.cpp
+    "SIMD_Int8x16_check",
+    "SIMD_Int16x8_check",
+    "SIMD_Int32x4_check",
+    "SIMD_Float32x4_check",
+    "SIMD_Float64x2_check",
+    "SIMD_Bool8x16_check",
+    "SIMD_Bool16x8_check",
+    "SIMD_Bool32x4_check",
+    "SIMD_Bool64x2_check",
 ];
