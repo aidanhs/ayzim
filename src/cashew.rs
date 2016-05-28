@@ -11,6 +11,7 @@ use smallvec::SmallVec;
 use typed_arena;
 
 use super::IString;
+use super::num::f64toi64;
 
 #[derive(Copy, Clone)]
 pub struct Ref {
@@ -279,12 +280,8 @@ impl Value {
     }
 
     // convenience function to get a known integer
-    fn getInteger(&self) -> i64 {
-        let d = self.getNumber();
-        assert!(d % 1.0 == 0.0);
-        let ret = d as i64;
-        assert!(ret as f64 == d); // no loss in conversion
-        ret
+    pub fn getInteger(&self) -> i64 {
+        f64toi64(self.getNumber())
     }
 
     fn assignFrom(&mut self, other: &Value) -> &Value {

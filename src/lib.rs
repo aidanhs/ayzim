@@ -42,6 +42,40 @@ mod cashew;
 mod optimizer;
 mod parser;
 
+mod num {
+    use std::{i64, i32, u32};
+    // RSTODO: this is an absolute disgrace
+    // https://github.com/rust-lang/rfcs/pull/1218
+    // https://doc.rust-lang.org/book/casting-between-types.html#numeric-casts (note UB)
+    // use https://crates.io/crates/conv ?
+    pub fn is32Bit(x: f64) -> bool {
+        assert!(x.is_normal() || x == 0f64);
+        if x > u32::MAX as f64 || x < i32::MIN as f64 { return false }
+        if x.is_sign_positive() { return x as u32 as f64 == x }
+        return x as i32 as f64 == x
+    }
+    pub fn f64tou32(x: f64) -> u32 {
+        assert!(is32Bit(x) && x >= 0f64);
+        x as u32
+    }
+    pub fn f64toi64(x: f64) -> i64 {
+        assert!(isInteger(x));
+        assert!(x <= i64::MAX as f64 && x >= i64::MIN as f64);
+        x as i64
+    }
+    pub fn f64toi32(x: f64) -> i32 {
+        assert!(is32Bit(x) && x <= i32::MAX as f64);
+        x as i32
+    }
+    pub fn isInteger(x: f64) -> bool {
+        assert!(x.is_normal() || x == 0f64);
+        x.round() == x
+    }
+    pub fn isInteger32(x: f64) -> bool {
+        is32Bit(x)
+    }
+}
+
 use cashew::ARENA;
 
 static mut preciseF32: bool = false;

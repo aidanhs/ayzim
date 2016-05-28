@@ -10,7 +10,6 @@
 use std::ptr;
 use std::slice;
 use std::str;
-use std::{i32, u32};
 
 use libc;
 use libc::{c_char, c_int};
@@ -19,8 +18,9 @@ use phf;
 use phf_builder;
 
 use super::IString;
-use super::cashew::builder;
 use super::cashew::Ref;
+use super::cashew::builder;
+use super::num::{f64tou32, is32Bit};
 
 lazy_static! {
     static ref KEYWORDS: phf::Set<IString> = iss![
@@ -132,20 +132,6 @@ fn isSpace(x: u8) -> bool {
 }
 fn isDigit(x: u8) -> bool {
     x >= b'0' && x <= b'9'
-}
-// RSTODO: this is an absolute disgrace
-// https://github.com/rust-lang/rfcs/pull/1218
-// https://doc.rust-lang.org/book/casting-between-types.html#numeric-casts (note UB)
-// use https://crates.io/crates/conv ?
-fn is32Bit(x: f64) -> bool {
-    assert!(x.is_normal() || x == 0f64);
-    if x > u32::MAX as f64 || x < i32::MIN as f64 { return false }
-    if x.is_sign_positive() { return x as u32 as f64 == x }
-    return x as i32 as f64 == x
-}
-fn f64tou32(x: f64) -> u32 {
-    assert!(is32Bit(x) && x >= 0f64);
-    x as u32
 }
 unsafe fn hasChar(mut list: *const u8, x: u8) -> bool {
     while p!{list[0]} != b'\0' {
