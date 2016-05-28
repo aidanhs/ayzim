@@ -366,9 +366,9 @@ impl Value {
     fn stringify<T>(&self, out: &mut T, pretty: bool) where T: Write {
         let jsonobj = self.stringify_json();
         let outstr = if pretty {
-            serde_json::ser::to_string(&jsonobj)
-        } else {
             serde_json::ser::to_string_pretty(&jsonobj)
+        } else {
+            serde_json::ser::to_string(&jsonobj)
         }.unwrap();
         out.write(outstr.as_bytes()).unwrap();
     }
