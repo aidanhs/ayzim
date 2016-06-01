@@ -18,7 +18,7 @@ use phf;
 use phf_builder;
 
 use super::IString;
-use super::cashew::Ref;
+use super::cashew::AstNode;
 use super::cashew::builder;
 use super::num::{f64tou32, is32Bit};
 
@@ -182,7 +182,7 @@ impl Frag {
         }
     }
 
-    fn parse(&self) -> Ref {
+    fn parse(&self) -> AstNode {
         match self.data {
             FragData::Ident(ref s) =>  builder::makeName(s.clone()),
             FragData::String(ref s) => builder::makeString(s.clone()),
@@ -308,8 +308,9 @@ impl Frag {
     }
 }
 
+#[derive(Debug)]
 enum ExprElt {
-    Node(Ref),
+    Node(AstNode),
     Op(IString),
 }
 
@@ -369,7 +370,7 @@ unsafe fn skipSpace(curr: &mut *const u8) {
 
 impl Parser {
     // Parses an element in a list of such elements, e.g. list of statements in a block, or list of parameters in a call
-    unsafe fn parseElement(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseElement(&mut self, src: &mut *const u8, seps: *const u8) -> AstNode {
         //dump("parseElement", src);
         skipSpace(src);
         let frag = Frag::from_str(*src);
@@ -393,7 +394,7 @@ impl Parser {
         }
     }
 
-    unsafe fn parseAfterKeyword(&mut self, frag: &Frag, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseAfterKeyword(&mut self, frag: &Frag, src: &mut *const u8, seps: *const u8) -> AstNode {
         skipSpace(src);
         match frag.getStr() {
             is!("function") => self.parseFunction(src, seps),
@@ -412,13 +413,13 @@ impl Parser {
     }
 
     // RSTODO: remove seps?
-    unsafe fn parseFunction(&mut self, src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseFunction(&mut self, src: &mut *const u8, _seps: *const u8) -> AstNode {
         let name_str = match Frag::from_str(*src) {
             Frag { data: FragData::Ident(s), size: n } => { pp!{src+=n as isize}; s },
             Frag { data: FragData::Separator(is!("(")), .. } => is!(""),
             _ => panic!(),
         };
-        let ret = builder::makeFunction(name_str);
+        let mut ret = builder::makeFunction(name_str);
         skipSpace(src);
         assert!(pp!{src[0]} == b'(');
         pp!{src+=1};
@@ -427,7 +428,7 @@ impl Parser {
             if pp!{src[0]} == b')' { break }
             if let Frag { data: FragData::Ident(s), size: n } = Frag::from_str(*src) {
                 pp!{src+=n as isize};
-                builder::appendArgumentToFunction(ret, s)
+                builder::appendArgumentToFunction(&mut ret, s)
             } else {
                 panic!()
             }
@@ -439,14 +440,14 @@ impl Parser {
             }
         }
         pp!{src+=1};
-        builder::setBlockContent(ret, self.parseBracketedBlock(src));
+        builder::setBlockContent(&mut ret, self.parseBracketedBlock(src));
         // TODO: parse expression?
         ret
     }
 
     // RSTODO: remove seps?
-    unsafe fn parseVar(&mut self, src: &mut *const u8, _seps: *const u8, is_const: bool) -> Ref {
-        let ret = builder::makeVar(is_const);
+    unsafe fn parseVar(&mut self, src: &mut *const u8, _seps: *const u8, is_const: bool) -> AstNode {
+        let mut ret = builder::makeVar(is_const);
         loop {
             skipSpace(src);
             if pp!{src[0]} == b';' { break }
@@ -463,7 +464,7 @@ impl Parser {
                 skipSpace(src);
                 value = Some(self.parseElement(src, b";,\0".as_ptr()))
             }
-            builder::appendToVar(ret, name_str, value);
+            builder::appendToVar(&mut ret, name_str, value);
             skipSpace(src);
             match pp!{src[0]} {
                 b';' => break,
@@ -475,7 +476,7 @@ impl Parser {
         ret
     }
 
-    unsafe fn parseReturn(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseReturn(&mut self, src: &mut *const u8, seps: *const u8) -> AstNode {
         skipSpace(src);
         let mut value = None;
         if !hasChar(seps, pp!{src[0]}) {
@@ -486,7 +487,7 @@ impl Parser {
         builder::makeReturn(value)
     }
 
-    unsafe fn parseIf(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseIf(&mut self, src: &mut *const u8, seps: *const u8) -> AstNode {
         let condition = self.parseParenned(src);
         let ifTrue = self.parseMaybeBracketed(src, seps);
         skipSpace(src);
@@ -501,7 +502,7 @@ impl Parser {
         builder::makeIf(condition, ifTrue, ifFalse)
     }
 
-    unsafe fn parseDo(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseDo(&mut self, src: &mut *const u8, seps: *const u8) -> AstNode {
         let body = self.parseMaybeBracketed(src, seps);
         skipSpace(src);
         let next = Frag::from_str(*src);
@@ -514,14 +515,14 @@ impl Parser {
         builder::makeDo(body, condition)
     }
 
-    unsafe fn parseWhile(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseWhile(&mut self, src: &mut *const u8, seps: *const u8) -> AstNode {
         let condition = self.parseParenned(src);
         let body = self.parseMaybeBracketed(src, seps);
         builder::makeWhile(condition, body)
     }
 
     // RSTODO: remove seps?
-    unsafe fn parseBreak(&mut self, src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseBreak(&mut self, src: &mut *const u8, _seps: *const u8) -> AstNode {
         skipSpace(src);
         let next = Frag::from_str(*src);
         let mut arg = None;
@@ -533,7 +534,7 @@ impl Parser {
     }
 
     // RSTODO: remove seps?
-    unsafe fn parseContinue(&mut self, src: &mut *const u8, _seps: *const u8) -> Ref {
+    unsafe fn parseContinue(&mut self, src: &mut *const u8, _seps: *const u8) -> AstNode {
         skipSpace(src);
         let next = Frag::from_str(*src);
         let mut arg = None;
@@ -546,8 +547,8 @@ impl Parser {
     }
 
     // RSTODO: remove seps?
-    unsafe fn parseSwitch(&mut self, src: &mut *const u8, _seps: *const u8) -> Ref {
-        let ret = builder::makeSwitch(self.parseParenned(src));
+    unsafe fn parseSwitch(&mut self, src: &mut *const u8, _seps: *const u8) -> AstNode {
+        let mut ret = builder::makeSwitch(self.parseParenned(src));
         skipSpace(src);
         assert!(pp!{src[0]} == b'{');
         pp!{src+=1};
@@ -573,7 +574,7 @@ impl Parser {
                         pp!{src+=value2.size as isize};
                         builder::makePrefix(is!("-"), value2.parse())
                     };
-                    builder::appendCaseToSwitch(ret, arg);
+                    builder::appendCaseToSwitch(&mut ret, arg);
                     skipSpace(src);
                     assert!(pp!{src[0]} == b':');
                     pp!{src+=1};
@@ -581,7 +582,7 @@ impl Parser {
                 },
                 Frag { data: FragData::Keyword(is!("default")), size: n } => {
                     pp!{src+=n as isize};
-                    builder::appendDefaultToSwitch(ret);
+                    builder::appendDefaultToSwitch(&mut ret);
                     skipSpace(src);
                     assert!(pp!{src[0]} == b':');
                     pp!{src+=1};
@@ -599,7 +600,7 @@ impl Parser {
             } else {
                 self.parseBlock(src, b";}\0".as_ptr(), Some(is!("case")), Some(is!("default")))
             };
-            builder::appendCodeToSwitch(ret, subBlock, explicitBlock);
+            builder::appendCodeToSwitch(&mut ret, subBlock, explicitBlock);
         }
         skipSpace(src);
         assert!(pp!{src[0]} == b'}');
@@ -607,12 +608,12 @@ impl Parser {
         ret
     }
 
-    unsafe fn parseNew(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseNew(&mut self, src: &mut *const u8, seps: *const u8) -> AstNode {
         builder::makeNew(self.parseElement(src, seps))
     }
 
     // RSTODO
-    unsafe fn parseAfterIdent(&mut self, frag: &Frag, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseAfterIdent(&mut self, frag: &Frag, src: &mut *const u8, seps: *const u8) -> AstNode {
         skipSpace(src);
         match pp!{src[0]} {
             b'(' => {
@@ -642,16 +643,15 @@ impl Parser {
         }
     }
 
-    // RSTODO: are the expressionPartsStack bits in this function nops?
-    unsafe fn parseCall(&mut self, target: Ref, src: &mut *const u8) -> Ref {
+    unsafe fn parseCall(&mut self, target: AstNode, src: &mut *const u8) -> AstNode {
         self.expressionPartsStack.push(vec![]);
         assert!(pp!{src[0]} == b'(');
         pp!{src+=1};
-        let ret = builder::makeCall(target);
+        let mut ret = builder::makeCall(target);
         loop {
             skipSpace(src);
             if pp!{src[0]} == b')' { break }
-            builder::appendToCall(ret, self.parseElement(src, b",)\0".as_ptr()));
+            builder::appendToCall(&mut ret, self.parseElement(src, b",)\0".as_ptr()));
             skipSpace(src);
             if pp!{src[0]} == b')' { break }
             if pp!{src[0]} == b',' { pp!{src+=1}; continue }
@@ -662,7 +662,7 @@ impl Parser {
         ret
     }
 
-    unsafe fn parseIndexing(&mut self, target: Ref, src: &mut *const u8) -> Ref {
+    unsafe fn parseIndexing(&mut self, target: AstNode, src: &mut *const u8) -> AstNode {
         self.expressionPartsStack.push(vec![]);
         assert!(pp!{src[0]} == b'[');
         pp!{src+=1};
@@ -675,7 +675,7 @@ impl Parser {
         ret
     }
 
-    unsafe fn parseDotting(&mut self, target: Ref, src: &mut *const u8) -> Ref {
+    unsafe fn parseDotting(&mut self, target: AstNode, src: &mut *const u8) -> AstNode {
         assert!(pp!{src[0]} == b'[');
         pp!{src+=1};
         if let Frag { data: FragData::Ident(s), size: n } = Frag::from_str(*src) {
@@ -686,7 +686,7 @@ impl Parser {
         }
     }
 
-    unsafe fn parseAfterParen(&mut self, src: &mut *const u8) -> Ref {
+    unsafe fn parseAfterParen(&mut self, src: &mut *const u8) -> AstNode {
         self.expressionPartsStack.push(vec![]);
         skipSpace(src);
         let ret = self.parseElement(src, b")\0".as_ptr());
@@ -697,14 +697,15 @@ impl Parser {
         ret
     }
 
-    unsafe fn parseAfterBrace(&mut self, src: &mut *const u8) -> Ref {
+    // RSTODO: needs expressionPartsStack pop?
+    unsafe fn parseAfterBrace(&mut self, src: &mut *const u8) -> AstNode {
         self.expressionPartsStack.push(vec![]);
-        let ret = builder::makeArray();
+        let mut ret = builder::makeArray();
         loop {
             skipSpace(src);
             assert!(pp!{src[0]} != b'\0');
             if pp!{src[0]} == b']' { break }
-            builder::appendToArray(ret, self.parseElement(src, b",]\0".as_ptr()));
+            builder::appendToArray(&mut ret, self.parseElement(src, b",]\0".as_ptr()));
             skipSpace(src);
             if pp!{src[0]} == b']' { break }
             if pp!{src[0]} == b',' { pp!{src+=1}; continue }
@@ -714,9 +715,10 @@ impl Parser {
         ret
     }
 
-    unsafe fn parseAfterCurly(&mut self, src: &mut *const u8) -> Ref {
+    // RSTODO: needs expressionPartsStack pop?
+    unsafe fn parseAfterCurly(&mut self, src: &mut *const u8) -> AstNode {
         self.expressionPartsStack.push(vec![]);
-        let ret = builder::makeObject();
+        let mut ret = builder::makeObject();
         loop {
             skipSpace(src);
             assert!(pp!{src[0]} != b'\0');
@@ -731,7 +733,7 @@ impl Parser {
             assert!(pp!{src[0]} == b':');
             pp!{src+=1};
             let value = self.parseElement(src, b",}\0".as_ptr());
-            builder::appendToObject(ret, s, value);
+            builder::appendToObject(&mut ret, s, value);
             skipSpace(src);
             if pp!{src[0]} == b'}' { break }
             if pp!{src[0]} == b',' { pp!{src+=1}; continue }
@@ -741,15 +743,15 @@ impl Parser {
         ret
     }
 
-    unsafe fn makeBinary(left: Ref, op: IString, right: Ref) -> Ref {
+    unsafe fn makeBinary(left: AstNode, op: IString, right: AstNode) -> AstNode {
         if op == is!(".") {
-            builder::makeDotRef(left, right)
+            builder::makeDotAstNode(left, right)
         } else {
             builder::makeBinary(left, op, right)
         }
     }
 
-    unsafe fn parseExpression(&mut self, initial: ExprElt, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseExpression(&mut self, initial: ExprElt, src: &mut *const u8, seps: *const u8) -> AstNode {
         //dump("parseExpression", src);
         // RSTODO: this function is to make it less ugly to work around rust
         // lexical lifetimes
@@ -758,26 +760,38 @@ impl Parser {
         }
         skipSpace(src);
         if pp!{src[0]} == b'\0' || hasChar(seps, pp!{src[0]}) {
-            let node = if let ExprElt::Node(n) = initial { n } else { panic!() };
             let parts = getParts(self);
             if parts.len() > 0 {
-                parts.push(initial); // cherry on top of the cake
+                // RSTODO: This is ridiculously unsafe but is needed because of
+                // the way the expression stack works. When parseExpression is
+                // called with an empty top level of the stack, the bit between
+                // 'let top' and 'let last' begins the population of the stack
+                // level. The 'let last = parseElement' then recursively calls
+                // down back into parseExpression, building up the stack and
+                // until we hit *this* line. All of the parseExpressions but
+                // the top level one then return (because !top) and top level
+                // sorts it all out.
+                // Note that this ptr::read is crucially coupled with the
+                // mem::forget near 'let last'.
+                // https://github.com/kripken/cashew/commit/a2f527c1597cdbe0342cb4154465023159832518
+                parts.push(::std::ptr::read(&initial)); // cherry on top of the cake
             }
+            let node = if let ExprElt::Node(n) = initial { n } else { panic!() };
             return node
         }
         let top;
-        if let ExprElt::Node(n) = initial {
+        if let ExprElt::Node(node) = initial {
             let next = Frag::from_str(*src);
             if let Frag { data: FragData::Operator(s), size: n } = next {
                 let parts = getParts(self);
                 top = parts.len() == 0;
-                parts.push(initial);
+                parts.push(ExprElt::Node(node));
                 pp!{src+=n as isize};
                 parts.push(ExprElt::Op(s))
             } else {
                 let initial = ExprElt::Node(match pp!{src[0]} {
-                    b'(' => self.parseCall(n, src),
-                    b'[' => self.parseIndexing(n, src),
+                    b'(' => self.parseCall(node, src),
+                    b'[' => self.parseIndexing(node, src),
                     _ => {
                         //self.dump("bad parseExpression state", *src);
                         panic!("bad parseExpression state")
@@ -792,6 +806,7 @@ impl Parser {
         }
         let last = self.parseElement(src, seps);
         if !top { return last }
+        ::std::mem::forget(last);
         let parts = getParts(self); // parts may have been invalidated by that call
         // we are the toplevel. sort it all out
         // collapse right to left, highest priority first
@@ -807,14 +822,14 @@ impl Parser {
                     };
                     if !ops.ops.contains(&op) { continue }
                     if ops.ty == OpClassTy::Binary && i > 0 && i < parts.len()-1 {
-                        let (n1, n2) = match (&parts[i-1], &parts[i+1]) {
-                            (&ExprElt::Node(n1), &ExprElt::Node(n2)) => (n1, n2),
+                        let part2 = parts.remove(i+1);
+                        let part1 = parts.remove(i-1);
+                        let (n1, n2) = match (part1, part2) {
+                            (ExprElt::Node(n1), ExprElt::Node(n2)) => (n1, n2),
                             _ => panic!("not both nodes in rtl binary"),
                         };
                         // RSTODO: if assigned at i-1, only need one drain?
-                        parts[i] = ExprElt::Node(Self::makeBinary(n1, op, n2));
-                        parts.remove(i+1);
-                        parts.remove(i-1);
+                        parts[i-1] = ExprElt::Node(Self::makeBinary(n1, op, n2));
                         // RSTODO: could optimise here by decrementing to avoid
                         // reprocessing? Note the unfortunate asymmetry with ltr
                     } else if ops.ty == OpClassTy::Prefix && i < parts.len()-1 {
@@ -823,12 +838,11 @@ impl Parser {
                             // two nodes
                             if let ExprElt::Node(_) = parts[i-1] { continue }
                         }
-                        let n1 = match parts[i+1] {
+                        let n1 = match parts.remove(i+1) {
                             ExprElt::Node(n1) => n1,
                             _ => panic!("not node in rtl prefix"),
                         };
                         parts[i] = ExprElt::Node(builder::makePrefix(op, n1));
-                        parts.remove(i+1);
                     } else if ops.ty == OpClassTy::Tertiary {
                         // we must be at  X ? Y : Z
                         //                      ^
@@ -840,12 +854,15 @@ impl Parser {
                             ExprElt::Op(_) => continue,
                             ExprElt::Node(_) => panic!("node in rtl tertiary"),
                         }
-                        let (n1, n2, n3) = match (&parts[i-3], &parts[i-1], &parts[i+1]) {
-                            (&ExprElt::Node(n1), &ExprElt::Node(n2), &ExprElt::Node(n3)) => (n1, n2, n3),
+                        let part3 = parts.remove(i+1);
+                        let part2 = parts.remove(i-1);
+                        let _ = parts.remove(i-2);
+                        let part1 = parts.remove(i-3);
+                        let (n1, n2, n3) = match (part1, part2, part3) {
+                            (ExprElt::Node(n1), ExprElt::Node(n2), ExprElt::Node(n3)) => (n1, n2, n3),
                             _ => panic!("not all three nodes in rtl tertiary"),
                         };
                         parts[i-3] = ExprElt::Node(builder::makeConditional(n1, n2, n3));
-                        parts.drain(i-2..i+2).count();
                         i = parts.len();
                     } // TODO: postfix
                 }}
@@ -858,14 +875,14 @@ impl Parser {
                     };
                     if !ops.ops.contains(&op) { continue }
                     if ops.ty == OpClassTy::Binary && i > 0 && i < parts.len()-1 {
-                        let (n1, n2) = match (&parts[i-1], &parts[i+1]) {
-                            (&ExprElt::Node(n1), &ExprElt::Node(n2)) => (n1, n2),
+                        let part2 = parts.remove(i+1);
+                        let part1 = parts.remove(i-1);
+                        let (n1, n2) = match (part1, part2) {
+                            (ExprElt::Node(n1), ExprElt::Node(n2)) => (n1, n2),
                             _ => panic!("not both nodes in ltr binary"),
                         };
                         // RSTODO: if assigned at i-1, only need one drain?
-                        parts[i] = ExprElt::Node(Self::makeBinary(n1, op, n2));
-                        parts.remove(i+1);
-                        parts.remove(i-1);
+                        parts[i-1] = ExprElt::Node(Self::makeBinary(n1, op, n2));
                         i -= 1;
                     } else if ops.ty == OpClassTy::Prefix && i < parts.len()-1 {
                         if i > 0 {
@@ -873,12 +890,11 @@ impl Parser {
                             // two nodes
                             if let ExprElt::Node(_) = parts[i-1] { continue }
                         }
-                        let n1 = match parts[i+1] {
+                        let n1 = match parts.remove(i+1) {
                             ExprElt::Node(n1) => n1,
                             _ => panic!("not node in ltr prefix"),
                         };
                         parts[i] = ExprElt::Node(builder::makePrefix(op, n1));
-                        parts.remove(i+1);
                         // allow a previous prefix operator to cascade
                         i = if i > 2 { i-2 } else { 0 };
                     } // TODO: tertiary, postfix
@@ -891,8 +907,8 @@ impl Parser {
     }
 
     // Parses a block of code (e.g. a bunch of statements inside {,}, or the top level of o file)
-    unsafe fn parseBlock(&mut self, src: &mut *const u8, seps: *const u8, keywordSep1: Option<IString>, keywordSep2: Option<IString>) -> Ref {
-        let block = builder::makeBlock();
+    unsafe fn parseBlock(&mut self, src: &mut *const u8, seps: *const u8, keywordSep1: Option<IString>, keywordSep2: Option<IString>) -> AstNode {
+        let mut block = builder::makeBlock();
         //dump("parseBlock", src);
         loop {
             skipSpace(src);
@@ -912,12 +928,12 @@ impl Parser {
                 if FragData::Keyword(ks.clone()) == next.data { break }
             }
             let element = self.parseElementOrStatement(src, seps);
-            builder::appendToBlock(block, element);
+            builder::appendToBlock(&mut block, element);
         }
         block
     }
 
-    unsafe fn parseBracketedBlock(&mut self, src: &mut *const u8) -> Ref {
+    unsafe fn parseBracketedBlock(&mut self, src: &mut *const u8) -> AstNode {
         skipSpace(src);
         assert!(pp!{src[0]} == b'{');
         pp!{src+=1};
@@ -929,7 +945,7 @@ impl Parser {
         block
     }
 
-    unsafe fn parseElementOrStatement(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseElementOrStatement(&mut self, src: &mut *const u8, seps: *const u8) -> AstNode {
         skipSpace(src);
         if pp!{src[0]} == b';' {
             pp!{src+=1};
@@ -954,7 +970,7 @@ impl Parser {
         ret
     }
 
-    unsafe fn parseMaybeBracketed(&mut self, src: &mut *const u8, seps: *const u8) -> Ref {
+    unsafe fn parseMaybeBracketed(&mut self, src: &mut *const u8, seps: *const u8) -> AstNode {
         skipSpace(src);
         if pp!{src[0]} == b'{' {
             self.parseBracketedBlock(src)
@@ -963,7 +979,7 @@ impl Parser {
         }
     }
 
-    unsafe fn parseParenned(&mut self, src: &mut *const u8) -> Ref {
+    unsafe fn parseParenned(&mut self, src: &mut *const u8) -> AstNode {
         skipSpace(src);
         assert!(pp!{src[0]} == b'(');
         pp!{src+=1};
@@ -982,13 +998,13 @@ impl Parser {
         }
     }
 
-    pub unsafe fn parseToplevel(&mut self, src: *const u8) -> Ref {
+    pub unsafe fn parseToplevel(&mut self, src: *const u8) -> AstNode {
         self.allSource = src;
         self.allSize = libc::strlen(src as *const i8);
-        let toplevel = builder::makeToplevel();
+        let mut toplevel = builder::makeToplevel();
         let mut cursrc = src;
         let block = self.parseBlock(&mut cursrc, b";\0".as_ptr(), None, None);
-        builder::setBlockContent(toplevel, block);
+        builder::setBlockContent(&mut toplevel, block);
         toplevel
     }
 

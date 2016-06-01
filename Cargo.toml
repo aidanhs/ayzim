@@ -7,14 +7,18 @@ build = "build.rs"
 [dependencies]
 lazy_static = "0.1.*"
 odds = "0.2.11"
-serde_json = "0.6.0"
-string_cache = { path = "../string-cache" }
-phf = "0.7.14"
-phf_builder = "0.7.14"
+serde = "0.7.1"
+serde_json = "0.7.1"
+string_cache = { path = "../string-cache", features = ["unstable"] }
+phf = "0.7.15"
+phf_builder = "0.7.15"
 smallvec = "0.1.7"
 libc = "0.2.11"
 cfor = "1.1"
 typed-arena = "1.1"
+
+interpolate_idents = "0.0.10"
+ayzim-macros = { path = "ayzim-macros" }
 
 [build-dependencies]
 string_cache_codegen = { path = "../string-cache/string-cache-codegen" }

@@ -6,6 +6,7 @@ use std::ptr;
 use std::ops::{Deref, DerefMut};
 
 use odds::vec::VecExt;
+use serde;
 use serde_json;
 use smallvec::SmallVec;
 use typed_arena;
@@ -13,7 +14,8 @@ use typed_arena;
 use super::IString;
 use super::num::f64toi64;
 
-#[derive(Copy, Clone)]
+// RSTODO: totally get rid of Ref?
+#[derive(Copy, Clone, Debug)]
 pub struct Ref {
     inst: *mut Value,
 }
@@ -63,7 +65,7 @@ impl DerefMut for Ref {
 // RSTODO: not really sync
 unsafe impl Sync for Ref {}
 
-pub const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
+const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 
 // Arena allocation, free it all on process exit
 
@@ -109,6 +111,293 @@ lazy_static! {
 pub type ArrayStorage = Vec<Ref>;
 pub type ObjectStorage = HashMap<IString, Ref>;
 
+// RSTODO: why can't expr be tt?
+macro_rules! an {
+    { $variant:ident( $( $x:expr ),* ) } => {
+        Box::new(AstValue::$variant( $( $x ),* ))
+    };
+}
+
+// RSTODO: remove
+//macro_rules! __freshvarify {
+//    // Transforms Ty(SubTy1, SubTy2) into Ty(ref v, ref vv)
+//    // Begin
+//    { ref $v:ident $x:ident($( $ts:ty ),+) } => {
+//        __freshvarify!{ inpat ref $v $x () ($( $ts ),+) }
+//    };
+//    // End
+//    { inpat ref $v:ident $x:ident ($( $vs:ident, )*) () } => {
+//        //$x(ref v, ref vv)
+//        $x($( ref $vs ),*)
+//    };
+//    // Transform each ty to a fresh ident
+//    { inpat ref $v:ident $x:ident ($( $vs:ident, )*) ($t:ty $(, $ts:ty )*) } => {
+//        interpolate_idents!{ __freshvarify!{ inpat ref [$v v] $x ($v, $( $vs, )*) ($( $ts ),*) } }
+//    };
+//
+//    // Transforms (Ty1, Ty2) into (v, vv)
+//    // Begin
+//    { $v:ident ($( $ts:ty ),+) } => {
+//        __freshvarify!{ intup $v () ($( $ts ),+) }
+//    };
+//    // End
+//    { intup $v:ident ($( $vs:ident, )*) () } => {
+//        ($( $vs ),*)
+//    };
+//    // Transform each ty to a fresh ident
+//    { intup $v:ident ($( $vs:ident, )*) ($t:ty $(, $ts:ty )*) } => {
+//        interpolate_idents!{ __freshvarify!{ intup [$v v] ($v, $( $vs, )*) ($( $ts ),*) } }
+//    };
+//}
+
+macro_rules! __ifletify {
+    // Begin
+    { ($inexpr:expr) $x:ident($( $ts:ty ),+) } => {
+        __ifletify!{ in ($inexpr) $x v () ($( $ts, )+) }
+    };
+    { ref ($inexpr:expr) $x:ident($( $ts:ty ),+) } => {
+        __ifletify!{ inref ($inexpr) $x v () ($( $ts, )+) }
+    };
+    { mut ($inexpr:expr) $x:ident($( $ts:ty ),+) } => {
+        __ifletify!{ inmut ($inexpr) $x v () ($( $ts, )+) }
+    };
+    // End
+    { in ($inexpr:expr) $x:ident $v:ident ($( $vs:ident, )+) () } => {
+        if let $x($( $vs ),+) = $inexpr { ($( $vs ),+,) } else { panic!() }
+    };
+    { inref ($inexpr:expr) $x:ident $v:ident ($( $vs:ident, )+) () } => {
+        if let $x($( ref $vs ),+) = $inexpr { ($( $vs ),+,) } else { panic!() }
+    };
+    { inmut ($inexpr:expr) $x:ident $v:ident ($( $vs:ident, )+) () } => {
+        if let $x($( ref mut $vs ),+) = $inexpr { ($( $vs ),+,) } else { panic!() }
+    };
+    // Transform each type in the enum variant tuple into a fresh variable
+    { in ($inexpr:expr) $x:ident $v:ident ($( $vs:ident, )*) ($t:ty, $( $ts:ty, )*) } => {
+        interpolate_idents!{ __ifletify!{ in ($inexpr) $x [$v v] ($v, $( $vs, )*) ($( $ts, )*) } }
+    };
+    { inref ($inexpr:expr) $x:ident $v:ident ($( $vs:ident, )*) ($t:ty, $( $ts:ty, )*) } => {
+        interpolate_idents!{ __ifletify!{ inref ($inexpr) $x [$v v] ($v, $( $vs, )*) ($( $ts, )*) } }
+    };
+    { inmut ($inexpr:expr) $x:ident $v:ident ($( $vs:ident, )*) ($t:ty, $( $ts:ty, )*) } => {
+        interpolate_idents!{ __ifletify!{ inmut ($inexpr) $x [$v v] ($v, $( $vs, )*) ($( $ts, )*) } }
+    };
+}
+macro_rules! AstValue {
+    { $( $x:ident($( $y:ty ),+), )+ } => {
+        #[derive(Debug)]
+        pub enum AstValue {
+            $(
+                $x($( $y ),*),
+            )*
+        }
+        impl AstValue {
+            $( interpolate_idents!{
+                pub fn [is $x](&self) -> bool {
+                    use self::AstValue::$x;
+                    if let $x(..) = *self { true } else { false }
+                }
+                fn [into $x](self) -> ($( $y ),*,) {
+                    use self::AstValue::$x;
+                    __ifletify!{ (self) $x($( $y ),+) }
+                }
+                pub fn [get $x](&self) -> ($( &$y ),*,) {
+                    use self::AstValue::$x;
+                    // RSTODO: remove
+                    // This doesn't work because macros are hygenic and can't
+                    // introduce new variables
+                    //if let __freshvarify!{ ref v $x($( $y ),*) } = *self {
+                    //    let x = (v, vv);
+                    //    panic!()
+                    //    //__freshvarify!{ v ($( $y ),*) }
+                    //} else {
+                    //    panic!()
+                    //}
+                    __ifletify!{ ref (*self) $x($( $y ),+) }
+                }
+                pub fn [getMut $x](&mut self) -> ($( &mut $y ),*,) {
+                    use self::AstValue::$x;
+                    __ifletify!{ mut (*self) $x($( $y ),+) }
+                }
+            } )*
+        }
+    }
+}
+
+pub type AstNode = Box<AstValue>;
+// Reduces AstValue size from 64 bytes to 32
+pub type AstVec<T> = Box<Vec<T>>;
+AstValue!{
+    Array(AstVec<AstNode>),            // [item]
+    // RSTODO: https://github.com/kripken/emscripten/issues/4367
+    Assign(bool, AstNode, AstNode),    // boo(true), left, right
+    Binary(IString, AstNode, AstNode), // op, left, right
+    Block(AstVec<AstNode>),            // [stat]
+    Break(Option<IString>),            // Option<label>
+    Call(AstNode, AstVec<AstNode>),    // fnexpr, [param]
+    Conditional(AstNode, AstNode, AstNode), // cond, iftrue, iffalse
+    Continue(Option<IString>),         // Option<label>
+    Defun(IString, AstVec<IString>, AstVec<AstNode>), // fname, [arg], [stat]
+    Do(AstNode, AstNode),              // condition, body
+    Dot(AstNode, IString),             // obj, key
+    If(AstNode, AstNode, Option<AstNode>), // cond, iftrue, Option<iffalse>
+    Label(IString, AstNode),           // label, body
+    Name(IString),                     // name
+    New(AstNode),                      // call
+    Num(f64),                          // num(number)
+    Object(AstVec<(IString, AstNode)>), // [key, value]
+    Return(Option<AstNode>),           // Option<retval>
+    Seq(AstNode, AstNode),             // left, right
+    Stat(AstNode),                     // stat
+    String(IString),                   // string
+    Sub(AstNode, AstNode),             // target, index
+    Switch(AstNode, AstVec<(Option<AstNode>, Vec<AstNode>)>), // input, [(case|default, [stat|oneblock]]
+    Toplevel(AstVec<AstNode>),         // [stat]
+    UnaryPrefix(IString, AstNode),     // op, right
+    Var(AstVec<(IString, Option<AstNode>)>), // [(name, Option<value>]
+    While(AstNode, AstNode),           // condition, body
+}
+
+impl AstValue {
+    pub fn from_ref(inref: Ref) -> AstNode {
+        fn p(r: Ref) -> AstNode { AstValue::from_ref(r) } // parse
+        fn b<T>(v: T) -> Box<T> { Box::new(v) } // box
+        fn mkarr(r: Ref) -> Vec<AstNode> {
+            r.getArray().iter().map(|&e| p(e)).collect()
+        }
+        fn maybe_parse(r: Ref) -> Option<AstNode> {
+            if r.isNull() { None } else { Some(p(r)) }
+        }
+        fn mklabel(label: Ref) -> Option<IString> {
+            if label.isNull() { None } else { Some(label.getIString()) }
+        }
+        use self::AstValue::*;
+        let refarr = inref.getArray();
+        Box::new(match (refarr[0].getIString(), &refarr[1..]) {
+            (is!("array"), [arr]) => Array(b(mkarr(arr))),
+            (is!("assign"), [b, left, right]) => Assign(b.getBool(), p(left), p(right)),
+            (is!("binary"), [op, left, right]) => Binary(op.getIString(), p(left), p(right)),
+            (is!("block"), [stats]) => Block(b(mkarr(stats))),
+            (is!("break"), [label]) => Break(mklabel(label)),
+            (is!("call"), [fnexpr, params]) => Call(p(fnexpr), b(mkarr(params))),
+            (is!("conditional"), [cond, iftrue, iffalse]) => Conditional(p(cond), p(iftrue), p(iffalse)),
+            (is!("continue"), [label]) => Continue(mklabel(label)),
+            (is!("defun"), [fnname, params, stats]) => Defun(fnname.getIString(), b(params.getArray().iter().map(|r| r.getIString()).collect()), b(mkarr(stats))),
+            (is!("do"), [cond, body]) => Do(p(cond), p(body)),
+            (is!("dot"), [obj, key]) => Dot(p(obj), key.getIString()),
+            (is!("if"), [cond, iftrue, iffalse]) => If(p(cond), p(iftrue), maybe_parse(iffalse)),
+            (is!("label"), [label, body]) => Label(label.getIString(), p(body)),
+            (is!("name"), [name]) => Name(name.getIString()),
+            (is!("new"), [call]) => New(p(call)),
+            (is!("num"), [num]) => Num(num.getNumber()),
+            (is!("object"), [keyvals]) => Object(b(keyvals.getArray().iter().map(|kv| { (kv.get(0).getIString(), p(kv.get(1))) }).collect())),
+            (is!("return"), [retval]) => Return(maybe_parse(retval)),
+            (is!("seq"), [left, right]) => Seq(p(left), p(right)),
+            (is!("stat"), [stat]) => Stat(p(stat)),
+            (is!("string"), [string]) => String(string.getIString()),
+            (is!("sub"), [target, index]) => Sub(p(target), p(index)),
+            (is!("switch"), [input, cases]) => Switch(p(input), b(cases.getArray().iter().map(|casedef| { (maybe_parse(casedef.get(0)), mkarr(casedef.get(1))) }).collect())),
+            (is!("toplevel"), [stats]) => Toplevel(b(mkarr(stats))),
+            (is!("unary-prefix"), [op, right]) => UnaryPrefix(op.getIString(), p(right)),
+            (is!("var"), [vardefs]) => Var(b(vardefs.getArray().iter().map(|vardef| { (vardef.get(0).getIString(), maybe_parse(vardef.get(1))) }).collect())),
+            (is!("while"), [condition, body]) => While(p(condition), p(body)),
+            _ => panic!(),
+        })
+    }
+
+    fn children<'a, 'b: 'a, I>(&'a mut self) -> Box<Iterator<Item=&'a mut AstNode> + 'a> {
+        use self::AstValue::*;
+        macro_rules! b {
+            ($e: expr) => (Box::new($e));
+        };
+        match *self {
+            Array(ref mut nodes) => b!(nodes.iter_mut()),
+            Assign(_, ref mut left, ref mut right) => b!(vec![left, right].into_iter()),
+            Binary(_, ref mut left, ref mut right) => b!(vec![left, right].into_iter()),
+            Block(ref mut stats) => b!(stats.iter_mut()),
+            Break(_) => b!(iter::empty()),
+            Call(ref mut fnexpr, ref mut params) => b!(iter::once(fnexpr).chain(params.iter_mut())),
+            Conditional(ref mut cond, ref mut iftrue, ref mut iffalse) => b!(vec![cond, iftrue, iffalse].into_iter()),
+            Continue(_) => b!(iter::empty()),
+            Defun(_, _, ref mut stats) => b!(stats.iter_mut()),
+            Do(ref mut cond, ref mut body) => b!(vec![cond, body].into_iter()),
+            Dot(ref mut obj, _) => b!(iter::once(obj)),
+            If(ref mut cond, ref mut iftrue, ref mut iffalse) => {
+                let it = vec![cond, iftrue].into_iter();
+                if let Some(ref mut n) = *iffalse { b!(it.chain(iter::once(n))) } else { b!(it.chain(iter::empty())) }
+            },
+            Label(_, ref mut body) => b!(iter::once(body)),
+            Name(_) => b!(iter::empty()),
+            New(ref mut call) => b!(iter::once(call)),
+            Num(_) => b!(iter::empty()),
+            Object(ref mut keyvals) => b!(keyvals.iter_mut().map(|kv| &mut kv.1)),
+            Return(ref mut retval) => if let Some(ref mut rv) = *retval { b!(iter::once(rv)) } else { b!(iter::empty()) },
+            Seq(ref mut left, ref mut right) => b!(vec![left, right].into_iter()),
+            Stat(ref mut stat) => b!(iter::once(stat)),
+            String(_) => b!(iter::empty()),
+            Sub(ref mut target, ref mut index) => b!(vec![target, index].into_iter()),
+            Switch(ref mut input, ref mut cases) => {
+                let it = iter::once(input);
+                let casenodes = cases.iter_mut().flat_map(|&mut (ref mut case, ref mut block)| {
+                    let initial = if let Some(ref mut c) = *case { vec![c] } else { vec![] }.into_iter();
+                    initial.chain(block.iter_mut())
+                });
+                b!(it.chain(casenodes))
+            },
+            Toplevel(ref mut stats) => b!(stats.iter_mut()),
+            UnaryPrefix(_, ref mut right) => b!(iter::once(right)),
+            Var(ref mut vars) => b!(vars.iter_mut().filter_map(|var| var.1.as_mut())),
+            While(ref mut cond, ref mut body) => b!(vec![cond, body].into_iter()),
+        }
+    }
+
+    pub fn stringify<T>(&self, out: &mut T, pretty: bool) where T: Write {
+        let outstr = if pretty {
+            serde_json::ser::to_string_pretty(self)
+        } else {
+            serde_json::ser::to_string(self)
+        }.unwrap();
+        out.write(outstr.as_bytes()).unwrap();
+    }
+}
+
+impl serde::Serialize for AstValue {
+    fn serialize<S>(&self, s: &mut S) -> Result<(), S::Error> where S: serde::Serializer {
+        use self::AstValue::*;
+        macro_rules! s {
+            ($( $e: expr ),+) => (($( $e ),+).serialize(s));
+        };
+        match *self {
+            Array(ref nodes) => s!("array", nodes),
+            Assign(ref b, ref left, ref right) => s!("assign", b, left, right),
+            Binary(ref op, ref left, ref right) => s!("binary", op, left, right),
+            Block(ref stats) => s!("block", stats),
+            Break(ref label) => s!("break", label),
+            Call(ref fnexpr, ref params) => s!("call", fnexpr, params),
+            Conditional(ref cond, ref iftrue, ref iffalse) => s!("conditional", cond, iftrue, iffalse),
+            Continue(ref label) => s!("continue", label),
+            Defun(ref fname, ref args, ref stats) => s!("defun", fname, args, stats),
+            Do(ref cond, ref body) => s!("do", cond, body),
+            Dot(ref obj, ref key) => s!("dot", obj, key),
+            If(ref cond, ref iftrue, ref iffalse) => s!("if", cond, iftrue, iffalse),
+            Label(ref label, ref body) => s!("label", label, body),
+            Name(ref name) => s!("name", name),
+            New(ref call) => s!("new", call),
+            Num(ref num) => s!("num", num),
+            Object(ref keyvals) => s!("object", keyvals),
+            Return(ref retval) => s!("return", retval),
+            Seq(ref left, ref right) => s!("seq", left, right),
+            Stat(ref stat) => s!("stat", stat),
+            String(ref string) => s!("string", string),
+            Sub(ref target, ref index) => s!("sub", target, index),
+            Switch(ref input, ref cases) => s!("switch", input, cases),
+            Toplevel(ref stats) => s!("toplevel", stats),
+            UnaryPrefix(ref op, ref right) => s!("unary-prefix", op, right),
+            Var(ref vars) => s!("var", vars),
+            While(ref cond, ref body) => s!("while", cond, body),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum Value {
     null,
@@ -152,6 +441,7 @@ impl Value {
     fn free(&mut self) {
         match *self {
             // arrays are in arena, don't drop
+            // RSTODO: arrays aren't in arena in rust
             Value::arr(ref mut a) => {
                 a.truncate(0);
                 a.shrink_to_fit();
@@ -170,16 +460,19 @@ impl Value {
     }
 
     fn from_str(s: &str) -> Value {
+        // RSTODO: alloc instead of new?
         let mut v = Value::new();
         v.setString(s);
         v
     }
     fn from_double(n: f64) -> Value {
+        // RSTODO: alloc instead of new?
         let mut v = Value::new();
         v.setNumber(n);
         v
     }
     fn from_arraystorage(a: &ArrayStorage) -> Value {
+        // RSTODO: alloc instead of new?
         let mut v = Value::new();
         v.setArray(a);
         v
@@ -374,6 +667,7 @@ impl Value {
         match *self {
             Value::null => serde_json::Value::Null,
             Value::str(ref a) => serde_json::Value::String((&**a).to_string()),
+            // RSTODO: C++ float serialization is different to serde
             Value::num(n) => serde_json::Value::F64(n),
             Value::boo(b) => serde_json::Value::Bool(b),
             Value::arr(ref a) => {
@@ -399,7 +693,7 @@ impl Value {
         self.getArray().len()
     }
 
-    pub fn setSize(&mut self, size: usize) {
+    fn setSize(&mut self, size: usize) {
         let a = self.getArrayMut();
         let old = a.len();
         if old < size {
@@ -414,7 +708,7 @@ impl Value {
         *self.getArray().get(x).unwrap()
     }
 
-    pub fn push_back(&mut self, r: Ref) -> &mut Value {
+    fn push_back(&mut self, r: Ref) -> &mut Value {
         self.getArrayMut().push(r);
         self
     }
@@ -443,7 +737,7 @@ impl Value {
         self.getArrayMut().insert(x, node);
     }
 
-    pub fn indexOf(&self, other: Ref) -> isize {
+    fn indexOf(&self, other: Ref) -> isize {
         match self.getArray().iter().position(|&r| *r == *other) {
             Some(i) => i as isize,
             None => -1,
@@ -543,126 +837,171 @@ impl<T> StackedStack<T> {
     }
 }
 
-#[inline(always)]
-fn visitable(node: Ref) -> bool {
-    node.isArray() && node.size() > 0
-}
-
-// https://github.com/rust-lang/rfcs/issues/372 would make this code nicer
+// RSTODO: https://github.com/rust-lang/rfcs/issues/372 would make this code nicer
 
 // Traverse, calling visit before the children
-pub fn traversePre<F>(node: Ref, visit: F) where F: Fn(Ref) {
-    if !visitable(node) { return }
+pub fn traversePre<F>(node: &mut AstValue, visit: F) where F: Fn(&mut AstValue) {
+    type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
     visit(node);
-    let mut stack = StackedStack::<TraverseInfo>::new();
-    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
-    {
-        let arr = node.getArray();
-        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-    };
-    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
+    let mut stack = StackedStack::new();
+    stack.push_back(node.children::<It>());
     loop {
-        if index < arrlen {
-            let sub: Ref = unsafe { *arrdata.offset(index) };
-            index += 1;
-            if visitable(sub) {
-                visit(sub);
-                stack.back().index = index;
-                {
-                    let arr = node.getArray();
-                    index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-                };
-                stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
-            }
+        if let Some(node) = stack.back().next() {
+            visit(node);
+            stack.push_back(node.children::<It>());
         } else {
             stack.pop_back();
             if stack.len() == 0 { break }
-            let back = stack.back();
-            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
         }
     }
 }
+
+// RSTODO: remove
+//// Traverse, calling visit before the children
+//pub fn traversePre<F>(node: &mut AstValue, visit: F) where F: Fn(&mut AstValue) {
+//    visit(node);
+//    let mut stack = StackedStack::<TraverseInfo>::new();
+//    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
+//    {
+//        let arr = node.getArray();
+//        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+//    };
+//    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
+//    loop {
+//        if index < arrlen {
+//            let sub: Ref = unsafe { *arrdata.offset(index) };
+//            index += 1;
+//            if visitable(sub) {
+//                visit(sub);
+//                stack.back().index = index;
+//                {
+//                    let arr = node.getArray();
+//                    index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+//                };
+//                stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
+//            }
+//        } else {
+//            stack.pop_back();
+//            if stack.len() == 0 { break }
+//            let back = stack.back();
+//            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
+//        }
+//    }
+//}
 
 // Traverse, calling visitPre before the children and visitPost after
-pub fn traversePrePost<F1,F2>(node: Ref, visitPre: F1, visitPost: F2) where F1: Fn(Ref), F2: Fn(Ref) {
-    if !visitable(node) { return }
+pub fn traversePrePost<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) where F1: Fn(&mut AstValue), F2: Fn(&mut AstValue) {
+    type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
     visitPre(node);
-    let mut stack = StackedStack::<TraverseInfo>::new();
-    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
-    {
-        let arr = node.getArray();
-        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-    };
-    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
+    let mut stack = StackedStack::new();
+    stack.push_back((node as *mut _, node.children::<It>()));
     loop {
-        if index < arrlen {
-            let sub: Ref = unsafe { *arrdata.offset(index) };
-            index += 1;
-            if visitable(sub) {
-                visitPre(sub);
-                stack.back().index = index;
-                {
-                    let arr = node.getArray();
-                    index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-                };
-                stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
-            }
+        if let Some(&mut box ref mut node) = stack.back().1.next() {
+            visitPre(node);
+            stack.push_back((node as *mut _, node.children::<It>()));
         } else {
-            visitPost(stack.back().node);
+            visitPost(unsafe { &mut *stack.back().0 });
             stack.pop_back();
             if stack.len() == 0 { break }
-            let back = stack.back();
-            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
-        }
-    }
-}
-// Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
-fn traversePrePostConditional<F1,F2>(node: Ref, visitPre: F1, visitPost: F2) where F1: Fn(Ref) -> bool, F2: Fn(Ref) {
-    if !visitable(node) { return }
-    if !visitPre(node) { return }
-    let mut stack = StackedStack::<TraverseInfo>::new();
-    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
-    {
-        let arr = node.getArray();
-        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-    };
-    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
-    loop {
-        if index < arrlen {
-            let sub: Ref = unsafe { *arrdata.offset(index) };
-            index += 1;
-            if visitable(sub) {
-                if visitPre(sub) {
-                    stack.back().index = index;
-                    {
-                        let arr = node.getArray();
-                        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-                    };
-                    stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
-                }
-            }
-        } else {
-            visitPost(stack.back().node);
-            stack.pop_back();
-            if stack.len() == 0 { break }
-            let back = stack.back();
-            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
         }
     }
 }
 
-fn traverseFunctions<F>(ast: Ref, visit: F) where F: Fn(Ref) {
-    if !ast.is_something() { return }
-    let arr = ast.getArray();
-    if arr.len() == 0 { return }
-    match arr[0].getIString() {
-        is!("toplevel") => {
-            let stats = arr[1];
-            for &curr in stats.getArray() {
-                if curr.get(0).getIString() == is!("defun") { visit(curr) }
+// RSTODO: remove
+//// Traverse, calling visitPre before the children and visitPost after
+//pub fn traversePrePost<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) where F1: Fn(&mut AstValue), F2: Fn(&mut AstValue) {
+//    visitPre(node);
+//    let mut stack = StackedStack::<TraverseInfo>::new();
+//    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
+//    {
+//        let arr = node.getArray();
+//        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+//    };
+//    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
+//    loop {
+//        if index < arrlen {
+//            let sub: Ref = unsafe { *arrdata.offset(index) };
+//            index += 1;
+//            if visitable(sub) {
+//                visitPre(sub);
+//                stack.back().index = index;
+//                {
+//                    let arr = node.getArray();
+//                    index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+//                };
+//                stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
+//            }
+//        } else {
+//            visitPost(stack.back().node);
+//            stack.pop_back();
+//            if stack.len() == 0 { break }
+//            let back = stack.back();
+//            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
+//        }
+//    }
+//}
+
+// Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
+fn traversePrePostConditional<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) where F1: Fn(&mut AstValue) -> bool, F2: Fn(&mut AstValue) {
+    type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
+    if !visitPre(node) { return };
+    let mut stack = StackedStack::new();
+    stack.push_back((node as *mut _, node.children::<It>()));
+    loop {
+        if let Some(&mut box ref mut node) = stack.back().1.next() {
+            if !visitPre(node) { continue };
+            stack.push_back((node as *mut _, node.children::<It>()));
+        } else {
+            visitPost(unsafe { &mut *stack.back().0 });
+            stack.pop_back();
+            if stack.len() == 0 { break }
+        }
+    }
+}
+
+// RSTODO: remove
+//// Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
+//fn traversePrePostConditional<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) where F1: Fn(&mut AstValue) -> bool, F2: Fn(&mut AstValue) {
+//    if !visitPre(node) { return }
+//    let mut stack = StackedStack::<TraverseInfo>::new();
+//    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
+//    {
+//        let arr = node.getArray();
+//        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+//    };
+//    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
+//    loop {
+//        if index < arrlen {
+//            let sub: Ref = unsafe { *arrdata.offset(index) };
+//            index += 1;
+//            if visitable(sub) {
+//                if visitPre(sub) {
+//                    stack.back().index = index;
+//                    {
+//                        let arr = node.getArray();
+//                        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
+//                    };
+//                    stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
+//                }
+//            }
+//        } else {
+//            visitPost(stack.back().node);
+//            stack.pop_back();
+//            if stack.len() == 0 { break }
+//            let back = stack.back();
+//            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
+//        }
+//    }
+//}
+
+fn traverseFunctions<F>(ast: &mut AstValue, visit: F) where F: Fn(&mut AstValue) {
+    match *ast {
+        AstValue::Toplevel(ref mut stats) => {
+            for curr in stats.iter_mut() {
+                if let AstValue::Defun(..) = **curr { visit(curr) }
             }
         },
-        is!("defun") => visit(ast),
+        AstValue::Defun(..) => visit(ast),
         _ => {},
     }
 }
@@ -1405,383 +1744,223 @@ pub fn dump(s: &str, node: Ref, pretty: bool) {
 // cashew builder
 pub mod builder {
 
-    use super::ARENA;
     use super::super::IString;
-    use super::Ref;
+    use super::{AstNode, AstValue, AstVec};
 
-    use phf;
-
-    lazy_static! {
-        static ref STATABLE: phf::Set<IString> = iss![
-            "assign",
-            "call",
-            "binary",
-            "unary-prefix",
-            "if",
-            "name",
-            "num",
-            "conditional",
-            "dot",
-            "new",
-            "sub",
-            "seq",
-            "string",
-            "object",
-            "array",
-        ];
-    }
-
-    fn makeRawString(s: IString) -> Ref {
-        let mut r = ARENA.alloc();
-        r.setIString(s);
-        r
-    }
-
-    fn makeRawArray(size_hint: usize) -> Ref {
-        let mut r = ARENA.alloc();
-        r.setArrayHint(size_hint);
-        r
-    }
-
-    fn makeNull() -> Ref {
-        let mut r = ARENA.alloc();
-        r.setNull();
-        r
-    }
-
-    pub fn makeToplevel() -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("toplevel")))
-            .push_back(makeRawArray(0));
-        r
-    }
-
-    pub fn makeString(s: IString) -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("string")))
-            .push_back(makeRawString(s));
-        r
-    }
-
-    pub fn makeBlock() -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("block")))
-            .push_back(makeRawArray(0));
-        r
-    }
-
-    pub fn makeName(name: IString) -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("name")))
-            .push_back(makeRawString(name));
-        r
-    }
-
-    pub fn setBlockContent(target: Ref, block: Ref) {
-        match target.get(0).getIString() {
-            is!("toplevel") => { target.get(1).setArray(block.get(1).getArray()); },
-            is!("defun") => { target.get(3).setArray(block.get(1).getArray()); },
-            _ => panic!(),
+    fn is_statable(av: &AstValue) -> bool {
+        use super::AstValue::*;
+        match *av {
+            Assign(..) |
+            Call(..) |
+            Binary(..) |
+            UnaryPrefix(..) |
+            If(..) |
+            Name(..) |
+            Num(..) |
+            Conditional(..) |
+            Dot(..) |
+            New(..) |
+            Sub(..) |
+            Seq(..) |
+            String(..) |
+            Object(..) |
+            Array(..) => true,
+            _ => false,
         }
     }
 
-    pub fn appendToBlock(block: Ref, element: Ref) {
-        assert_eq!(block.get(0).getIString(), is!("block"));
-        block.get(1).push_back(element);
+    pub fn makeTArray<T>(size_hint: usize) -> AstVec<T> {
+        Box::new(Vec::with_capacity(size_hint))
+    }
+    pub fn makeRawArray(size_hint: usize) -> AstVec<AstNode> {
+        makeTArray(size_hint)
+        // RSTODO: remove
+        //let mut r = ARENA.alloc();
+        //r.setArrayHint(size_hint);
+        //r
     }
 
-    pub fn makeCall(target: Ref) -> Ref {
-        let mut r = makeRawArray(3);
-        r
-            .push_back(makeRawString(is!("call")))
-            .push_back(target)
-            .push_back(makeRawArray(0));
-        r
+    pub fn makeToplevel() -> AstNode {
+        an!(Toplevel(makeRawArray(0)))
     }
 
-    pub fn appendToCall(call: Ref, element: Ref) {
-        assert_eq!(call.get(0).getIString(), is!("call"));
-        call.get(2).push_back(element);
+    pub fn makeString(s: IString) -> AstNode {
+        an!(String(s))
     }
 
-    pub fn makeStatement(contents: Ref) -> Ref {
-        if STATABLE.contains(&contents.get(0).getIString()) {
-            let mut r = makeRawArray(2);
-            r
-                .push_back(makeRawString(is!("stat")))
-                .push_back(contents);
-            r
+    pub fn makeBlock() -> AstNode {
+        an!(Block(makeRawArray(0)))
+    }
+
+    pub fn makeName(name: IString) -> AstNode {
+        an!(Name(name))
+    }
+
+    pub fn setBlockContent(target: &mut AstValue, block: AstNode) {
+        let (stats,) = block.intoBlock();
+        match *target {
+            AstValue::Toplevel(ref mut s) => *s = stats,
+            AstValue::Defun(_, _, ref mut s) => *s = stats,
+            _ => panic!(),
+        };
+    }
+
+    pub fn appendToBlock(block: &mut AstValue, element: AstNode) {
+        let (stats,) = block.getMutBlock();
+        stats.push(element);
+    }
+
+    pub fn makeCall(target: AstNode) -> AstNode {
+        an!(Call(target, makeRawArray(0)))
+    }
+
+    pub fn appendToCall(call: &mut AstValue, element: AstNode) {
+        let (_, params) = call.getMutCall();
+        params.push(element);
+    }
+
+    pub fn makeStatement(contents: AstNode) -> AstNode {
+        if is_statable(&contents) {
+            an!(Stat(contents))
         } else {
             contents // only very specific things actually need to be stat'ed
         }
     }
 
-    pub fn makeDouble(num: f64) -> Ref {
-        let mut n = ARENA.alloc();
-        n.setNumber(num);
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("num")))
-            .push_back(n);
-        r
+    pub fn makeDouble(num: f64) -> AstNode {
+        an!(Num(num))
     }
 
-    pub fn makeInt(num: u32) -> Ref {
+    pub fn makeInt(num: u32) -> AstNode {
         makeDouble(num as f64)
     }
 
-    pub fn makeBinary(left: Ref, op: IString, right: Ref) -> Ref {
+    pub fn makeBinary(left: AstNode, op: IString, right: AstNode) -> AstNode {
         match op {
-            is!("=") => {
-                let mut b = ARENA.alloc();
-                b.setBool(true);
-                let mut r = makeRawArray(4);
-                r
-                    .push_back(makeRawString(is!("assign")))
-                    .push_back(b)
-                    .push_back(left)
-                    .push_back(right);
-                r
-            },
-            is!(",") => {
-                let mut r = makeRawArray(3);
-                r
-                    .push_back(makeRawString(is!("seq")))
-                    .push_back(left)
-                    .push_back(right);
-                r
-            },
-            _ => {
-                let mut r = makeRawArray(4);
-                r
-                    .push_back(makeRawString(is!("binary")))
-                    .push_back(makeRawString(op))
-                    .push_back(left)
-                    .push_back(right);
-                r
-            },
+            is!("=") => an!(Assign(true, left, right)),
+            is!(",") => an!(Seq(left, right)),
+            _ => an!(Binary(op, left, right)),
         }
     }
 
 
-    pub fn makePrefix(op: IString, right: Ref) -> Ref {
-        let mut r = makeRawArray(3);
-        r
-            .push_back(makeRawString(is!("unary-prefix")))
-            .push_back(makeRawString(op))
-            .push_back(right);
-        r
+    pub fn makePrefix(op: IString, right: AstNode) -> AstNode {
+        an!(UnaryPrefix(op, right))
     }
 
 
-    pub fn makeFunction(name: IString) -> Ref {
-        let mut r = makeRawArray(4);
-        r
-            .push_back(makeRawString(is!("defun")))
-            .push_back(makeRawString(name))
-            .push_back(makeRawArray(0))
-            .push_back(makeRawArray(0));
-        r
+    pub fn makeFunction(name: IString) -> AstNode {
+        an!(Defun(name, makeTArray(0), makeRawArray(0)))
     }
 
-    pub fn appendArgumentToFunction(func: Ref, arg: IString) {
-        assert_eq!(func.get(0).getIString(), is!("defun"));
-        func.get(2).push_back(makeRawString(arg));
+    // RSTODO: this should fail AIDAN
+    pub fn appendArgumentToFunction(func: &mut AstValue, arg: IString) {
+        let (_, params, _) = func.getMutDefun();
+        params.push(arg);
     }
 
-    pub fn makeVar(_is_const: bool) -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("var")))
-            .push_back(makeRawArray(0));
-        r
+    // RSTODO: remove is_const?
+    pub fn makeVar(_is_const: bool) -> AstNode {
+        an!(Var(makeTArray(0)))
     }
 
-    pub fn appendToVar(var: Ref, name: IString, maybe_value: Option<Ref>) {
-        assert_eq!(var.get(0).getIString(), is!("var"));
-        let mut array = makeRawArray(1);
-        array.push_back(makeRawString(name));
-        if let Some(value) = maybe_value {
-            array.push_back(value);
-        }
-        var.get(1).push_back(array);
+    pub fn appendToVar(var: &mut AstValue, name: IString, maybe_value: Option<AstNode>) {
+        let (vars,) = var.getMutVar();
+        vars.push((name, maybe_value));
     }
 
-    pub fn makeReturn(value: Option<Ref>) -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("return")))
-            .push_back(value.unwrap_or_else(makeNull));
-        r
+    pub fn makeReturn(value: Option<AstNode>) -> AstNode {
+        an!(Return(value))
     }
 
-    pub fn makeIndexing(target: Ref, index: Ref) -> Ref {
-        let mut r = makeRawArray(3);
-        r
-            .push_back(makeRawString(is!("sub")))
-            .push_back(target)
-            .push_back(index);
-        r
+    pub fn makeIndexing(target: AstNode, index: AstNode) -> AstNode {
+        an!(Sub(target, index))
     }
 
-
-    pub fn makeIf(condition: Ref, ifTrue: Ref, ifFalse: Option<Ref>) -> Ref {
-        let mut r = makeRawArray(4);
-        r
-            .push_back(makeRawString(is!("if")))
-            .push_back(condition)
-            .push_back(ifTrue)
-            .push_back(ifFalse.unwrap_or_else(makeNull));
-        r
+    pub fn makeIf(condition: AstNode, ifTrue: AstNode, ifFalse: Option<AstNode>) -> AstNode {
+        an!(If(condition, ifTrue, ifFalse))
     }
 
-    pub fn makeConditional(condition: Ref, ifTrue: Ref, ifFalse: Ref) -> Ref {
-        let mut r = makeRawArray(4);
-        r
-            .push_back(makeRawString(is!("conditional")))
-            .push_back(condition)
-            .push_back(ifTrue)
-            .push_back(ifFalse);
-        r
+    pub fn makeConditional(condition: AstNode, ifTrue: AstNode, ifFalse: AstNode) -> AstNode {
+        an!(Conditional(condition, ifTrue, ifFalse))
     }
 
-    pub fn makeDo(body: Ref, condition: Ref) -> Ref {
-        let mut r = makeRawArray(3);
-        r
-            .push_back(makeRawString(is!("do")))
-            .push_back(condition)
-            .push_back(body);
-        r
+    pub fn makeDo(body: AstNode, condition: AstNode) -> AstNode {
+        an!(Do(condition, body))
     }
 
-    pub fn makeWhile(condition: Ref, body: Ref) -> Ref {
-        let mut r = makeRawArray(3);
-        r
-            .push_back(makeRawString(is!("while")))
-            .push_back(condition)
-            .push_back(body);
-        r
+    pub fn makeWhile(condition: AstNode, body: AstNode) -> AstNode {
+        an!(While(condition, body))
     }
 
-    pub fn makeBreak(label: Option<IString>) -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("break")))
-            .push_back(match label {
-                Some(s) => makeRawString(s),
-                None => makeNull(),
-            });
-        r
+    pub fn makeBreak(label: Option<IString>) -> AstNode {
+        an!(Break(label))
     }
 
-    pub fn makeContinue(label: Option<IString>) -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("continue")))
-            .push_back(match label {
-                Some(s) => makeRawString(s),
-                None => makeNull(),
-            });
-        r
+    pub fn makeContinue(label: Option<IString>) -> AstNode {
+        an!(Continue(label))
     }
 
-    pub fn makeLabel(name: IString, body: Ref) -> Ref {
-        let mut r = makeRawArray(3);
-        r
-            .push_back(makeRawString(is!("label")))
-            .push_back(makeRawString(name))
-            .push_back(body);
-        r
+    pub fn makeLabel(name: IString, body: AstNode) -> AstNode {
+        an!(Label(name, body))
     }
 
-    pub fn makeSwitch(input: Ref) -> Ref {
-        let mut r = makeRawArray(3);
-        r
-            .push_back(makeRawString(is!("switch")))
-            .push_back(input)
-            .push_back(makeRawArray(0));
-        r
+    pub fn makeSwitch(input: AstNode) -> AstNode {
+        an!(Switch(input, makeTArray(0)))
     }
 
-    pub fn appendCaseToSwitch(switch: Ref, arg: Ref) {
-        assert_eq!(switch.get(0).getIString(), is!("switch"));
-        let mut array = makeRawArray(2);
-        array.push_back(arg).push_back(makeRawArray(0));
-        switch.get(2).push_back(array);
+    pub fn appendCaseToSwitch(switch: &mut AstValue, arg: AstNode) {
+        let (_, cases) = switch.getMutSwitch();
+        cases.push((Some(arg), *makeRawArray(0)));
     }
 
-    pub fn appendDefaultToSwitch(switch: Ref) {
-        assert_eq!(switch.get(0).getIString(), is!("switch"));
-        let mut array = makeRawArray(2);
-        array.push_back(makeNull()).push_back(makeRawArray(0));
-        switch.get(2).push_back(array);
+    pub fn appendDefaultToSwitch(switch: &mut AstValue) {
+        let (_, cases) = switch.getMutSwitch();
+        cases.push((None, *makeRawArray(0)));
     }
 
-    pub fn appendCodeToSwitch(switch: Ref, code: Ref, explicitBlock: bool) {
-        assert_eq!(switch.get(0).getIString(), is!("switch"));
-        assert_eq!(code.get(0).getIString(), is!("block"));
-        let mut switchtarget = switch.get(2).back().unwrap().back().unwrap();
+    pub fn appendCodeToSwitch(switch: &mut AstValue, code: AstNode, explicitBlock: bool) {
+        let (_, cases) = switch.getMutSwitch();
+        let &mut (_, ref mut switchtarget) = cases.last_mut().unwrap();
         if !explicitBlock {
-            let codesrc = code.get(1);
-            for i in 0..code.get(1).size() {
-                switchtarget.push_back(codesrc.get(i));
+            let (codesrc,) = code.intoBlock();
+            for codepart in *codesrc {
+                switchtarget.push(codepart);
             }
         } else {
-            switchtarget.push_back(code);
+            assert!(code.isBlock());
+            switchtarget.push(code);
         }
     }
 
-    pub fn makeDot(obj: Ref, key: IString) -> Ref {
-        let mut r = makeRawArray(3);
-        r
-            .push_back(makeRawString(is!("dot")))
-            .push_back(obj)
-            .push_back(makeRawString(key));
-        r
+    pub fn makeDot(obj: AstNode, key: IString) -> AstNode {
+        an!(Dot(obj, key))
     }
 
-    pub fn makeDotRef(obj: Ref, key: Ref) -> Ref {
-        assert_eq!(key.get(0).getIString(), is!("name"));
-        makeDot(obj, key.get(1).getIString())
+    pub fn makeDotAstNode(obj: AstNode, key: AstNode) -> AstNode {
+        let (keystr,) = key.intoName();
+        makeDot(obj, keystr)
     }
 
-    pub fn makeNew(call: Ref) -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("new")))
-            .push_back(call);
-        r
+    pub fn makeNew(call: AstNode) -> AstNode {
+        an!(New(call))
     }
 
-    pub fn makeArray() -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("array")))
-            .push_back(makeRawArray(0));
-        r
+    pub fn makeArray() -> AstNode {
+        an!(Array(makeRawArray(0)))
     }
 
-    pub fn appendToArray(array: Ref, element: Ref) {
-        assert_eq!(array.get(0).getIString(), is!("array"));
-        array.get(1).push_back(element);
+    pub fn appendToArray(array: &mut AstValue, element: AstNode) {
+        let (arr,) = array.getMutArray();
+        arr.push(element);
     }
 
-    pub fn makeObject() -> Ref {
-        let mut r = makeRawArray(2);
-        r
-            .push_back(makeRawString(is!("object")))
-            .push_back(makeRawArray(0));
-        r
+    pub fn makeObject() -> AstNode {
+        an!(Object(makeTArray(0)))
     }
 
-    pub fn appendToObject(array: Ref, key: IString, value: Ref) {
-        assert_eq!(array.get(0).getIString(), is!("object"));
-        let mut array = makeRawArray(2);
-        array.push_back(makeRawString(key)).push_back(value);
-        array.get(1).push_back(array);
+    pub fn appendToObject(object: &mut AstValue, key: IString, value: AstNode) {
+        let (obj,) = object.getMutObject();
+        obj.push((key, value));
     }
 }

@@ -1,5 +1,10 @@
-#![feature(stmt_expr_attributes, const_fn)]
+#![feature(stmt_expr_attributes, const_fn, box_patterns, slice_patterns)]
 #![allow(non_snake_case, non_camel_case_types)]
+
+// RSTODO: https://github.com/rust-lang/rust/issues/29599
+#![feature(plugin)]
+#![plugin(interpolate_idents)]
+#![plugin(ayzim_macros)]
 
 // RSTODO: review all numeric casts
 // https://github.com/rust-lang/rfcs/pull/1218
@@ -10,6 +15,7 @@
 #[macro_use] extern crate cfor;
 #[macro_use] extern crate lazy_static;
 extern crate string_cache;
+extern crate serde;
 extern crate serde_json;
 extern crate odds;
 extern crate phf;
@@ -22,6 +28,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::io::{Read, Write};
+use std::mem;
 #[cfg(feature = "profiling")]
 use std::time;
 
@@ -61,7 +68,7 @@ macro_rules! printlnerr(
     }};
 );
 
-
+#[macro_use]
 mod cashew;
 mod optimizer;
 mod parser;
@@ -100,7 +107,7 @@ mod num {
     }
 }
 
-use cashew::ARENA;
+use cashew::{ARENA, AstValue};
 
 // RSTODO: make these not global static
 static mut preciseF32: bool = false;
@@ -110,6 +117,8 @@ static mut minifyWhitespace: bool = false;
 static mut last: bool = false;
 
 pub fn libmain() {
+    assert!(mem::size_of::<AstValue>() == 32);
+
     let args: Vec<String> = env::args().collect();
     // Read directives
     for arg in &args[2..] {
@@ -143,15 +152,16 @@ pub fn libmain() {
         input.truncate(extra_info_start); // ignore extra info when parsing
     }
 
-    let mut doc = ARENA.alloc();
-    if unsafe { receiveJSON } {
+    let doc = if unsafe { receiveJSON } {
         // Parse JSON source into the document
-        doc.parse(input.as_bytes());
+        let mut docref = ARENA.alloc();
+        docref.parse(input.as_bytes());
+        AstValue::from_ref(docref)
     } else {
         let mut builder = parser::Parser::new();
         input.push('\0');
-        doc = unsafe { builder.parseToplevel(input.as_ptr()) };
-    }
+        unsafe { builder.parseToplevel(input.as_ptr()) }
+    };
     // RSTODO: pretty sure comment below is irrelevant
     // do not free input, its contents are used as strings
 

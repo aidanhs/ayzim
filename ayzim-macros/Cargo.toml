@@ -1,0 +1,9 @@
+[package]
+name = "ayzim-macros"
+version = "0.1.0"
+authors = ["Aidan Hobson Sayers <aidanhs@cantab.net>"]
+
+[lib]
+plugin = true
+
+[dependencies]

@@ -5,8 +5,8 @@ use std::iter;
 use odds::vec::VecExt;
 
 use super::IString;
-use super::cashew::Ref;
-use super::cashew::{ARENA, EMPTYREF};
+use super::cashew::{AstValue, AstNode, AstVec};
+use super::cashew::AstValue::*;
 use super::cashew::traversePre;
 use super::cashew::builder;
 use super::num::{is32Bit, isInteger, isInteger32, f64toi32};
@@ -47,62 +47,59 @@ impl Local {
     }
 }
 
-struct AsmData {
+struct AsmData<'a> {
     locals: HashMap<IString, Local>,
     params: Vec<IString>, // in order
     vars: Vec<IString>, // in order
     ret: Option<AsmType>,
 
-    func: Ref,
+    func: &'a mut AstValue,
     floatZero: Option<IString>,
 }
 
-impl AsmData {
+impl<'a> AsmData<'a> {
     // if you want to read data from f, and modify it as you go (parallel to denormalize)
-    fn new(f: Ref) -> AsmData {
-        let func = f;
+    fn new(f: &mut AstValue) -> AsmData {
         let mut locals = HashMap::new();
         let mut params = vec![];
         let mut vars = vec![];
+        let ret;
+        let func = f;
         let mut floatZero = None;
 
-        let mut statsNode = func.get(3);
-        let stats: &mut Vec<Ref> = statsNode.getArrayMut();
+        {
+        let (_, fnparams, stats) = func.getMutDefun();
+        let fnparams: &AstVec<_> = &*fnparams;
 
         // process initial params
-        for stat in &mut *stats {
-            if stat.get(0).getIString() != is!("stat") { break }
-            if stat.get(1).get(0).getIString() != is!("assign") { break }
-            if stat.get(1).get(2).get(0).getIString() != is!("name") { break }
-            let node = stat.get(1);
-            let name = node.get(2).get(1);
-            let index = func.get(2).indexOf(name);
+        for stat in stats.iter_mut() {
+            {
+            let (name, val) = if let mast!(Stat(Assign(_, Name(ref name), ref val))) = *stat { (name, val) } else { break };
+            let index = fnparams.iter().position(|p| p == name);
             // not an assign into a parameter, but a global?
-            if index < 0 { break }
-            let str = name.getIString();
+            if index.is_none() { break }
             // already done that param, must be starting function body?
-            if locals.contains_key(&str) { break }
-            params.push(str.clone());
-            let localty = detectType(node.get(3), None, &mut floatZero, false);
+            if locals.contains_key(name) { break }
+            params.push(name.clone());
+            let localty = detectType(val, None, &mut floatZero, false);
             // RSTODO: valid to not have type?
-            locals.insert(str, Local::new(localty.unwrap(), true));
+            locals.insert(name.clone(), Local::new(localty.unwrap(), true));
+            }
             *stat = makeEmpty();
         }
 
         // process initial variable definitions and remove '= 0' etc parts -
         // these are not actually assignments in asm.js
-        'outside: for stat in &mut *stats {
-            if stat.get(0).getIString() != is!("var") { break }
+        'outside: for stat in stats.iter_mut() {
+            let statvars = if let Var(ref mut vars) = **stat { vars } else { break };
             let mut first = true;
-            for v in stat.get(1).getArrayMut() {
-                let name = v.get(0).getIString();
-                let val = v.get(1);
-                if !locals.contains_key(&name) {
+            for &mut (ref name, ref mut val) in statvars.iter_mut() {
+                if !locals.contains_key(name) {
                     vars.push(name.clone());
-                    let localty = detectType(val, None, &mut floatZero, false);
+                    let val = val.take().unwrap(); // make an un-assigning var
+                    let localty = detectType(&*val, None, &mut floatZero, false);
                     // RSTODO: valid to not have type?
-                    locals.insert(name, Local::new(localty.unwrap(), false));
-                    v.setSize(1); // make an un-assigning var
+                    locals.insert(name.clone(), Local::new(localty.unwrap(), false));
                 } else {
                     assert!(first); // cannot break in the middle
                     break 'outside
@@ -112,10 +109,9 @@ impl AsmData {
         }
 
         // look for other var definitions and collect them
-        for &mut stat in &mut *stats {
-            traversePre(stat, |node: Ref| {
-                let ty = node.get(0).getIString();
-                if ty == is!("var") {
+        for stat in stats.iter_mut() {
+            traversePre(stat, |node| {
+                if let Var(..) = *node {
                     panic!()
                     // dump("bad, seeing a var in need of fixing", func);
                     //, 'should be no vars to fix! ' + func[1] + ' : ' + JSON.stringify(node));
@@ -124,13 +120,14 @@ impl AsmData {
         }
 
         // look for final RETURN statement to get return type.
-        let ret = stats.last().map(|retStmt| {
-            if retStmt.get(0).getIString() == is!("return") && retStmt.get(1).is_something() {
-                detectType(retStmt.get(1), None, &mut floatZero, false)
+        ret = stats.last().map(|retStmt| {
+            if let Return(Some(ref retval)) = **retStmt {
+                detectType(retval, None, &mut floatZero, false)
             } else {
                 None
             }
         }).unwrap_or(None);
+        }
 
         AsmData {
             locals: locals,
@@ -138,20 +135,19 @@ impl AsmData {
             vars: vars,
             ret: ret,
 
-            func: f,
+            func: func,
             floatZero: floatZero,
         }
     }
 
     fn denormalize(&mut self) {
-        let mut statsNode = self.func.get(3);
-        let stats = statsNode.getArrayMut();
+        let (_, params, stats) = self.func.getMutDefun();
 
         // Remove var definitions, if any
-        for stat in &mut *stats {
-            if stat.get(0).getIString() == is!("var") {
+        for stat in stats.iter_mut() {
+            if let Var(..) = **stat {
                 *stat = makeEmpty()
-            } else if !isEmpty(*stat) {
+            } else if !isEmpty(stat) {
                 break
             }
         }
@@ -161,21 +157,21 @@ impl AsmData {
         for v in &self.vars {
             let localty = self.locals.get(v).unwrap().ty;
             let zero = makeAsmCoercedZero(localty, self.floatZero.clone());
-            varDefs.push_back(make1(v.clone(), zero));
+            varDefs.push((v.clone(), Some(zero)));
         }
 
         // each param needs a line; reuse emptyNodes as much as we can
         let numParams = self.params.len();
         let mut emptyNodes = 0;
         while emptyNodes < stats.len() {
-            if !isEmpty(stats[emptyNodes]) { break }
+            if !isEmpty(&*stats[emptyNodes]) { break }
             emptyNodes += 1
         }
         // params plus one big var if there are vars
-        let neededEmptyNodes = numParams + if varDefs.size() > 0 { 1 } else { 0 };
+        let neededEmptyNodes = numParams + if varDefs.len() > 0 { 1 } else { 0 };
         if neededEmptyNodes > emptyNodes {
             let num = neededEmptyNodes - emptyNodes;
-            let empties: Vec<_> = iter::repeat(EMPTYREF).take(num).collect();
+            let empties: Vec<_> = iter::repeat(()).map(|_| makeEmpty()).take(num).collect();
             stats.splice(0..0, empties.into_iter());
         } else {
             let num = emptyNodes - neededEmptyNodes;
@@ -184,16 +180,15 @@ impl AsmData {
 
         // add param coercions
         let mut next = 0;
-        for param in self.func.get(2).getArray() {
-            let str = param.getIString();
-            let localty = self.locals.get(&str).unwrap().ty;
-            let coercion = makeAsmCoercion(makeName(str.clone()), localty);
-            let stat = make3Ref(is!("assign"), makeBool(true), makeName(str.clone()), coercion);
-            stats[next] = make1(is!("stat"), stat);
+        for param in params.iter() {
+            let localty = self.locals.get(param).unwrap().ty;
+            let coercion = makeAsmCoercion(makeName(param.clone()), localty);
+            let stat = an!(Assign(true, makeName(param.clone()), coercion));
+            stats[next] = an!(Stat(stat));
             next += 1;
         }
-        if varDefs.size() > 0 {
-            stats[next] = make1(is!("var"), varDefs);
+        if varDefs.len() > 0 {
+            stats[next] = an!(Var(varDefs));
         }
         /*
         if (inlines->size() > 0) {
@@ -208,22 +203,18 @@ impl AsmData {
 
         // ensure that there's a final RETURN statement if needed.
         if let Some(ret) = self.ret {
-            let needsret = if let Some(retStmt) = stats.last() {
-                retStmt.get(0).getIString() != is!("return")
-            } else {
-                true
-            };
-            if needsret {
+            let hasret = stats.last().map(|st| st.isReturn()).unwrap_or(false);
+            if !hasret {
                 let zero = makeAsmCoercedZero(ret, self.floatZero.clone());
-                stats.push(make1(is!("return"), zero))
+                stats.push(an!(Return(Some(zero))))
             }
         }
 
         //printErr('denormalized \n\n' + astToSrc(func) + '\n\n');
     }
 
-    fn getType(&self, name: IString) -> Option<AsmType> {
-        self.locals.get(&name).map(|l| l.ty)
+    fn getType(&self, name: &IString) -> Option<AsmType> {
+        self.locals.get(name).map(|l| l.ty)
     }
     fn setType(&mut self, name: IString, ty: AsmType) {
         self.locals.get_mut(&name).unwrap().ty = ty;
@@ -287,22 +278,22 @@ fn parseHeap(name_str: &str) -> Option<HeapInfo> {
     Some(HeapInfo { unsign: unsign, floaty: floaty, bits: bits, ty: ty })
 }
 
-fn detectType(node: Ref, asmData: Option<AsmData>, asmFloatZero: &mut Option<IString>, inVarDef: bool) -> Option<AsmType> {
-    return match node.get(0).getIString() {
-        is!("num") => {
-            Some(if !isInteger(node.get(1).getNumber()) {
+fn detectType(node: &AstValue, asmData: Option<AsmData>, asmFloatZero: &mut Option<IString>, inVarDef: bool) -> Option<AsmType> {
+    return match *node {
+        Num(n) => {
+            Some(if !isInteger(n) {
                 AsmType::AsmDouble
             } else {
                 AsmType::AsmInt
             })
         },
-        is!("name") => {
+        Name(ref name) => {
             if let Some(asmData) = asmData {
-                let ret = asmData.getType(node.get(0).getIString());
+                let ret = asmData.getType(name);
                 if ret.is_some() { return ret }
             }
             Some(if !inVarDef {
-                match node.get(1).getIString() {
+                match *name {
                     is!("inf") |
                     is!("nan") => AsmType::AsmDouble,
                     is!("tempRet0") => AsmType::AsmInt,
@@ -310,29 +301,29 @@ fn detectType(node: Ref, asmData: Option<AsmData>, asmFloatZero: &mut Option<ISt
                 }
             } else {
                 // We are in a variable definition, where Math_fround(0) optimized into a global constant becomes f0 = Math_fround(0)
-                let nodestr = node.get(1).getIString();
+                let nodestr = name;
                 if let Some(ref asmFloatZero) = *asmFloatZero {
-                    assert!(*asmFloatZero == nodestr)
+                    assert!(asmFloatZero == nodestr)
                 } else {
-                    *asmFloatZero = Some(nodestr)
+                    *asmFloatZero = Some(nodestr.clone())
                 }
                 AsmType::AsmFloat
             })
         },
-        is!("unary-prefix") => {
+        UnaryPrefix(ref op, ref right) => {
             // RSTODO: istring match? Are there any 2 char unary prefixes?
-            match node.get(1).getStr().as_bytes()[0] {
+            match op.as_bytes()[0] {
                 b'+' => Some(AsmType::AsmDouble),
-                b'-' => detectType(node.get(2), asmData, asmFloatZero, inVarDef),
+                b'-' => detectType(&*right, asmData, asmFloatZero, inVarDef),
                 b'!' |
                 b'~' => Some(AsmType::AsmInt),
                 _ => None,
             }
         },
-        is!("call") => {
-            match node.get(0).getIString() {
-                is!("name") => {
-                    Some(match node.get(1).get(1).getIString() {
+        Call(ref fnexpr, _) => {
+            match **fnexpr {
+                Name(ref name) => {
+                    Some(match *name {
                         is!("Math_fround") => AsmType::AsmFloat,
                         is!("SIMD_Float32x4") |
                         is!("SIMD_Float32x4_check") => AsmType::AsmFloat32x4,
@@ -355,27 +346,27 @@ fn detectType(node: Ref, asmData: Option<AsmData>, asmFloatZero: &mut Option<ISt
                         _ => return None,
                     })
                 },
-                is!("conditional") => {
-                    detectType(node.get(2), asmData, asmFloatZero, inVarDef)
-                },
-                _ => None
+                _ => None,
             }
         },
-        is!("binary") => {
-            match node.get(1).getStr().as_bytes()[0] {
+        Conditional(_, ref iftrue, _) => {
+            detectType(&*iftrue, asmData, asmFloatZero, inVarDef)
+        },
+        Binary(ref op, ref left, _) => {
+            match op.as_bytes()[0] {
                 b'+' | b'-' |
                 b'*' | b'/' |
-                b'%' => detectType(node.get(2), asmData, asmFloatZero, inVarDef),
+                b'%' => detectType(&*left, asmData, asmFloatZero, inVarDef),
                 b'|' | b'&' | b'^' |
                 b'<' | b'>' | // handles <<, >>, >>=, <=
                 b'=' | b'!' => Some(AsmType::AsmInt), // handles ==, !=
                 _ => None,
             }
         },
-        is!("seq") => detectType(node.get(2), asmData, asmFloatZero, inVarDef),
-        is!("sub") => {
-            assert!(node.get(1).get(0).getIString() == is!("name"));
-            Some(if let Some(info) = parseHeap(node.get(1).get(1).getStr()) {
+        Seq(_, ref right) => detectType(&*right, asmData, asmFloatZero, inVarDef),
+        Sub(ref target, _) => {
+            let name = target.getName().0;
+            Some(if let Some(info) = parseHeap(name) {
                 // XXX ASM_FLOAT?
                 if info.floaty { AsmType::AsmDouble } else { AsmType::AsmInt }
             } else {
@@ -388,12 +379,12 @@ fn detectType(node: Ref, asmData: Option<AsmData>, asmFloatZero: &mut Option<ISt
     //assert(0);
 }
 
-fn detectSign(node: Ref) -> AsmSign {
-    match node.get(0).getIString() {
-        is!("binary") => {
-            let opnode = node.get(1);
-            let opch = opnode.getStr().as_bytes()[0];
-            if opch == b'>' && opnode.getIString() == is!(">>>") {
+// RSTODO: is this used?
+fn detectSign(node: &AstValue) -> AsmSign {
+    match *node {
+        Binary(ref op, _, _) => {
+            let opch = op.as_bytes()[0];
+            if opch == b'>' && *op == is!(">>>") {
                 return AsmSign::AsmUnsigned
             }
             match opch {
@@ -405,17 +396,16 @@ fn detectSign(node: Ref) -> AsmSign {
                 _ => panic!(),
             }
         },
-        is!("unary-prefix") => {
+        UnaryPrefix(ref op, _) => {
             // RSTODO: istring match? Are there any 2 char unary prefixes?
-            match node.get(1).getStr().as_bytes()[0] {
+            match op.as_bytes()[0] {
                 b'-' => AsmSign::AsmFlexible,
                 b'+' => AsmSign::AsmNonsigned,
                 b'~' => AsmSign::AsmSigned,
                 _ => panic!(),
             }
         },
-        is!("num") => {
-            let value = node.get(1).getNumber();
+        Num(value) => {
             if value < 0f64 {
                 AsmSign::AsmSigned
             } else if !is32Bit(value) || !isInteger(value) {
@@ -426,13 +416,9 @@ fn detectSign(node: Ref) -> AsmSign {
                 AsmSign::AsmUnsigned
             }
         },
-        is!("name") => AsmSign::AsmFlexible,
-        is!("conditional") => detectSign(node.get(2)),
-        is!("call") => {
-            assert!(node.get(1).get(0).getIString() == is!("name"));
-            assert!(node.get(1).get(1).getIString() == is!("Math_fround"));
-            AsmSign::AsmNonsigned
-        },
+        Name(_) => AsmSign::AsmFlexible,
+        Conditional(_, ref iftrue, _) => detectSign(&*iftrue),
+        Call(mast!(Name(is!("Math_fround"))), _) => AsmSign::AsmNonsigned,
         _ => panic!(),
     }
 }
@@ -450,166 +436,169 @@ fn getHeapStr(x: u32, unsign: bool) -> IString {
     }
 }
 
-fn deStat(node: Ref) -> Ref {
-    if node.get(0).getIString() == is!("stat") { node.get(1) } else { node }
+fn deStat(node: &mut AstValue) -> &mut AstValue {
+    if let Stat(ref mut stat) = *node { stat } else { node }
 }
 
-fn getStatements(node:Ref) -> Option<Ref> {
-    Some(match node.get(0).getIString() {
-        is!("defun") => node.get(3),
-        is!("block") => if node.size() > 1 { node.get(1) } else { return None },
-        _ => ARENA.alloc(),
+fn getStatements(node: &mut AstValue) -> Option<&mut AstVec<AstNode>> {
+    Some(match *node {
+        Defun(_, _, ref mut stats) => stats,
+        Block(ref mut stats) if stats.len() > 1 => stats,
+        _ => return None,
     })
 }
 
 
 // Constructions TODO: share common constructions, and assert they remain frozen
 
-fn makeArray(size_hint: usize) -> Ref {
-    let mut r = ARENA.alloc();
-    r.setArrayHint(size_hint);
-    r
+fn makeArray<T>(size_hint: usize) -> AstVec<T> {
+    builder::makeTArray(size_hint)
 }
 
-fn makeBool(b: bool) -> Ref {
-    let mut r = ARENA.alloc();
-    r.setBool(b);
-    r
-}
+// RSTODO: remove?
+//fn makeBool(b: bool) -> Ref {
+//    let mut r = ARENA.alloc();
+//    r.setBool(b);
+//    r
+//}
 
-fn makeString(s: IString) -> Ref {
-    let mut r = ARENA.alloc();
-    r.setIString(s);
-    r
-}
+// RSTODO: remove?
+//fn makeString(s: IString) -> Ref {
+//    let mut r = ARENA.alloc();
+//    r.setIString(s);
+//    r
+//}
 
-fn makeEmpty() -> Ref {
+fn makeEmpty() -> AstNode {
     builder::makeToplevel()
 }
 
-fn makeNum(x: f64) -> Ref {
+fn makeNum(x: f64) -> AstNode {
     builder::makeDouble(x)
 }
 
-fn makeName(str: IString) -> Ref {
-  return builder::makeName(str);
+fn makeName(str: IString) -> AstNode {
+    return builder::makeName(str);
 }
 
-// RSTODO
+// RSTODO: remove?
 //Ref makeBlock() {
 //  return ValueBuilder::makeBlock();
 //}
 
-fn make1(s1: IString, a: Ref) -> Ref {
-    let mut r = makeArray(2);
-    r
-        .push_back(makeString(s1))
-        .push_back(a);
-    r
-}
+// RSTODO: remove?
+//fn make1(s1: IString, a: Ref) -> Ref {
+//    let mut r = makeArray(2);
+//    r
+//        .push_back(makeString(s1))
+//        .push_back(a);
+//    r
+//}
 
-fn make2IString(s1: IString, s2: IString, a: Ref) -> Ref {
-    let mut r = makeArray(3);
-    r
-        .push_back(makeString(s1))
-        .push_back(makeString(s2))
-        .push_back(a);
-    r
-}
+// RSTODO: remove?
+//fn make2IString(s1: IString, s2: IString, a: Ref) -> Ref {
+//    let mut r = makeArray(3);
+//    r
+//        .push_back(makeString(s1))
+//        .push_back(makeString(s2))
+//        .push_back(a);
+//    r
+//}
+//
+//fn make2Ref(s1: IString, a: Ref, b: Ref) -> Ref {
+//    let mut r = makeArray(3);
+//    r
+//        .push_back(makeString(s1))
+//        .push_back(a)
+//        .push_back(b);
+//    r
+//}
 
-fn make2Ref(s1: IString, a: Ref, b: Ref) -> Ref {
-    let mut r = makeArray(3);
-    r
-        .push_back(makeString(s1))
-        .push_back(a)
-        .push_back(b);
-    r
-}
-
-fn make3IString(ty: IString, a: IString, b: Ref, c: Ref) -> Ref {
-    let mut r = makeArray(4);
-    r
-        .push_back(makeString(ty))
-        .push_back(makeString(a))
-        .push_back(b)
-        .push_back(c);
-    r
-}
-
-fn make3Ref(ty: IString, a: Ref, b: Ref, c: Ref) -> Ref {
-    let mut r = makeArray(4);
-    r
-        .push_back(makeString(ty))
-        .push_back(a)
-        .push_back(b)
-        .push_back(c);
-    r
-}
+// RSTODO: remove?
+//fn make3IString(ty: IString, a: IString, b: Ref, c: Ref) -> Ref {
+//    let mut r = makeArray(4);
+//    r
+//        .push_back(makeString(ty))
+//        .push_back(makeString(a))
+//        .push_back(b)
+//        .push_back(c);
+//    r
+//}
+//
+//fn make3Ref(ty: IString, a: Ref, b: Ref, c: Ref) -> Ref {
+//    let mut r = makeArray(4);
+//    r
+//        .push_back(makeString(ty))
+//        .push_back(a)
+//        .push_back(b)
+//        .push_back(c);
+//    r
+//}
 
 // RSTODO: could be massively shortened by keeping a mapping from type to
 // istring method+number of zeros, and just using that? Would also benefit
 // method below
-fn makeAsmCoercedZero(ty: AsmType, asmFloatZero: Option<IString>) -> Ref {
-    fn zarr(n: usize) -> Ref {
+fn makeAsmCoercedZero(ty: AsmType, asmFloatZero: Option<IString>) -> AstNode {
+    fn zarr(n: usize) -> AstVec<AstNode> {
         let mut arr = makeArray(n);
-        for _ in 0..n { arr.push_back(makeNum(0f64)); }
+        for _ in 0..n { arr.push(makeNum(0f64)); }
         arr
     }
     match ty {
         AsmType::AsmInt => makeNum(0f64),
-        AsmType::AsmDouble => make2IString(is!("unary-prefix"), is!("+"), makeNum(0f64)),
+        AsmType::AsmDouble => an!(UnaryPrefix(is!("+"), makeNum(0f64))),
         AsmType::AsmFloat => {
             if let Some(f0) = asmFloatZero {
                 makeName(f0)
             } else {
-                make2Ref(is!("call"), makeName(is!("Math_fround")), zarr(1))
+                an!(Call(makeName(is!("Math_fround")), zarr(1)))
             }
         },
         AsmType::AsmFloat32x4 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Float32x4")), zarr(4))
+            an!(Call(makeName(is!("SIMD_Float32x4")), zarr(4)))
         },
         AsmType::AsmFloat64x2 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Float64x2")), zarr(2))
+            an!(Call(makeName(is!("SIMD_Float64x2")), zarr(2)))
         },
         AsmType::AsmInt8x16 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Int8x16")), zarr(16))
+            an!(Call(makeName(is!("SIMD_Int8x16")), zarr(16)))
         },
         AsmType::AsmInt16x8 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Int16x8")), zarr(8))
+            an!(Call(makeName(is!("SIMD_Int16x8")), zarr(8)))
         },
         AsmType::AsmInt32x4 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Int32x4")), zarr(4))
+            an!(Call(makeName(is!("SIMD_Int32x4")), zarr(4)))
         },
         AsmType::AsmBool8x16 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Bool8x16")), zarr(16))
+            an!(Call(makeName(is!("SIMD_Bool8x16")), zarr(16)))
         },
         AsmType::AsmBool16x8 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Bool16x8")), zarr(8))
+            an!(Call(makeName(is!("SIMD_Bool16x8")), zarr(8)))
         },
         AsmType::AsmBool32x4 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Bool32x4")), zarr(4))
+            an!(Call(makeName(is!("SIMD_Bool32x4")), zarr(4)))
         },
         AsmType::AsmBool64x2 => {
-            make2Ref(is!("call"), makeName(is!("SIMD_Bool64x2")), zarr(2))
+            an!(Call(makeName(is!("SIMD_Bool64x2")), zarr(2)))
         },
     }
 }
 
-fn makeAsmCoercion(node: Ref, ty: AsmType) -> Ref {
-    fn arr(n: Ref) -> Ref {
+fn makeAsmCoercion(node: AstNode, ty: AsmType) -> AstNode {
+    fn arr(n: AstNode) -> AstVec<AstNode> {
         let mut arr = makeArray(1);
-        arr.push_back(n);
+        arr.push(n);
         arr
     }
     match ty {
-        AsmType::AsmInt => make3IString(is!("binary"), is!("|"), node, makeNum(0f64)),
-        AsmType::AsmDouble => make2IString(is!("unary-prefix"), is!("+"), node),
-        AsmType::AsmFloat => make2Ref(is!("call"), makeName(is!("Math_fround")), arr(node)),
-        AsmType::AsmFloat32x4 => make2Ref(is!("call"), makeName(is!("SIMD_Float32x4_check")), arr(node)),
-        AsmType::AsmFloat64x2 => make2Ref(is!("call"), makeName(is!("SIMD_Float64x2_check")), arr(node)),
-        AsmType::AsmInt8x16 => make2Ref(is!("call"), makeName(is!("SIMD_Int8x16_check")), arr(node)),
-        AsmType::AsmInt16x8 => make2Ref(is!("call"), makeName(is!("SIMD_Int16x8_check")), arr(node)),
-        AsmType::AsmInt32x4 => make2Ref(is!("call"), makeName(is!("SIMD_Int32x4_check")), arr(node)),
+        AsmType::AsmInt => an!(Binary(is!("|"), node, makeNum(0f64))),
+        AsmType::AsmDouble => an!(UnaryPrefix(is!("+"), node)),
+        AsmType::AsmFloat => an!(Call(makeName(is!("Math_fround")), arr(node))),
+        AsmType::AsmFloat32x4 => an!(Call(makeName(is!("SIMD_Float32x4_check")), arr(node))),
+        AsmType::AsmFloat64x2 => an!(Call(makeName(is!("SIMD_Float64x2_check")), arr(node))),
+        AsmType::AsmInt8x16 => an!(Call(makeName(is!("SIMD_Int8x16_check")), arr(node))),
+        AsmType::AsmInt16x8 => an!(Call(makeName(is!("SIMD_Int16x8_check")), arr(node))),
+        AsmType::AsmInt32x4 => an!(Call(makeName(is!("SIMD_Int32x4_check")), arr(node))),
         // non-validating code, emit nothing XXX this is dangerous, we should only allow this when we know we are not validating
         AsmType::AsmBool8x16 |
         AsmType::AsmBool16x8 |
@@ -620,13 +609,12 @@ fn makeAsmCoercion(node: Ref, ty: AsmType) -> Ref {
 
 // Checks
 
-fn isEmpty(node: Ref) -> bool {
-    (node.size() == 2 &&
-        node.get(0).getIString() == is!("toplevel") &&
-        node.get(1).size() == 0) ||
-    (node.size() > 0 &&
-        node.get(0).getIString() == is!("block") &&
-        (!node.get(1).is_something() || node.get(1).size() == 0))
+fn isEmpty(node: &AstValue) -> bool {
+    match *node {
+        Toplevel(ref stats) |
+        Block(ref stats) if stats.len() == 0 => true,
+        _ => false,
+    }
 }
 
 // RSTODO
@@ -741,15 +729,12 @@ fn isEmpty(node: Ref) -> bool {
 //Ref flipCondition(Ref cond) {
 //  return simplifyNotCompsDirect(make2(UNARY_PREFIX, L_NOT, cond));
 //}
-
-// safely copy source onto target, even if source is a subnode of target
-// RSTODO: what does this actually doing? Does source need to be dropped?
-// does the C++ implementation copy vec contents?
-fn safeCopy(mut target: Ref, source: Ref) {
-    let temp = source; // hold on to source
-    *target = (*temp).clone();
-}
-
+//
+//void safeCopy(Ref target, Ref source) { // safely copy source onto target, even if source is a subnode of target
+//  Ref temp = source; // hold on to source
+//  *target = *temp;
+//}
+//
 // RSTODO
 //void clearEmptyNodes(Ref arr) {
 //  int skip = 0;
