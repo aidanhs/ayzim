@@ -118,38 +118,6 @@ macro_rules! an {
     };
 }
 
-// RSTODO: remove
-//macro_rules! __freshvarify {
-//    // Transforms Ty(SubTy1, SubTy2) into Ty(ref v, ref vv)
-//    // Begin
-//    { ref $v:ident $x:ident($( $ts:ty ),+) } => {
-//        __freshvarify!{ inpat ref $v $x () ($( $ts ),+) }
-//    };
-//    // End
-//    { inpat ref $v:ident $x:ident ($( $vs:ident, )*) () } => {
-//        //$x(ref v, ref vv)
-//        $x($( ref $vs ),*)
-//    };
-//    // Transform each ty to a fresh ident
-//    { inpat ref $v:ident $x:ident ($( $vs:ident, )*) ($t:ty $(, $ts:ty )*) } => {
-//        interpolate_idents!{ __freshvarify!{ inpat ref [$v v] $x ($v, $( $vs, )*) ($( $ts ),*) } }
-//    };
-//
-//    // Transforms (Ty1, Ty2) into (v, vv)
-//    // Begin
-//    { $v:ident ($( $ts:ty ),+) } => {
-//        __freshvarify!{ intup $v () ($( $ts ),+) }
-//    };
-//    // End
-//    { intup $v:ident ($( $vs:ident, )*) () } => {
-//        ($( $vs ),*)
-//    };
-//    // Transform each ty to a fresh ident
-//    { intup $v:ident ($( $vs:ident, )*) ($t:ty $(, $ts:ty )*) } => {
-//        interpolate_idents!{ __freshvarify!{ intup [$v v] ($v, $( $vs, )*) ($( $ts ),*) } }
-//    };
-//}
-
 macro_rules! __ifletify {
     // Begin
     { ($inexpr:expr) $x:ident($( $ts:ty ),+) } => {
@@ -202,16 +170,6 @@ macro_rules! AstValue {
                 }
                 pub fn [get $x](&self) -> ($( &$y ),*,) {
                     use self::AstValue::$x;
-                    // RSTODO: remove
-                    // This doesn't work because macros are hygenic and can't
-                    // introduce new variables
-                    //if let __freshvarify!{ ref v $x($( $y ),*) } = *self {
-                    //    let x = (v, vv);
-                    //    panic!()
-                    //    //__freshvarify!{ v ($( $y ),*) }
-                    //} else {
-                    //    panic!()
-                    //}
                     __ifletify!{ ref (*self) $x($( $y ),+) }
                 }
                 pub fn [getMut $x](&mut self) -> ($( &mut $y ),*,) {
@@ -856,39 +814,6 @@ pub fn traversePre<F>(node: &mut AstValue, visit: F) where F: Fn(&mut AstValue) 
     }
 }
 
-// RSTODO: remove
-//// Traverse, calling visit before the children
-//pub fn traversePre<F>(node: &mut AstValue, visit: F) where F: Fn(&mut AstValue) {
-//    visit(node);
-//    let mut stack = StackedStack::<TraverseInfo>::new();
-//    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
-//    {
-//        let arr = node.getArray();
-//        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-//    };
-//    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
-//    loop {
-//        if index < arrlen {
-//            let sub: Ref = unsafe { *arrdata.offset(index) };
-//            index += 1;
-//            if visitable(sub) {
-//                visit(sub);
-//                stack.back().index = index;
-//                {
-//                    let arr = node.getArray();
-//                    index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-//                };
-//                stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
-//            }
-//        } else {
-//            stack.pop_back();
-//            if stack.len() == 0 { break }
-//            let back = stack.back();
-//            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
-//        }
-//    }
-//}
-
 // Traverse, calling visitPre before the children and visitPost after
 pub fn traversePrePost<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) where F1: Fn(&mut AstValue), F2: Fn(&mut AstValue) {
     type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
@@ -907,40 +832,6 @@ pub fn traversePrePost<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) 
     }
 }
 
-// RSTODO: remove
-//// Traverse, calling visitPre before the children and visitPost after
-//pub fn traversePrePost<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) where F1: Fn(&mut AstValue), F2: Fn(&mut AstValue) {
-//    visitPre(node);
-//    let mut stack = StackedStack::<TraverseInfo>::new();
-//    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
-//    {
-//        let arr = node.getArray();
-//        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-//    };
-//    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
-//    loop {
-//        if index < arrlen {
-//            let sub: Ref = unsafe { *arrdata.offset(index) };
-//            index += 1;
-//            if visitable(sub) {
-//                visitPre(sub);
-//                stack.back().index = index;
-//                {
-//                    let arr = node.getArray();
-//                    index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-//                };
-//                stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
-//            }
-//        } else {
-//            visitPost(stack.back().node);
-//            stack.pop_back();
-//            if stack.len() == 0 { break }
-//            let back = stack.back();
-//            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
-//        }
-//    }
-//}
-
 // Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
 fn traversePrePostConditional<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) where F1: Fn(&mut AstValue) -> bool, F2: Fn(&mut AstValue) {
     type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
@@ -958,41 +849,6 @@ fn traversePrePostConditional<F1,F2>(node: &mut AstValue, visitPre: F1, visitPos
         }
     }
 }
-
-// RSTODO: remove
-//// Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
-//fn traversePrePostConditional<F1,F2>(node: &mut AstValue, visitPre: F1, visitPost: F2) where F1: Fn(&mut AstValue) -> bool, F2: Fn(&mut AstValue) {
-//    if !visitPre(node) { return }
-//    let mut stack = StackedStack::<TraverseInfo>::new();
-//    let (mut index, mut arrlen, mut arrdata): (isize, isize, *const Ref);
-//    {
-//        let arr = node.getArray();
-//        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-//    };
-//    stack.push_back(TraverseInfo::new(node, arrlen, arrdata));
-//    loop {
-//        if index < arrlen {
-//            let sub: Ref = unsafe { *arrdata.offset(index) };
-//            index += 1;
-//            if visitable(sub) {
-//                if visitPre(sub) {
-//                    stack.back().index = index;
-//                    {
-//                        let arr = node.getArray();
-//                        index = 0; arrlen = arr.len() as isize; arrdata = arr.as_ptr();
-//                    };
-//                    stack.push_back(TraverseInfo::new(sub, arrlen, arrdata));
-//                }
-//            }
-//        } else {
-//            visitPost(stack.back().node);
-//            stack.pop_back();
-//            if stack.len() == 0 { break }
-//            let back = stack.back();
-//            index = back.index; arrlen = back.arrlen; arrdata = back.arrdata;
-//        }
-//    }
-//}
 
 fn traverseFunctions<F>(ast: &mut AstValue, visit: F) where F: Fn(&mut AstValue) {
     match *ast {
@@ -1774,10 +1630,6 @@ pub mod builder {
     }
     pub fn makeRawArray(size_hint: usize) -> AstVec<AstNode> {
         makeTArray(size_hint)
-        // RSTODO: remove
-        //let mut r = ARENA.alloc();
-        //r.setArrayHint(size_hint);
-        //r
     }
 
     pub fn makeToplevel() -> AstNode {
