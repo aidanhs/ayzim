@@ -146,11 +146,13 @@ pub fn libmain() {
         buf
     };
 
-    let mut extraInfo = ARENA.alloc();
-    if let Some(extra_info_start) = input.find("// EXTRA_INFO:") {
-        extraInfo.parse(&input.as_bytes()[extra_info_start+14..]);
+    let extraInfo = if let Some(extra_info_start) = input.find("// EXTRA_INFO:") {
+        let json: serde_json::Value = serde_json::from_slice(&input.as_bytes()[extra_info_start+14..]).unwrap();
         input.truncate(extra_info_start); // ignore extra info when parsing
-    }
+        json
+    } else {
+        serde_json::Value::Null
+    };
 
     let doc = if unsafe { receiveJSON } {
         // Parse JSON source into the document
