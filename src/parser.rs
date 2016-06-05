@@ -20,7 +20,7 @@ use phf_builder;
 use super::IString;
 use super::cashew::AstNode;
 use super::cashew::builder;
-use super::num::{f64tou32, is32Bit};
+use super::num::{f64tou32, isInteger32};
 
 lazy_static! {
     static ref KEYWORDS: phf::Set<IString> = iss![
@@ -109,14 +109,14 @@ impl OpClass {
 }
 
 macro_rules! pp {
-    { $p:ident += $off:expr } => {{ *$p = (*$p).offset($off) }};
-    { $p:ident + $off:expr } => {{ (*$p).offset($off) }};
-    { $p:ident[$off:expr] } => {{ *(*$p).offset($off) }};
+    { $p:ident += $off:expr } => {{ *$p = (*$p).offset($off as isize) }};
+    { $p:ident + $off:expr } => {{ (*$p).offset($off as isize) }};
+    { $p:ident[$off:expr] } => {{ *(*$p).offset($off as isize) }};
 }
 macro_rules! p {
-    { $p:ident += $off:expr } => {{ $p = $p.offset($off) }};
-    { $p:ident + $off:expr } => {{ $p.offset($off) }};
-    { $p:ident[$off:expr] } => {{ *$p.offset($off) }};
+    { $p:ident += $off:expr } => {{ $p = $p.offset($off as isize) }};
+    { $p:ident + $off:expr } => {{ $p.offset($off as isize) }};
+    { $p:ident[$off:expr] } => {{ *$p.offset($off as isize) }};
 }
 
 fn isIdentInit(x: u8) -> bool {
@@ -242,7 +242,7 @@ impl Frag {
             // in the emscripten optimizer pipeline, we use simple_ast where
             // INT/DOUBLE is quite the same at this point anyhow
             let b = slice::from_raw_parts(start, src as usize - start as usize);
-            if !b.contains(&b'.') && is32Bit(num) {
+            if !b.contains(&b'.') && isInteger32(num) {
                 FragData::Int(num)
             } else {
                 FragData::Double(num)
@@ -280,7 +280,7 @@ impl Frag {
                 let b = is.as_bytes();
                 b == slice::from_raw_parts(start, b.len())
             });
-            p!{src+=is.len() as isize};
+            p!{src+=is.len()};
             FragData::Operator(is)
         } else if hasChar(SEPARATORS.as_ptr(), p!{src[0]}) {
             let b = slice::from_raw_parts(src, 1);
@@ -289,8 +289,7 @@ impl Frag {
             p!{src+=1};
             FragData::Separator(is)
         } else if p!{src[0]} == b'"' || p!{src[0]} == b'\'' {
-            src = libc::strchr(p!{src+1} as *const c_char, p!{src[0]} as c_int)
-                as *const _;
+            src = libc::strchr(p!{src+1} as *const c_char, p!{src[0]} as c_int) as *const _;
             p!{src+=1};
             let b = slice::from_raw_parts(src, src as usize - start as usize);
             let s = str::from_utf8_unchecked(b);
@@ -374,7 +373,7 @@ impl Parser {
         //dump("parseElement", src);
         skipSpace(src);
         let frag = Frag::from_str(*src);
-        pp!{src+=frag.size as isize};
+        pp!{src+=frag.size};
         match frag.data {
             FragData::Keyword(_) => self.parseAfterKeyword(&frag, src, seps),
             FragData::Ident(_) => self.parseAfterIdent(&frag, src, seps),
@@ -415,7 +414,7 @@ impl Parser {
     // RSTODO: remove seps?
     unsafe fn parseFunction(&mut self, src: &mut *const u8, _seps: *const u8) -> AstNode {
         let name_str = match Frag::from_str(*src) {
-            Frag { data: FragData::Ident(s), size: n } => { pp!{src+=n as isize}; s },
+            Frag { data: FragData::Ident(s), size: n } => { pp!{src+=n}; s },
             Frag { data: FragData::Separator(is!("(")), .. } => is!(""),
             _ => panic!(),
         };
@@ -427,11 +426,9 @@ impl Parser {
             skipSpace(src);
             if pp!{src[0]} == b')' { break }
             if let Frag { data: FragData::Ident(s), size: n } = Frag::from_str(*src) {
-                pp!{src+=n as isize};
+                pp!{src+=n};
                 builder::appendArgumentToFunction(&mut ret, s)
-            } else {
-                panic!()
-            }
+            } else { panic!() }
             skipSpace(src);
             match pp!{src[0]} {
                 b')' => break,
@@ -452,11 +449,9 @@ impl Parser {
             skipSpace(src);
             if pp!{src[0]} == b';' { break }
             let name_str = if let Frag { data: FragData::Ident(s), size: n } = Frag::from_str(*src) {
-                pp!{src+=n as isize};
+                pp!{src+=n};
                 s
-            } else {
-                panic!()
-            };
+            } else { panic!() };
             skipSpace(src);
             let mut value = None;
             if pp!{src[0]} == b'=' {
@@ -495,7 +490,7 @@ impl Parser {
         if !hasChar(seps, pp!{src[0]}) {
             let next = Frag::from_str(*src);
             if let Frag { data: FragData::Keyword(is!("else")), size: n } = next {
-                pp!{src+=n as isize};
+                pp!{src+=n};
                 ifFalse = Some(self.parseMaybeBracketed(src, seps))
             }
         }
@@ -507,10 +502,8 @@ impl Parser {
         skipSpace(src);
         let next = Frag::from_str(*src);
         if let Frag { data: FragData::Keyword(is!("while")), size: n } = next {
-            pp!{src+=n as isize};
-        } else {
-            panic!()
-        }
+            pp!{src+=n};
+        } else { panic!() }
         let condition = self.parseParenned(src);
         builder::makeDo(body, condition)
     }
@@ -527,7 +520,7 @@ impl Parser {
         let next = Frag::from_str(*src);
         let mut arg = None;
         if let Frag { data: FragData::Ident(s), size: n } = next {
-            pp!{src+=n as isize};
+            pp!{src+=n};
             arg = Some(s)
         }
         builder::makeBreak(arg)
@@ -539,7 +532,7 @@ impl Parser {
         let next = Frag::from_str(*src);
         let mut arg = None;
         if let Frag { data: FragData::Ident(s), size: n } = next {
-            pp!{src+=n as isize};
+            pp!{src+=n};
             arg = Some(s)
         }
         builder::makeContinue(arg)
@@ -559,19 +552,19 @@ impl Parser {
             let next = Frag::from_str(*src);
             match next {
                 Frag { data: FragData::Keyword(is!("case")), size: n } => {
-                    pp!{src+=n as isize};
+                    pp!{src+=n};
                     skipSpace(src);
                     let value = Frag::from_str(*src);
                     let arg = if value.isNumber() {
-                        pp!{src+=value.size as isize};
+                        pp!{src+=value.size};
                         value.parse()
                     } else {
                         assert!(value.data == FragData::Operator(is!("-")));
-                        pp!{src+=value.size as isize};
+                        pp!{src+=value.size};
                         skipSpace(src);
                         let value2 = Frag::from_str(*src);
                         assert!(value2.isNumber());
-                        pp!{src+=value2.size as isize};
+                        pp!{src+=value2.size};
                         builder::makePrefix(is!("-"), value2.parse())
                     };
                     builder::appendCaseToSwitch(&mut ret, arg);
@@ -581,7 +574,7 @@ impl Parser {
                     continue
                 },
                 Frag { data: FragData::Keyword(is!("default")), size: n } => {
-                    pp!{src+=n as isize};
+                    pp!{src+=n};
                     builder::appendDefaultToSwitch(&mut ret);
                     skipSpace(src);
                     assert!(pp!{src[0]} == b':');
@@ -679,11 +672,9 @@ impl Parser {
         assert!(pp!{src[0]} == b'[');
         pp!{src+=1};
         if let Frag { data: FragData::Ident(s), size: n } = Frag::from_str(*src) {
-            pp!{src+=n as isize};
+            pp!{src+=n};
             builder::makeDot(target, s)
-        } else {
-            panic!()
-        }
+        } else { panic!() }
     }
 
     unsafe fn parseAfterParen(&mut self, src: &mut *const u8) -> AstNode {
@@ -728,7 +719,7 @@ impl Parser {
                 Frag { data: FragData::String(s), size: n } => (s, n),
                 _ => panic!(),
             };
-            pp!{src+=n as isize};
+            pp!{src+=n};
             skipSpace(src);
             assert!(pp!{src[0]} == b':');
             pp!{src+=1};
@@ -786,7 +777,7 @@ impl Parser {
                 let parts = getParts(self);
                 top = parts.len() == 0;
                 parts.push(ExprElt::Node(node));
-                pp!{src+=n as isize};
+                pp!{src+=n};
                 parts.push(ExprElt::Op(s))
             } else {
                 let initial = ExprElt::Node(match pp!{src[0]} {

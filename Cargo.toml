@@ -16,6 +16,7 @@ smallvec = "0.1.7"
 libc = "0.2.11"
 cfor = "1.1"
 typed-arena = "1.1"
+conv = "0.3.2"
 
 interpolate_idents = "0.0.10"
 ayzim-macros = { path = "ayzim-macros" }

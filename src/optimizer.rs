@@ -9,7 +9,7 @@ use super::cashew::{AstValue, AstNode, AstVec};
 use super::cashew::AstValue::*;
 use super::cashew::traversePre;
 use super::cashew::builder;
-use super::num::{is32Bit, isInteger, isInteger32, f64toi32};
+use super::num::{f64toi32, f64tou32, isInteger, isInteger32};
 
 const NUM_ASMTYPES: usize = 12;
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -408,7 +408,7 @@ fn detectSign(node: &AstValue) -> AsmSign {
         Num(value) => {
             if value < 0f64 {
                 AsmSign::AsmSigned
-            } else if !is32Bit(value) || !isInteger(value) {
+            } else if !isInteger32(value) {
                 AsmSign::AsmNonsigned
             } else if value <= i32::MAX as f64 {
                 AsmSign::AsmFlexible
