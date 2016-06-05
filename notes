@@ -1,3 +1,5 @@
 f6d180c1f416e9e87a73679e38d05b7901fc3e89 of emscripten
 
 why does panic in match arms in rust not type check as *, whereas it does for functions? see setBlockContent
+
+DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling && cp ./target/$([ $DEBUG = 1 ] && echo debug || echo release)/ayzim ~/Desktop/emscripten/
