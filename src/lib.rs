@@ -111,6 +111,7 @@ mod num {
 }
 
 use cashew::{ARENA, AstValue};
+use cashew::printAst;
 
 // RSTODO: make these not global static
 static mut preciseF32: bool = false;
@@ -167,8 +168,8 @@ pub fn libmain() {
         input.push('\0');
         unsafe { builder.parseToplevel(input.as_ptr()) }
     };
-    // RSTODO: pretty sure comment below is irrelevant
-    // do not free input, its contents are used as strings
+
+    drop(input);
 
     #[cfg(feature = "profiling")]
     {
@@ -229,10 +230,8 @@ pub fn libmain() {
         doc.stringify(&mut io::stdout(), false);
         println!("");
     } else {
-        unimplemented!()
-        // RSTODO
-        //JSPrinter jser(!minifyWhitespace, last, doc);
-        //jser.printAst();
-        //std::cout << jser.buffer << "\n";
+        let ret = printAst(!unsafe { minifyWhitespace }, unsafe { last }, &doc);
+        io::stdout().write_all(&ret).unwrap();
+        println!("");
     }
 }

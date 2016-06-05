@@ -82,13 +82,13 @@ const OPERATOR_INITS: &'static [u8] = b"+-*/%<>&^|~=!,?:.\0";
 const SEPARATORS: &'static [u8] = b"([;{}\0";
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-enum OpClassTy {
+pub enum OpClassTy {
     Binary = 0,
     Prefix = 1,
     Postfix = 2,
     Tertiary = 3,
 }
-struct OpClass {
+pub struct OpClass {
     ops: phf::Set<IString>,
     rtl: bool,
     ty: OpClassTy,
@@ -99,11 +99,11 @@ impl OpClass {
         OpClass { ops: ops, rtl: rtl, ty: ty }
     }
 
-    fn getPrecedence(ty: OpClassTy, op: IString) -> usize {
+    pub fn getPrecedence(ty: OpClassTy, op: IString) -> usize {
         *PRECEDENCES[ty as usize].get(&op).unwrap()
     }
 
-    fn getRtl(prec: usize) -> bool {
+    pub fn getRtl(prec: usize) -> bool {
         OP_CLASSES[prec].rtl
     }
 }
@@ -123,7 +123,7 @@ fn isIdentInit(x: u8) -> bool {
     (x >= b'a' && x <= b'z') || (x >= b'A' && x <= b'Z') || x == b'_' || x == b'$'
 }
 // RSTODO: use isDigit?
-fn isIdentPart(x: u8) -> bool {
+pub fn isIdentPart(x: u8) -> bool {
     isIdentInit(x) || (x >= b'0' && x <= b'9')
 }
 fn isSpace(x: u8) -> bool {
