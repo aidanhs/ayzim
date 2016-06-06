@@ -4,6 +4,7 @@
 // RSTODO: https://github.com/rust-lang/rust/issues/29599
 #![feature(plugin)]
 #![plugin(interpolate_idents)]
+// RSTODO: review how useful mast! is
 #![plugin(ayzim_macros)]
 
 // RSTODO: review all numeric casts
@@ -39,7 +40,7 @@ use optimizer::{
     //eliminateMemSafe
     //simplifyExpressions
     //optimizeFrounds
-    //simplifyIfs
+    simplifyIfs
     //registerize
     //registerizeHarder
     //minifyLocals
@@ -113,6 +114,10 @@ mod num {
 use cashew::{ARENA, AstValue};
 use cashew::printAst;
 
+// RSTODO: the asmfloatzero static is a pain, and needs to be
+// defined in main and then given to all passes to use. What
+// does it actually do?
+
 // RSTODO: make these not global static
 static mut preciseF32: bool = false;
 static mut receiveJSON: bool = false;
@@ -158,7 +163,7 @@ pub fn libmain() {
         serde_json::Value::Null
     };
 
-    let doc = if unsafe { receiveJSON } {
+    let mut doc = if unsafe { receiveJSON } {
         // Parse JSON source into the document
         let mut docref = ARENA.alloc();
         docref.parse(input.as_bytes());
@@ -187,6 +192,7 @@ pub fn libmain() {
             (profstg, time::SystemTime::now())
         };
         let mut worked = true;
+        let doc = &mut *doc;
         match arg.as_str() {
             "asm" => worked = false,
             "asmPreciseF32" => worked = false,
@@ -197,7 +203,7 @@ pub fn libmain() {
             //"eliminateMemSafe" => eliminateMemSafe(doc),
             //"simplifyExpressions" => simplifyExpressions(doc),
             //"optimizeFrounds" => optimizeFrounds(doc),
-            //"simplifyIfs" => simplifyIfs(doc),
+            "simplifyIfs" => simplifyIfs(doc),
             //"registerize" => registerize(doc),
             //"registerizeHarder" => registerizeHarder(doc),
             //"minifyLocals" => minifyLocals(doc),

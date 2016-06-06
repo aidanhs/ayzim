@@ -1,13 +1,17 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::i32;
 use std::iter;
+use std::mem;
+// https://github.com/rust-lang/rust/issues/30104
+use std::ops::DerefMut;
 
 use odds::vec::VecExt;
 
 use super::IString;
 use super::cashew::{AstValue, AstNode, AstVec};
 use super::cashew::AstValue::*;
-use super::cashew::traversePre;
+use super::cashew::{traversePre, traversePrePost, traverseFunctions};
 use super::cashew::builder;
 use super::num::{f64toi32, f64tou32, isInteger, isInteger32};
 
@@ -436,8 +440,11 @@ fn getHeapStr(x: u32, unsign: bool) -> IString {
     }
 }
 
-fn deStat(node: &mut AstValue) -> &mut AstValue {
-    if let Stat(ref mut stat) = *node { stat } else { node }
+fn deStat(node: &AstValue) -> &AstValue {
+    if let Stat(ref stat) = *node { stat } else { node }
+}
+fn intoDeStat(node: AstNode) -> AstNode {
+    if let Stat(stat) = *node { stat } else { node }
 }
 
 fn getStatements(node: &mut AstValue) -> Option<&mut AstVec<AstNode>> {
@@ -450,6 +457,7 @@ fn getStatements(node: &mut AstValue) -> Option<&mut AstVec<AstNode>> {
 
 
 // Constructions TODO: share common constructions, and assert they remain frozen
+// RSTODO: remove all constructions and replace with an!()?
 
 fn makeArray<T>(size_hint: usize) -> AstVec<T> {
     builder::makeTArray(size_hint)
@@ -478,13 +486,12 @@ fn makeNum(x: f64) -> AstNode {
 }
 
 fn makeName(str: IString) -> AstNode {
-    return builder::makeName(str);
+    builder::makeName(str)
 }
 
-// RSTODO: remove?
-//Ref makeBlock() {
-//  return ValueBuilder::makeBlock();
-//}
+fn makeBlock() -> AstNode {
+    builder::makeBlock()
+}
 
 // RSTODO: remove?
 //fn make1(s1: IString, a: Ref) -> Ref {
@@ -617,13 +624,22 @@ fn isEmpty(node: &AstValue) -> bool {
     }
 }
 
+fn commable(node: &AstValue) -> bool { // TODO: hashing
+    match *node {
+        Assign(..) |
+        Binary(..) |
+        UnaryPrefix(..) |
+        Name(..) |
+        Num(..) |
+        Call(..) |
+        Seq(..) |
+        Conditional(..) |
+        Sub(..) => true,
+        _ => false,
+    }
+}
+
 // RSTODO
-//bool commable(Ref node) { // TODO: hashing
-//  IString type = node[0]->getIString();
-//  if (type == ASSIGN || type == BINARY || type == UNARY_PREFIX || type == NAME || type == NUM || type == CALL || type == SEQ || type == CONDITIONAL || type == SUB) return true;
-//  return false;
-//}
-//
 //bool isMathFunc(const char *name) {
 //  static const char *Math_ = "Math_";
 //  static unsigned size = strlen(Math_);
@@ -685,51 +701,52 @@ fn isEmpty(node: &AstValue) -> bool {
 //  });
 //  return ok;
 //}
-//
-//// Transforms
-//
-//// We often have branchings that are simplified so one end vanishes, and
-//// we then get
-////   if (!(x < 5))
-//// or such. Simplifying these saves space and time.
-//Ref simplifyNotCompsDirect(Ref node) {
-//  if (node[0] == UNARY_PREFIX && node[1] == L_NOT) {
-//    // de-morgan's laws do not work on floats, due to nans >:(
-//    if (node[2][0] == BINARY && (detectType(node[2][2]) == ASM_INT && detectType(node[2][3]) == ASM_INT)) {
-//      Ref op = node[2][1];
-//      switch(op->getCString()[0]) {
-//        case '<': {
-//          if (op == LT)  { op->setString(GE); break; }
-//          if (op == LE) { op->setString(GT); break; }
-//          return node;
-//        }
-//        case '>': {
-//          if (op == GT)  { op->setString(LE); break; }
-//          if (op == GE) { op->setString(LT); break; }
-//          return node;
-//        }
-//        case '=': {
-//          if (op == EQ) { op->setString(NE); break; }
-//          return node;
-//        }
-//        case '!': {
-//          if (op == NE) { op->setString(EQ); break; }
-//          return node;
-//        }
-//        default: return node;
-//      }
-//      return make3(BINARY, op, node[2][2], node[2][3]);
-//    } else if (node[2][0] == UNARY_PREFIX && node[2][1] == L_NOT) {
-//      return node[2][2];
-//    }
-//  }
-//  return node;
-//}
-//
-//Ref flipCondition(Ref cond) {
-//  return simplifyNotCompsDirect(make2(UNARY_PREFIX, L_NOT, cond));
-//}
-//
+
+// Transforms
+
+// We often have branchings that are simplified so one end vanishes, and
+// we then get
+//   if (!(x < 5))
+// or such. Simplifying these saves space and time.
+fn simplifyNotCompsDirect(node: &mut AstValue, asmFloatZero: &mut Option<IString>) {
+    // de-morgan's laws do not work on floats, due to nans >:(
+    let newvalue = {
+        let mut inner = if let UnaryPrefix(is!("!"), ref mut i) = *node { i } else { return };
+        let oldpos = match *inner.deref_mut() {
+            ref mut bin @ Binary(..) => {
+                {
+                // RSTODO: no way to capture whole expression as well as subexpressions?
+                let (op, left, right) = bin.getMutBinary();
+                if !(detectType(left, None, asmFloatZero, false) == Some(AsmType::AsmInt) &&
+                     detectType(right, None, asmFloatZero, false) == Some(AsmType::AsmInt)) { return }
+                match *op {
+                    is!("<") => *op = is!(">="),
+                    is!("<=") => *op = is!(">"),
+                    is!(">") => *op = is!("<="),
+                    is!(">=") => *op = is!("<"),
+                    is!("==") => *op = is!("!="),
+                    is!("!=") => *op = is!("=="),
+                    _ => return
+                }
+                }
+                bin
+            }
+            UnaryPrefix(is!("!"), ref mut right) => right,
+            _ => return,
+        };
+        mem::replace(oldpos, *makeEmpty())
+    };
+    mem::replace(node, newvalue);
+}
+
+fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
+    let mut newcond = makeEmpty();
+    mem::swap(cond, &mut newcond);
+    newcond = an!(UnaryPrefix(is!("!"), newcond));
+    mem::swap(cond, &mut newcond);
+    simplifyNotCompsDirect(cond, asmFloatZero);
+}
+
 //void safeCopy(Ref target, Ref source) { // safely copy source onto target, even if source is a subnode of target
 //  Ref temp = source; // hold on to source
 //  *target = *temp;
@@ -2181,163 +2198,173 @@ fn isEmpty(node: &AstValue) -> bool {
 //    simplifyNotZero(func);
 //  });
 //}
-//
-//void simplifyIfs(Ref ast) {
-//  traverseFunctions(ast, [](Ref func) {
-//    bool simplifiedAnElse = false;
-//
-//    traversePre(func, [&simplifiedAnElse](Ref node) {
-//      // simplify   if (x) { if (y) { .. } }   to   if (x ? y : 0) { .. }
-//      if (node[0] == IF) {
-//        Ref body = node[2];
-//        // recurse to handle chains
-//        while (body[0] == BLOCK) {
-//          Ref stats = body[1];
-//          if (stats->size() == 0) break;
-//          Ref other = stats->back();
-//          if (other[0] != IF) {
-//            // our if block does not end with an if. perhaps if have an else we can flip
-//            if (node->size() > 3 && !!node[3] && node[3][0] == BLOCK) {
-//              stats = node[3][1];
-//              if (stats->size() == 0) break;
-//              other = stats->back();
-//              if (other[0] == IF) {
-//                // flip node
-//                node[1] = flipCondition(node[1]);
-//                node[2] = node[3];
-//                node[3] = body;
-//                body = node[2];
-//              } else break;
-//            } else break;
-//          }
-//          // we can handle elses, but must be fully identical
-//          if (!!node[3] || !!other[3]) {
-//            if (!node[3]) break;
-//            if (!node[3]->deepCompare(other[3])) {
-//              // the elses are different, but perhaps if we flipped a condition we can do better
-//              if (node[3]->deepCompare(other[2])) {
-//                // flip other. note that other may not have had an else! add one if so; we will eliminate such things later
-//                if (!other[3]) other[3] = makeBlock();
-//                other[1] = flipCondition(other[1]);
-//                Ref temp = other[2];
-//                other[2] = other[3];
-//                other[3] = temp;
-//              } else break;
-//            }
-//          }
-//          if (stats->size() > 1) {
-//            // try to commaify - turn everything between the ifs into a comma operator inside the second if
-//            bool ok = true;
-//            for (size_t i = 0; i+1 < stats->size(); i++) {
-//              Ref curr = deStat(stats[i]);
-//              if (!commable(curr)) ok = false;
-//            }
-//            if (!ok) break;
-//            for (int i = stats->size()-2; i >= 0; i--) {
-//              Ref curr = deStat(stats[i]);
-//              other[1] = make2(SEQ, curr, other[1]);
-//            }
-//            Ref temp = makeArray(1);
-//            temp->push_back(other);
-//            stats = body[1] = temp;
-//          }
-//          if (stats->size() != 1) break;
-//          if (!!node[3]) simplifiedAnElse = true;
-//          node[1] = make3(CONDITIONAL, node[1], other[1], makeNum(0));
-//          body = node[2] = other[2];
-//        }
-//      }
-//    });
-//
-//    if (simplifiedAnElse) {
-//      // there may be fusing opportunities
-//
-//      // we can only fuse if we remove all uses of the label. if there are
-//      // other ones - if the label check can be reached from elsewhere -
-//      // we must leave it
-//      bool abort = false;
-//
-//      std::unordered_map<int, int> labelAssigns;
-//
-//      traversePre(func, [&labelAssigns, &abort](Ref node) {
-//        if (node[0] == ASSIGN && node[2][0] == NAME && node[2][1] == LABEL) {
-//          if (node[3][0] == NUM) {
-//            int value = node[3][1]->getInteger();
-//            labelAssigns[value] = labelAssigns[value] + 1;
-//          } else {
-//            // label is assigned a dynamic value (like from indirectbr), we cannot do anything
-//            abort = true;
-//          }
-//        }
-//      });
-//      if (abort) return;
-//
-//      std::unordered_map<int, int> labelChecks;
-//
-//      traversePre(func, [&labelChecks, &abort](Ref node) {
-//        if (node[0] == BINARY && node[1] == EQ && node[2][0] == BINARY && node[2][1] == OR &&
-//            node[2][2][0] == NAME && node[2][2][1] == LABEL) {
-//          if (node[3][0] == NUM) {
-//            int value = node[3][1]->getInteger();
-//            labelChecks[value] = labelChecks[value] + 1;
-//          } else {
-//            // label is checked vs a dynamic value (like from indirectbr), we cannot do anything
-//            abort = true;
-//          }
-//        }
-//      });
-//      if (abort) return;
-//
-//      int inLoop = 0; // when in a loop, we do not emit   label = 0;   in the relooper as there is no need
-//      traversePrePost(func, [&inLoop, &labelAssigns, &labelChecks](Ref node) {
-//        if (node[0] == WHILE) inLoop++;
-//        Ref stats = getStatements(node);
-//        if (!!stats && stats->size() > 0) {
-//          for (int i = 0; i < (int)stats->size()-1; i++) {
-//            Ref pre = stats[i];
-//            Ref post = stats[i+1];
-//            if (pre[0] == IF && pre->size() > 3 && !!pre[3] && post[0] == IF && (post->size() <= 3 || !post[3])) {
-//              Ref postCond = post[1];
-//              if (postCond[0] == BINARY && postCond[1] == EQ &&
-//                  postCond[2][0] == BINARY && postCond[2][1] == OR &&
-//                  postCond[2][2][0] == NAME && postCond[2][2][1] == LABEL &&
-//                  postCond[2][3][0] == NUM && postCond[2][3][1]->getNumber() == 0 &&
-//                  postCond[3][0] == NUM) {
-//                int postValue = postCond[3][1]->getInteger();
-//                Ref preElse = pre[3];
-//                if (labelAssigns[postValue] == 1 && labelChecks[postValue] == 1 && preElse[0] == BLOCK && preElse->size() >= 2 && preElse[1]->size() == 1) {
-//                  Ref preStat = preElse[1][0];
-//                  if (preStat[0] == STAT && preStat[1][0] == ASSIGN &&
-//                      preStat[1][1]->isBool(true) && preStat[1][2][0] == NAME && preStat[1][2][1] == LABEL &&
-//                      preStat[1][3][0] == NUM && preStat[1][3][1]->getNumber() == postValue) {
-//                    // Conditions match, just need to make sure the post clears label
-//                    if (post[2][0] == BLOCK && post[2]->size() >= 2 && post[2][1]->size() > 0) {
-//                      Ref postStat = post[2][1][0];
-//                      bool haveClear =
-//                        postStat[0] == STAT && postStat[1][0] == ASSIGN &&
-//                        postStat[1][1]->isBool(true) && postStat[1][2][0] == NAME && postStat[1][2][1] == LABEL &&
-//                        postStat[1][3][0] == NUM && postStat[1][3][1]->getNumber() == 0;
-//                      if (!inLoop || haveClear) {
-//                        // Everything lines up, do it
-//                        pre[3] = post[2];
-//                        if (haveClear) pre[3][1]->splice(0, 1); // remove the label clearing
-//                        stats->splice(i+1, 1); // remove the post entirely
-//                      }
-//                    }
-//                  }
-//                }
-//              }
-//            }
-//          }
-//        }
-//      }, [&inLoop](Ref node) {
-//        if (node[0] == WHILE) inLoop--;
-//      });
-//      assert(inLoop == 0);
-//    }
-//  });
-//}
-//
+
+pub fn simplifyIfs(ast: &mut AstValue) {
+    traverseFunctions(ast, |func: &mut AstValue| {
+    let mut simplifiedAnElse = false;
+    let mut asmFloatZero = None;
+
+    traversePre(func, |node: &mut AstValue| {
+        // simplify   if (x) { if (y) { .. } }   to   if (x ? y : 0) { .. }
+        let (cond, iftrue, maybeiffalse) = if let If(ref mut c, ref mut it, ref mut mif) = *node { (c, it, mif) } else { return };
+        let mut body = iftrue;
+        // recurse to handle chains
+        // RSTODO: what if the iftrue is not a block, just a single if?
+        while let Block(..) = **body {
+            {
+            let shouldflip = {
+                let (b1stats,) = body.getMutBlock();
+                let other = if let Some(o) = b1stats.last() { o } else { break };
+                if !other.isIf() {
+                    // our if block does not end with an if. perhaps if have an else we can flip
+                    // RSTODO: again, what if the iffalse is not a block, just a single if?
+                    if let Some(mast!(Block(ref b2stats))) = *maybeiffalse {
+                        if let Some(&mast!(If(..))) = b2stats.last() { true } else { break }
+                    } else { break }
+                } else { false }
+            };
+            if shouldflip {
+                // flip node
+                flipCondition(cond, &mut asmFloatZero);
+                mem::swap(body, maybeiffalse.as_mut().unwrap())
+            }
+            }
+            let other = {
+            let (stats,) = body.getMutBlock();
+            // we can handle elses, but must be fully identical
+            {
+                let other = if let Some(o) = stats.last_mut() { o } else { break };
+                let (ocond, oiftrue, omaybeiffalse) = other.getMutIf();
+                if maybeiffalse.is_some() || omaybeiffalse.is_some() {
+                    let iffalse = if let Some(ref iff) = *maybeiffalse { iff } else { break };
+                    if Some(iffalse) != omaybeiffalse.as_ref() {
+                        // the elses are different, but perhaps if we flipped a condition we can do better
+                        if iffalse == oiftrue {
+                            //let oiffalse = omaybeiffalse.as_mut().unwrap();
+                            if omaybeiffalse.is_none() { *omaybeiffalse = Some(makeBlock()) }
+                            // flip other. note that other may not have had an else! add one if so; we will eliminate such things later
+                            flipCondition(ocond, &mut asmFloatZero);
+                            mem::swap(oiftrue, omaybeiffalse.as_mut().unwrap())
+                        } else { break }
+                    }
+                }
+            }
+            if stats.len() > 1 {
+                // try to commaify - turn everything between the ifs into a comma operator inside the second if
+                let commable = stats[..stats.len()-1].iter().all(|s| commable(deStat(s)));
+                // RSTODO: if we break here we've moved around a bunch of stuff,
+                // does it matter? Maybe we should check commable earlier?
+                if !commable { break }
+                let mut other = stats.pop().unwrap();
+                {
+                let (ocond, _, _) = other.getMutIf();
+                let mut tmpcond = makeEmpty();
+                mem::swap(&mut tmpcond, ocond);
+                for stat in stats.drain(..).rev() {
+                    tmpcond = an!(Seq(intoDeStat(stat), tmpcond));
+                }
+                mem::swap(&mut tmpcond, ocond);
+                // RSTODO: resize stats to be smaller?
+                }
+                stats.push(other)
+            }
+            // RSTODO: shouldn't this be an abort?
+            if stats.len() != 1 { break }
+            if maybeiffalse.is_some() { simplifiedAnElse = true }
+            stats.pop().unwrap()
+            };
+            let (ocond, oiftrue, _) = other.intoIf();
+            let mut tmpcond = makeEmpty();
+            mem::swap(&mut tmpcond, cond);
+            tmpcond = an!(Conditional(tmpcond, ocond, an!(Num(0f64))));
+            mem::swap(&mut tmpcond, cond);
+            *body = oiftrue;
+        }
+    });
+
+    if simplifiedAnElse {
+        // there may be fusing opportunities
+
+        // we can only fuse if we remove all uses of the label. if there are
+        // other ones - if the label check can be reached from elsewhere -
+        // we must leave it
+        let mut abort = false;
+
+        let mut labelAssigns = HashMap::new();
+
+        traversePre(func, |node: &mut AstValue| {
+            if let Assign(_, mast!(Name(is!("label"))), ref right) = *node {
+                if let Num(fvalue) = **right {
+                    let value = f64tou32(fvalue);
+                    *labelAssigns.entry(value).or_insert(0) += 1
+                } else {
+                   // label is assigned a dynamic value (like from indirectbr), we cannot do anything
+                   abort = true;
+                }
+            }
+        });
+        if abort { return }
+
+        let mut labelChecks = HashMap::new();
+
+        traversePre(func, |node: &mut AstValue| {
+            if let Binary(is!("=="), mast!(Binary(is!("|"), Name(is!("label")), _)), ref right) = *node {
+                if let Num(fvalue) = **right {
+                    let value = f64tou32(fvalue);
+                    *labelChecks.entry(value).or_insert(0) += 1
+                } else {
+                    // label is checked vs a dynamic value (like from indirectbr), we cannot do anything
+                    abort = true;
+                }
+            }
+        });
+        if abort { return }
+
+        let inLoop = Cell::new(0); // when in a loop, we do not emit   label = 0;   in the relooper as there is no need
+        traversePrePost(func, |node: &mut AstValue| {
+            if let While(..) = *node { inLoop.set(inLoop.get() + 1) }
+            let stats = if let Some(s) = getStatements(node) { s } else { return };
+            if stats.is_empty() { return }
+            cfor!{let mut i = 0; i < stats.len()-1; i += 1; {
+                {
+                let (pre, post) = match &mut stats[i..i+2] { [ref mut pre, ref mut post] => (pre, post), _ => panic!() };
+                if !pre.isIf() || !post.isIf() { continue }
+                let (_, _, premaybeiffalse) = pre.getMutIf();
+                let preiffalse = if let Some(ref mut p) = *premaybeiffalse { p } else { continue };
+                let (postcond, postiftrue, postmaybeiffalse) = post.getMutIf();
+                if postmaybeiffalse.is_some() { continue }
+                let postfvalue = if let mast!(Binary(is!("=="), Binary(is!("|"), Name(is!("label")), Num(0f64)), Num(n))) = *postcond { n } else { continue };
+                let postvalue = f64tou32(postfvalue);
+                // RSTODO: is it ok to blindly unwrap and assume the keys exist?
+                if *labelAssigns.get(&postvalue).unwrap() != 1 || *labelChecks.get(&postvalue).unwrap() != 1 { continue }
+                let prestats = if let Block(ref mut s) = **preiffalse { s } else { continue };
+                let prestat = if prestats.len() == 1 { &mut prestats[0] } else { continue };
+                let prefvalue = if let mast!(Stat(Assign(true, Name(is!("label")), Num(n)))) = *prestat { n } else { continue };
+                // RSTODO: curiously, c++ doesn't do the conversion to float before comparing
+                let prevalue = f64tou32(prefvalue);
+                if prevalue != postvalue { continue }
+                // Conditions match, just need to make sure the post clears label
+                // RSTODO: the following two lines could be one if rust supported vec destructuring
+                // RSTODO: note that this does not continue if poststats.len() == 0 (unlike C++), as I believe it's a valid joining - check with azakai
+                let poststats = if let Block(ref mut s) = **postiftrue { s } else { continue };
+                let haveclear = if let mast!([Stat(Assign(true, Name(is!("label")), Num(0f64))), ..]) = poststats.as_slice() { true } else { false };
+                if inLoop.get() > 0 && !haveclear { continue }
+                // Everything lines up, do it
+                if haveclear { poststats.remove(0); } // remove the label clearing
+                }
+                let (_, postiftrue, _) = stats.remove(i+1).intoIf(); // remove the post entirely
+                let (_, _, maybeiffalse) = stats[i].getMutIf();
+                *maybeiffalse = Some(postiftrue);
+                i += 1;
+            }}
+        }, |node: &mut AstValue| {
+            if let While(..) = *node { inLoop.set(inLoop.get() - 1) }
+        });
+        assert!(inLoop.get() == 0);
+    }
+    })
+}
+
 //void optimizeFrounds(Ref ast) {
 //  // collapse fround(fround(..)), which can happen due to elimination
 //  // also emit f0 instead of fround(0) (except in returns)
