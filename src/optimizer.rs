@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::i32;
 use std::iter;
 use std::mem;
@@ -7,6 +7,8 @@ use std::mem;
 use std::ops::DerefMut;
 
 use odds::vec::VecExt;
+
+use serde_json;
 
 use super::IString;
 use super::cashew::{AstValue, AstNode, AstVec};
@@ -74,9 +76,10 @@ impl<'a> AsmData<'a> {
         {
         let (_, fnparams, stats) = func.getMutDefun();
         let fnparams: &AstVec<_> = &*fnparams;
+        let mut stati = 0;
 
         // process initial params
-        for stat in stats.iter_mut() {
+        for stat in stats[stati..].iter_mut() {
             {
             let (name, val) = if let mast!(Stat(Assign(_, Name(ref name), ref val))) = *stat { (name, val) } else { break };
             let index = fnparams.iter().position(|p| p == name);
@@ -90,11 +93,12 @@ impl<'a> AsmData<'a> {
             locals.insert(name.clone(), Local::new(localty.unwrap(), true));
             }
             *stat = makeEmpty();
+            stati += 1
         }
 
         // process initial variable definitions and remove '= 0' etc parts -
         // these are not actually assignments in asm.js
-        'outside: for stat in stats.iter_mut() {
+        'outside: for stat in stats[stati..].iter_mut() {
             let statvars = if let Var(ref mut vars) = **stat { vars } else { break };
             let mut first = true;
             for &mut (ref name, ref mut val) in statvars.iter_mut() {
@@ -110,17 +114,20 @@ impl<'a> AsmData<'a> {
                 }
                 first = false
             }
+            stati += 1
         }
 
         // look for other var definitions and collect them
-        for stat in stats.iter_mut() {
+        for stat in stats[stati..].iter_mut() {
             traversePre(stat, |node| {
                 if let Var(..) = *node {
+                    println!("{:?}", node);
                     panic!()
                     // dump("bad, seeing a var in need of fixing", func);
                     //, 'should be no vars to fix! ' + func[1] + ' : ' + JSON.stringify(node));
                 }
-            })
+            });
+            stati += 1
         }
 
         // look for final RETURN statement to get return type.
@@ -4138,26 +4145,25 @@ pub fn simplifyIfs(ast: &mut AstValue) {
 //    });
 //  });
 //}
-//
-//// Contrary to the name this does not eliminate actual dead functions, only
-//// those marked as such with DEAD_FUNCTIONS
-//void eliminateDeadFuncs(Ref ast) {
-//  assert(!!extraInfo);
-//  IString DEAD_FUNCTIONS("dead_functions");
-//  IString ABORT("abort");
-//  assert(extraInfo->has(DEAD_FUNCTIONS));
-//  StringSet deadFunctions;
-//  for (size_t i = 0; i < extraInfo[DEAD_FUNCTIONS]->size(); i++) {
-//    deadFunctions.insert(extraInfo[DEAD_FUNCTIONS][i]->getIString());
-//  }
-//  traverseFunctions(ast, [&](Ref fun) {
-//    if (!deadFunctions.has(fun[1].get()->getIString())) {
-//      return;
-//    }
-//    AsmData asmData(fun);
-//    fun[3]->setSize(1);
-//    fun[3][0] = make1(STAT, make2(CALL, makeName(ABORT), &(makeArray(1))->push_back(makeNum(-1))));
-//    asmData.vars.clear();
-//    asmData.denormalize();
-//  });
-//}
+
+// Contrary to the name this does not eliminate actual dead functions, only
+// those marked as such with DEAD_FUNCTIONS
+pub fn eliminateDeadFuncs(ast: &mut AstValue, extraInfo: &serde_json::Value) {
+    let mut deadfns = HashSet::new();
+    for deadfn in extraInfo.find("dead_functions").unwrap().as_array().unwrap() {
+        deadfns.insert(deadfn.as_string().unwrap());
+    }
+    traverseFunctions(ast, |fun: &mut AstValue| {
+        if !deadfns.contains(&**fun.getDefun().0) { return }
+        let mut asmData = AsmData::new(fun);
+        {
+        let (_, _, stats) = asmData.func.getMutDefun();
+        *stats = makeArray(1);
+        let mut params = makeArray(1);
+        params.push(makeNum(-1f64));
+        stats.push(an!(Stat(an!(Call(makeName(is!("abort")), params)))));
+        }
+        asmData.vars.clear();
+        asmData.denormalize();
+    });
+}

@@ -106,4 +106,7 @@ pub static ATOMS: &'static [&'static str] = &[
     "SIMD_Bool16x8_check",
     "SIMD_Bool32x4_check",
     "SIMD_Bool64x2_check",
+
+    // optimizer.cpp
+    "abort", // eliminateDeadFuncs
 ];

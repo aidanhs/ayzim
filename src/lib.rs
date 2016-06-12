@@ -35,12 +35,12 @@ use std::mem;
 use std::time;
 
 use optimizer::{
-    //eliminateDeadFuncs
+    eliminateDeadFuncs,
     //eliminate
     //eliminateMemSafe
     //simplifyExpressions
     //optimizeFrounds
-    simplifyIfs
+    simplifyIfs,
     //registerize
     //registerizeHarder
     //minifyLocals
@@ -198,7 +198,7 @@ pub fn libmain() {
             "asmPreciseF32" => worked = false,
             "receiveJSON" |
             "emitJSON" => worked = false,
-            //"eliminateDeadFuncs" => eliminateDeadFuncs(doc),
+            "eliminateDeadFuncs" => eliminateDeadFuncs(doc, &extraInfo),
             //"eliminate" => eliminate(doc),
             //"eliminateMemSafe" => eliminateMemSafe(doc),
             //"simplifyExpressions" => simplifyExpressions(doc),
