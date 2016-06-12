@@ -2327,7 +2327,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
             if stats.is_empty() { return }
             cfor!{let mut i = 0; i < stats.len()-1; i += 1; {
                 {
-                let (pre, post) = match &mut stats[i..i+2] { [ref mut pre, ref mut post] => (pre, post), _ => panic!() };
+                let (pre, post) = match &mut stats[i..i+2] { &mut [ref mut pre, ref mut post] => (pre, post), _ => panic!() };
                 if !pre.isIf() || !post.isIf() { continue }
                 let (_, _, premaybeiffalse) = pre.getMutIf();
                 let preiffalse = if let Some(ref mut p) = *premaybeiffalse { p } else { continue };
@@ -2347,7 +2347,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
                 // RSTODO: the following two lines could be one if rust supported vec destructuring
                 // RSTODO: note that this does not continue if poststats.len() == 0 (unlike C++), as I believe it's a valid joining - check with azakai
                 let poststats = if let Block(ref mut s) = **postiftrue { s } else { continue };
-                let haveclear = if let mast!([Stat(Assign(true, Name(is!("label")), Num(0f64))), ..]) = poststats.as_slice() { true } else { false };
+                let haveclear = if let mast!(&[Stat(Assign(true, Name(is!("label")), Num(0f64))), ..]) = poststats.as_slice() { true } else { false };
                 if inLoop.get() > 0 && !haveclear { continue }
                 // Everything lines up, do it
                 if haveclear { poststats.remove(0); } // remove the label clearing
