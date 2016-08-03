@@ -5,7 +5,7 @@ extern crate rustc;
 extern crate rustc_plugin;
 
 use syntax::codemap::Span;
-use syntax::ast::TokenTree;
+use syntax::tokenstream::TokenTree;
 use syntax::ext::base::{ExtCtxt, MacResult, MacEager};
 use syntax::ext::build::AstBuilder;  // trait for expr_usize
 use rustc_plugin::Registry;
@@ -50,7 +50,6 @@ pub fn walk_pat_mut<F>(pat: Pat, it: &mut F) -> Pat where F: FnMut(Pat) -> Pat {
         PatKind::Range(_, _) |
         PatKind::Ident(_, _, _) |
         PatKind::Path(..) |
-        PatKind::QPath(_, _) |
         PatKind::Mac(_) => {
             ()
         }

@@ -216,7 +216,7 @@ AstValue!{
     Switch(AstNode, AstVec<(Option<AstNode>, Vec<AstNode>)>), // input, [(case|default, [stat|oneblock]]
     Toplevel(AstVec<AstNode>),         // [stat]
     UnaryPrefix(IString, AstNode),     // op, right
-    Var(AstVec<(IString, Option<AstNode>)>), // [(name, Option<value>]
+    Var(AstVec<(IString, Option<AstNode>)>), // [(name, Option<value>)]
     While(AstNode, AstNode),           // condition, body
 }
 
@@ -236,7 +236,7 @@ impl AstValue {
         let refarr = inref.getArray();
         Box::new(match (refarr[0].getIString(), &refarr[1..]) {
             (is!("array"), &[arr]) => Array(b(mkarr(arr))),
-            (is!("assign"), &[b, left, right]) => Assign(b.getBool(), p(left), p(right)),
+            (is!("assign"), &[b, left, right]) => { assert!(b.getBool()); Assign(b.getBool(), p(left), p(right)) },
             (is!("binary"), &[op, left, right]) => Binary(op.getIString(), p(left), p(right)),
             (is!("block"), &[stats]) => Block(b(mkarr(stats))),
             (is!("break"), &[label]) => Break(mklabel(label)),
@@ -328,7 +328,7 @@ impl serde::Serialize for AstValue {
         };
         match *self {
             Array(ref nodes) => s!("array", nodes),
-            Assign(ref b, ref left, ref right) => s!("assign", b, left, right),
+            Assign(ref b, ref left, ref right) => { assert!(b); s!("assign", b, left, right) },
             Binary(ref op, ref left, ref right) => s!("binary", op, left, right),
             Block(ref stats) => s!("block", stats),
             Break(ref label) => s!("break", label),

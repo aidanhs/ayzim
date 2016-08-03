@@ -51,7 +51,7 @@ const DEBUG: bool = false;
 
 include!(concat!(env!("OUT_DIR"), "/static_atoms.rs"));
 
-// RSTODO: not sure why tt can't be expr in this macro?
+// RSTODO: not sure why tt can't be expr in these macros?
 macro_rules! iss {
     [ $( $x:tt ),+, ] => { iss![ $( $x ),+ ] };
     [ $( $x:tt ),* ] => {{
@@ -63,12 +63,12 @@ macro_rules! iss {
     }};
 }
 
-macro_rules! printlnerr(
-    ($($arg:tt)*) => {{
+macro_rules! printlnerr {
+    ($( $arg:tt )*) => {{
         let r = writeln!(&mut ::std::io::stderr(), $($arg)*);
         r.expect("failed printing to stderr");
     }};
-);
+}
 
 #[macro_use]
 mod cashew;
@@ -231,6 +231,13 @@ pub fn libmain() {
         }
     }
 
+    // RSTODO: add profiling of emit to emoptimizer
+    #[cfg(feature = "profiling")]
+    let (profstg, profstart) = {
+        let profstg = "final emit";
+        printlnerr!("starting {}", profstg);
+        (profstg, time::SystemTime::now())
+    };
     // Emit
     if unsafe { emitJSON } {
         doc.stringify(&mut io::stdout(), false);
@@ -239,5 +246,11 @@ pub fn libmain() {
         let ret = printAst(!unsafe { minifyWhitespace }, unsafe { last }, &doc);
         io::stdout().write_all(&ret).unwrap();
         println!("");
+    }
+    #[cfg(feature = "profiling")]
+    {
+        let t = profstart.elapsed().unwrap();
+        let t_ms = t.as_secs()*1000 + t.subsec_nanos() as u64/1_000_000;
+        printlnerr!("    {} took {} milliseconds", profstg, t_ms);
     }
 }

@@ -20,18 +20,18 @@ use super::num::{f64toi32, f64tou32, isInteger, isInteger32};
 const NUM_ASMTYPES: usize = 12;
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum AsmType {
-  AsmInt,
-  AsmDouble,
-  AsmFloat,
-  AsmFloat32x4,
-  AsmFloat64x2,
-  AsmInt8x16,
-  AsmInt16x8,
-  AsmInt32x4,
-  AsmBool8x16,
-  AsmBool16x8,
-  AsmBool32x4,
-  AsmBool64x2,
+    AsmInt,
+    AsmDouble,
+    AsmFloat,
+    AsmFloat32x4,
+    AsmFloat64x2,
+    AsmInt8x16,
+    AsmInt16x8,
+    AsmInt32x4,
+    AsmBool8x16,
+    AsmBool16x8,
+    AsmBool32x4,
+    AsmBool64x2,
 }
 // RSTODO
 //AsmType intToAsmType(int type) {
@@ -90,7 +90,8 @@ impl<'a> AsmData<'a> {
             params.push(name.clone());
             let localty = detectType(val, None, &mut floatZero, false);
             // RSTODO: valid to not have type?
-            locals.insert(name.clone(), Local::new(localty.unwrap(), true));
+            let prev = locals.insert(name.clone(), Local::new(localty.unwrap(), true));
+            assert!(prev.is_none());
             }
             *stat = makeEmpty();
             stati += 1
@@ -107,7 +108,8 @@ impl<'a> AsmData<'a> {
                     let val = val.take().unwrap(); // make an un-assigning var
                     let localty = detectType(&*val, None, &mut floatZero, false);
                     // RSTODO: valid to not have type?
-                    locals.insert(name.clone(), Local::new(localty.unwrap(), false));
+                    let prev = locals.insert(name.clone(), Local::new(localty.unwrap(), false));
+                    assert!(prev.is_none());
                 } else {
                     assert!(first); // cannot break in the middle
                     break 'outside
@@ -231,29 +233,29 @@ impl<'a> AsmData<'a> {
         self.locals.get_mut(&name).unwrap().ty = ty;
     }
 
-    fn isLocal(&self, name: IString) -> bool {
-        self.locals.contains_key(&name)
+    fn isLocal(&self, name: &IString) -> bool {
+        self.locals.contains_key(name)
     }
-    fn isParam(&self, name: IString) -> bool {
-        self.locals.get(&name).map(|l| l.param).unwrap_or(false)
+    fn isParam(&self, name: &IString) -> bool {
+        self.locals.get(name).map(|l| l.param).unwrap_or(false)
     }
-    fn isVar(&self, name: IString) -> bool {
-        self.locals.get(&name).map(|l| !l.param).unwrap_or(false)
+    fn isVar(&self, name: &IString) -> bool {
+        self.locals.get(name).map(|l| !l.param).unwrap_or(false)
     }
 
     fn addParam(&mut self, name: IString, ty: AsmType) {
-        let old = self.locals.insert(name.clone(), Local::new(ty, true));
-        assert!(old.is_none());
+        let prev = self.locals.insert(name.clone(), Local::new(ty, true));
+        assert!(prev.is_none());
         self.params.push(name);
     }
     fn addVar(&mut self, name: IString, ty: AsmType) {
-        let old = self.locals.insert(name.clone(), Local::new(ty, false));
-        assert!(old.is_none());
+        let prev = self.locals.insert(name.clone(), Local::new(ty, false));
+        assert!(prev.is_none());
         self.vars.push(name);
     }
 
     fn deleteVar(&mut self, name: IString) {
-        self.locals.remove(&name);
+        self.locals.remove(&name).unwrap();
         let pos = self.vars.iter().position(|v| v == &name).unwrap();
         self.vars.remove(pos);
     }
@@ -4151,7 +4153,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
 pub fn eliminateDeadFuncs(ast: &mut AstValue, extraInfo: &serde_json::Value) {
     let mut deadfns = HashSet::new();
     for deadfn in extraInfo.find("dead_functions").unwrap().as_array().unwrap() {
-        deadfns.insert(deadfn.as_string().unwrap());
+        deadfns.insert(deadfn.as_str().unwrap());
     }
     traverseFunctions(ast, |fun: &mut AstValue| {
         if !deadfns.contains(&**fun.getDefun().0) { return }

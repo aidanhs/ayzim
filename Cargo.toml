@@ -7,8 +7,8 @@ build = "build.rs"
 [dependencies]
 lazy_static = "0.1.*"
 odds = "0.2.11"
-serde = "0.7.1"
-serde_json = "0.7.1"
+serde = "0.8"
+serde_json = "0.8"
 string_cache = { path = "../string-cache", features = ["unstable"] }
 phf = "0.7.15"
 phf_builder = "0.7.15"
@@ -18,7 +18,7 @@ cfor = "1.1"
 typed-arena = "1.1"
 conv = "0.3.2"
 
-interpolate_idents = "0.0.10"
+interpolate_idents = "0.1.1"
 ayzim-macros = { path = "ayzim-macros" }
 
 [build-dependencies]
