@@ -213,7 +213,7 @@ AstValue!{
     Stat(AstNode),                     // stat
     String(IString),                   // string
     Sub(AstNode, AstNode),             // target, index
-    Switch(AstNode, AstVec<(Option<AstNode>, Vec<AstNode>)>), // input, [(case|default, [stat|oneblock]]
+    Switch(AstNode, AstVec<(Option<AstNode>, Vec<AstNode>)>), // input, [(case|default), [stat|oneblock]]
     Toplevel(AstVec<AstNode>),         // [stat]
     UnaryPrefix(IString, AstNode),     // op, right
     Var(AstVec<(IString, Option<AstNode>)>), // [(name, Option<value>)]

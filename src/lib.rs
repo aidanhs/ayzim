@@ -70,6 +70,15 @@ macro_rules! printlnerr {
     }};
 }
 
+trait MoreTime {
+    fn to_ms(&self) -> u64;
+    fn to_us(&self) -> u64;
+}
+impl MoreTime for std::time::Duration {
+    fn to_ms(&self) -> u64 { self.as_secs()*1_000 + self.subsec_nanos() as u64/1_000_000 }
+    fn to_us(&self) -> u64 { self.as_secs()*1_000_000 + self.subsec_nanos() as u64/1_000 }
+}
+
 #[macro_use]
 mod cashew;
 mod optimizer;
@@ -179,8 +188,7 @@ pub fn libmain() {
     #[cfg(feature = "profiling")]
     {
         let t = profstart.elapsed().unwrap();
-        let t_ms = t.as_secs()*1000 + t.subsec_nanos() as u64/1_000_000;
-        printlnerr!("    {} took {} milliseconds", profstg, t_ms);
+        printlnerr!("    {} took {} milliseconds", profstg, t.to_ms());
     }
 
     // Run passes on the Document
@@ -220,8 +228,7 @@ pub fn libmain() {
         #[cfg(feature = "profiling")]
         {
             let t = profstart.elapsed().unwrap();
-            let t_ms = t.as_secs()*1000 + t.subsec_nanos() as u64/1_000_000;
-            printlnerr!("    {} took {} milliseconds", profstg, t_ms);
+            printlnerr!("    {} took {} milliseconds", profstg, t.to_ms());
         }
 
         if DEBUG && worked {
@@ -250,7 +257,6 @@ pub fn libmain() {
     #[cfg(feature = "profiling")]
     {
         let t = profstart.elapsed().unwrap();
-        let t_ms = t.as_secs()*1000 + t.subsec_nanos() as u64/1_000_000;
-        printlnerr!("    {} took {} milliseconds", profstg, t_ms);
+        printlnerr!("    {} took {} milliseconds", profstg, t.to_ms());
     }
 }
