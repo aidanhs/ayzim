@@ -266,7 +266,7 @@ impl AstValue {
         })
     }
 
-    fn children<'a, 'b: 'a, I>(&'a mut self) -> Box<Iterator<Item=&'a mut AstNode> + 'a> {
+    fn children_mut<'a, 'b: 'a, I>(&'a mut self) -> Box<Iterator<Item=&'a mut AstNode> + 'a> {
         macro_rules! b {
             ($e: expr) => (Box::new($e));
         };
@@ -799,16 +799,24 @@ impl<T> StackedStack<T> {
 
 // RSTODO: https://github.com/rust-lang/rfcs/issues/372 would make this code nicer
 
+// RSTODO: these immutable versions are highly unfortunate as they can inhibit
+// optimisations
+// RSTODO: https://internals.rust-lang.org/t/parameterisation-over-mutability/235/11 could be an improvement
+pub fn traversePre<F>(node: &AstValue, mut visit: F) where F: FnMut(&AstValue) {
+    let wrap = |node: &mut AstValue| visit(&*node);
+    traversePreMut(unsafe { &mut *(node as *const _ as *mut _) }, wrap)
+}
+
 // Traverse, calling visit before the children
-pub fn traversePre<F>(node: &mut AstValue, mut visit: F) where F: FnMut(&mut AstValue) {
+pub fn traversePreMut<F>(node: &mut AstValue, mut visit: F) where F: FnMut(&mut AstValue) {
     type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
     visit(node);
     let mut stack = StackedStack::new();
-    stack.push_back(node.children::<It>());
+    stack.push_back(node.children_mut::<It>());
     loop {
         if let Some(node) = stack.back().next() {
             visit(node);
-            stack.push_back(node.children::<It>());
+            stack.push_back(node.children_mut::<It>());
         } else {
             stack.pop_back();
             if stack.len() == 0 { break }
@@ -817,15 +825,15 @@ pub fn traversePre<F>(node: &mut AstValue, mut visit: F) where F: FnMut(&mut Ast
 }
 
 // Traverse, calling visitPre before the children and visitPost after
-pub fn traversePrePost<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visitPost: F2) where F1: FnMut(&mut AstValue), F2: FnMut(&mut AstValue) {
+pub fn traversePrePostMut<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visitPost: F2) where F1: FnMut(&mut AstValue), F2: FnMut(&mut AstValue) {
     type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
     visitPre(node);
     let mut stack = StackedStack::new();
-    stack.push_back((node as *mut _, node.children::<It>()));
+    stack.push_back((node as *mut _, node.children_mut::<It>()));
     loop {
         if let Some(&mut box ref mut node) = stack.back().1.next() {
             visitPre(node);
-            stack.push_back((node as *mut _, node.children::<It>()));
+            stack.push_back((node as *mut _, node.children_mut::<It>()));
         } else {
             visitPost(unsafe { &mut *stack.back().0 });
             stack.pop_back();
@@ -835,15 +843,15 @@ pub fn traversePrePost<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visitPo
 }
 
 // Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
-fn traversePrePostConditional<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visitPost: F2) where F1: FnMut(&mut AstValue) -> bool, F2: FnMut(&mut AstValue) {
+fn traversePrePostConditionalMut<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visitPost: F2) where F1: FnMut(&mut AstValue) -> bool, F2: FnMut(&mut AstValue) {
     type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
     if !visitPre(node) { return };
     let mut stack = StackedStack::new();
-    stack.push_back((node as *mut _, node.children::<It>()));
+    stack.push_back((node as *mut _, node.children_mut::<It>()));
     loop {
         if let Some(&mut box ref mut node) = stack.back().1.next() {
             if !visitPre(node) { continue };
-            stack.push_back((node as *mut _, node.children::<It>()));
+            stack.push_back((node as *mut _, node.children_mut::<It>()));
         } else {
             visitPost(unsafe { &mut *stack.back().0 });
             stack.pop_back();
@@ -852,7 +860,7 @@ fn traversePrePostConditional<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut 
     }
 }
 
-pub fn traverseFunctions<F>(ast: &mut AstValue, mut visit: F) where F: FnMut(&mut AstValue) {
+pub fn traverseFunctionsMut<F>(ast: &mut AstValue, mut visit: F) where F: FnMut(&mut AstValue) {
     match *ast {
         Toplevel(ref mut stats) => {
             for curr in stats.iter_mut() {

@@ -13,7 +13,7 @@ use serde_json;
 use super::IString;
 use super::cashew::{AstValue, AstNode, AstVec};
 use super::cashew::AstValue::*;
-use super::cashew::{traversePre, traversePrePost, traverseFunctions};
+use super::cashew::{traversePre, traversePreMut, traversePrePostMut, traverseFunctionsMut};
 use super::cashew::builder;
 use super::num::{f64toi32, f64tou32, isInteger, isInteger32};
 
@@ -2209,11 +2209,13 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 //}
 
 pub fn simplifyIfs(ast: &mut AstValue) {
-    traverseFunctions(ast, |func: &mut AstValue| {
+
+    traverseFunctionsMut(ast, |func: &mut AstValue| {
+
     let mut simplifiedAnElse = false;
     let mut asmFloatZero = None;
 
-    traversePre(func, |node: &mut AstValue| {
+    traversePreMut(func, |node: &mut AstValue| {
         // simplify   if (x) { if (y) { .. } }   to   if (x ? y : 0) { .. }
         let (cond, iftrue, maybeiffalse) = if let If(ref mut c, ref mut it, ref mut mif) = *node { (c, it, mif) } else { return };
         let mut body = iftrue;
@@ -2301,7 +2303,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
 
         let mut labelAssigns = HashMap::new();
 
-        traversePre(func, |node: &mut AstValue| {
+        traversePreMut(func, |node: &mut AstValue| {
             if let Assign(_, mast!(Name(is!("label"))), ref right) = *node {
                 if let Num(fvalue) = **right {
                     let value = f64tou32(fvalue);
@@ -2316,7 +2318,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
 
         let mut labelChecks = HashMap::new();
 
-        traversePre(func, |node: &mut AstValue| {
+        traversePreMut(func, |node: &mut AstValue| {
             if let Binary(is!("=="), mast!(Binary(is!("|"), Name(is!("label")), _)), ref right) = *node {
                 if let Num(fvalue) = **right {
                     let value = f64tou32(fvalue);
@@ -2330,7 +2332,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
         if abort { return }
 
         let inLoop = Cell::new(0); // when in a loop, we do not emit   label = 0;   in the relooper as there is no need
-        traversePrePost(func, |node: &mut AstValue| {
+        traversePrePostMut(func, |node: &mut AstValue| {
             if let While(..) = *node { inLoop.set(inLoop.get() + 1) }
             let stats = if let Some(s) = getStatements(node) { s } else { return };
             if stats.is_empty() { return }
@@ -2371,6 +2373,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
         });
         assert!(inLoop.get() == 0);
     }
+
     })
 }
 
@@ -4153,19 +4156,23 @@ pub fn simplifyIfs(ast: &mut AstValue) {
 pub fn eliminateDeadFuncs(ast: &mut AstValue, extraInfo: &serde_json::Value) {
     let mut deadfns = HashSet::new();
     for deadfn in extraInfo.find("dead_functions").unwrap().as_array().unwrap() {
-        deadfns.insert(deadfn.as_str().unwrap());
+        let isnew = deadfns.insert(deadfn.as_str().unwrap());
+        assert!(isnew);
     }
-    traverseFunctions(ast, |fun: &mut AstValue| {
-        if !deadfns.contains(&**fun.getDefun().0) { return }
-        let mut asmData = AsmData::new(fun);
-        {
-        let (_, _, stats) = asmData.func.getMutDefun();
-        *stats = makeArray(1);
-        let mut params = makeArray(1);
-        params.push(makeNum(-1f64));
-        stats.push(an!(Stat(an!(Call(makeName(is!("abort")), params)))));
-        }
-        asmData.vars.clear();
-        asmData.denormalize();
+
+    traverseFunctionsMut(ast, |fun: &mut AstValue| {
+
+    if !deadfns.contains(&**fun.getDefun().0) { return }
+    let mut asmData = AsmData::new(fun);
+    {
+    let (_, _, stats) = asmData.func.getMutDefun();
+    *stats = makeArray(1);
+    let mut params = makeArray(1);
+    params.push(makeNum(-1f64));
+    stats.push(an!(Stat(an!(Call(makeName(is!("abort")), params)))));
+    }
+    asmData.vars.clear();
+    asmData.denormalize();
+
     });
 }
