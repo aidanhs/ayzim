@@ -318,6 +318,7 @@ fn detectType(node: &AstValue, asmData: Option<AsmData>, asmFloatZero: &mut Opti
                 if let Some(ref asmFloatZero) = *asmFloatZero {
                     assert!(asmFloatZero == nodestr)
                 } else {
+                    // RSTODO: asmFloatZero is currently per pass, but in emoptimizer it's per file
                     *asmFloatZero = Some(nodestr.clone())
                 }
                 AsmType::AsmFloat
@@ -2210,10 +2211,11 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 
 pub fn simplifyIfs(ast: &mut AstValue) {
 
+    let mut asmFloatZero = None;
+
     traverseFunctionsMut(ast, |func: &mut AstValue| {
 
     let mut simplifiedAnElse = false;
-    let mut asmFloatZero = None;
 
     traversePreMut(func, |node: &mut AstValue| {
         // simplify   if (x) { if (y) { .. } }   to   if (x ? y : 0) { .. }
