@@ -4,8 +4,6 @@ use std::i32;
 use std::io::Write;
 use std::iter;
 use std::mem;
-// https://github.com/rust-lang/rust/issues/30104
-use std::ops::DerefMut;
 use std::ptr;
 use std::time::{Duration, SystemTime};
 
@@ -763,7 +761,7 @@ fn simplifyNotCompsDirect(node: &mut AstValue, asmFloatZero: &mut Option<IString
     // de-morgan's laws do not work on floats, due to nans >:(
     let newvalue = {
         let mut inner = if let UnaryPrefix(is!("!"), ref mut i) = *node { i } else { return };
-        let oldpos = match *inner.deref_mut() {
+        let oldpos = match **inner {
             ref mut bin @ Binary(..) => {
                 {
                 // RSTODO: no way to capture whole expression as well as subexpressions?
