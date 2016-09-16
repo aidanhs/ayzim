@@ -1,21 +1,26 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::i32;
+use std::io::Write;
 use std::iter;
 use std::mem;
 // https://github.com/rust-lang/rust/issues/30104
 use std::ops::DerefMut;
+use std::ptr;
+use std::time::{Duration, SystemTime};
 
 use odds::vec::VecExt;
 
+use phf;
+
 use serde_json;
 
-use super::IString;
+use super::{IString, MoreTime};
 use super::cashew::{AstValue, AstNode, AstVec};
 use super::cashew::AstValue::*;
-use super::cashew::{traversePre, traversePreMut, traversePrePostMut, traverseFunctionsMut};
+use super::cashew::{traversePre, traversePreMut, traversePrePostMut, traversePrePostConditionalMut, traverseFunctionsMut};
 use super::cashew::builder;
-use super::num::{f64toi32, f64tou32, isInteger, isInteger32};
+use super::num::{f64tou32, isInteger, isInteger32};
 
 const NUM_ASMTYPES: usize = 12;
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -229,6 +234,10 @@ impl<'a> AsmData<'a> {
     fn getType(&self, name: &IString) -> Option<AsmType> {
         self.locals.get(name).map(|l| l.ty)
     }
+    // RSNOTE: sometimes we don't have access to the whole asmdata
+    fn getTypeFromLocals(locals: &HashMap<IString, Local>, name: &IString) -> Option<AsmType> {
+        locals.get(name).map(|l| l.ty)
+    }
     fn setType(&mut self, name: IString, ty: AsmType) {
         self.locals.get_mut(&name).unwrap().ty = ty;
     }
@@ -253,10 +262,16 @@ impl<'a> AsmData<'a> {
         assert!(prev.is_none());
         self.vars.push(name);
     }
+    // RSNOTE: sometimes we don't have access to the whole asmdata
+    fn addVarToLocalsAndVars(locals: &mut HashMap<IString, Local>, vars: &mut Vec<IString>, name: IString, ty: AsmType) {
+        let prev = locals.insert(name.clone(), Local::new(ty, false));
+        assert!(prev.is_none());
+        vars.push(name);
+    }
 
-    fn deleteVar(&mut self, name: IString) {
-        self.locals.remove(&name).unwrap();
-        let pos = self.vars.iter().position(|v| v == &name).unwrap();
+    fn deleteVar(&mut self, name: &IString) {
+        self.locals.remove(name).unwrap();
+        let pos = self.vars.iter().position(|v| v == name).unwrap();
         self.vars.remove(pos);
     }
 }
@@ -452,6 +467,9 @@ fn getHeapStr(x: u32, unsign: bool) -> IString {
 
 fn deStat(node: &AstValue) -> &AstValue {
     if let Stat(ref stat) = *node { stat } else { node }
+}
+fn mutDeStat(node: &mut AstValue) -> &mut AstValue {
+    if let Stat(ref mut stat) = *node { stat } else { node }
 }
 fn intoDeStat(node: AstNode) -> AstNode {
     if let Stat(stat) = *node { stat } else { node }
@@ -649,53 +667,76 @@ fn commable(node: &AstValue) -> bool { // TODO: hashing
     }
 }
 
-// RSTODO
-//bool isMathFunc(const char *name) {
-//  static const char *Math_ = "Math_";
-//  static unsigned size = strlen(Math_);
-//  return strncmp(name, Math_, size) == 0;
-//}
-//
-//bool isMathFunc(Ref value) {
-//  return value->isString() && isMathFunc(value->getCString());
-//}
-//
-//bool callHasSideEffects(Ref node) { // checks if the call itself (not the args) has side effects (or is not statically known)
-//  return !(node[1][0] == NAME && isMathFunc(node[1][1]));
-//}
-//
-//bool hasSideEffects(Ref node) { // this is 99% incomplete!
-//  IString type = node[0]->getIString();
-//  switch (type[0]) {
-//    case 'n':
-//      if (type == NUM || type == NAME) return false;
-//      break;
-//    case 's':
-//      if (type == STRING) return false;
-//      if (type == SUB) return hasSideEffects(node[1]) || hasSideEffects(node[2]);
-//      break;
-//    case 'u':
-//      if (type == UNARY_PREFIX) return hasSideEffects(node[2]);
-//      break;
-//    case 'b':
-//      if (type == BINARY) return hasSideEffects(node[2]) || hasSideEffects(node[3]);
-//      break;
-//    case 'c':
-//      if (type == CALL) {
-//        if (callHasSideEffects(node)) return true;
-//        // This is a statically known call, with no side effects. only args can side effect us
-//        for (auto arg : node[2]->getArray()) {
-//          if (hasSideEffects(arg)) return true;
-//        }
-//        return false;
-//      } else if (type == CONDITIONAL) return hasSideEffects(node[1]) || hasSideEffects(node[2]) || hasSideEffects(node[3]); 
-//      break;
-//  }
-//  return true;
-//}
-//
-//// checks if a node has just basic operations, nothing with side effects nor that can notice side effects, which
-//// implies we can move it around in the code
+fn isMathFunc(name: &str) -> bool {
+    name.starts_with("Math_")
+}
+
+fn callHasSideEffects(node: &AstValue) -> bool { // checks if the call itself (not the args) has side effects (or is not statically known)
+    assert!(node.isCall());
+    if let Call(mast!(Name(ref name)), _) = *node { !isMathFunc(&*name) } else { true }
+}
+
+// RSTODO: just run hasSideEffects on all children?
+fn hasSideEffects(node: &AstValue) -> bool { // this is 99% incomplete!
+    match *node {
+        Num(_) |
+        Name(_) |
+        String(_) => false,
+
+        Binary(_, ref left, ref right) => hasSideEffects(left) && hasSideEffects(right),
+        Call(_, ref args) => {
+            if callHasSideEffects(node) { return true }
+            for arg in args.iter() {
+                if hasSideEffects(arg) { return true }
+            }
+            false
+        },
+        Conditional(ref cond, ref iftrue, ref iffalse) => hasSideEffects(cond) && hasSideEffects(iftrue) && hasSideEffects(iffalse),
+        Sub(ref target, ref index) => hasSideEffects(target) && hasSideEffects(index),
+        UnaryPrefix(_, ref right) => hasSideEffects(right),
+
+        // RSTODO: implement these?
+        Array(..) |
+        Assign(..) |
+        Block(..) |
+        Break(..) |
+        Continue(..) |
+        Defun(..) |
+        Do(..) |
+        Dot(..) |
+        If(..) |
+        Label(..) |
+        New(..) |
+        Object(..) |
+        Return(..) |
+        Seq(..) |
+        Stat(..) |
+        Switch(..) |
+        Toplevel(..) |
+        Var(..) |
+        While(..) => true,
+    }
+}
+
+// checks if a node has just basic operations, nothing with side effects nor that can notice side effects, which
+// implies we can move it around in the code
+fn triviallySafeToMove(node: &AstValue, asmDataLocals: &HashMap<IString, Local>) -> bool {
+    let mut ok = true;
+    traversePre(node, |node: &AstValue| {
+        // RSTODO: faster to early return this closure if ok is already false?
+        match *node {
+            Stat(..) |
+            Binary(..) |
+            UnaryPrefix(..) |
+            Assign(..) |
+            Num(..) => (),
+            Name(ref name) => if !asmDataLocals.contains_key(name) { ok = false },
+            Call(_, _) => if callHasSideEffects(node) { ok = false },
+            _ => ok = false,
+        }
+    });
+    ok
+}
 //bool triviallySafeToMove(Ref node, AsmData& asmData) {
 //  bool ok = true;
 //  traversePre(node, [&](Ref node) {
@@ -757,24 +798,18 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
     simplifyNotCompsDirect(cond, asmFloatZero);
 }
 
+// RSTODO
+// RSNOTE: probably don't want to implement this as it causes deliberate
+// memory leaks
 //void safeCopy(Ref target, Ref source) { // safely copy source onto target, even if source is a subnode of target
 //  Ref temp = source; // hold on to source
 //  *target = *temp;
 //}
-//
+
+fn clearEmptyNodes(arr: &mut AstVec<AstNode>) {
+    arr.retain(|an: &AstNode| { !isEmpty(deStat(an)) })
+}
 // RSTODO
-//void clearEmptyNodes(Ref arr) {
-//  int skip = 0;
-//  for (size_t i = 0; i < arr->size(); i++) {
-//    if (skip) {
-//      arr[i-skip] = arr[i];
-//    }
-//    if (isEmpty(deStat(arr[i]))) {
-//      skip++;
-//    }
-//  }
-//  if (skip) arr->setSize(arr->size() - skip);
-//}
 //void clearUselessNodes(Ref arr) {
 //  int skip = 0;
 //  for (size_t i = 0; i < arr->size(); i++) {
@@ -788,18 +823,33 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 //  }
 //  if (skip) arr->setSize(arr->size() - skip);
 //}
-//
-//void removeAllEmptySubNodes(Ref ast) {
-//  traversePre(ast, [](Ref node) {
-//    if (node[0] == DEFUN) {
-//      clearEmptyNodes(node[3]);
-//    } else if (node[0] == BLOCK && node->size() > 1 && !!node[1]) {
-//      clearEmptyNodes(node[1]);
-//    } else if (node[0] == SEQ && isEmpty(node[1])) {
-//      safeCopy(node, node[2]);
-//    }
-//  });
-//}
+
+fn removeAllEmptySubNodes(ast: &mut AstValue) {
+    traversePreMut(ast, |node: &mut AstValue| {
+        match *node {
+            Defun(_, _, ref mut stats) |
+            Block(ref mut stats) => {
+                clearEmptyNodes(stats)
+            },
+            Seq(_, _) => {
+                // RSTODO: what about right being empty?
+                let maybenewnode = {
+                    let (left, right) = node.getMutSeq();
+                    if isEmpty(left) {
+                        Some(mem::replace(right, makeEmpty()))
+                    } else {
+                        None
+                    }
+                };
+                if let Some(newnode) = maybenewnode {
+                    mem::replace(node, *newnode);
+                }
+            },
+            _ => (),
+        }
+    })
+}
+// RSTODO
 //void removeAllUselessSubNodes(Ref ast) {
 //  traversePrePost(ast, [](Ref node) {
 //    Ref type = node[0];
@@ -903,15 +953,23 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 //          SAFE_BINARY_OPS("+ -"), // division is unsafe as it creates non-ints in JS; mod is unsafe as signs matter so we can't remove |0's; mul does not nest with +,- in asm
 //          COERCION_REQUIRING_OPS("sub unary-prefix"), // ops that in asm must be coerced right away
 //          COERCION_REQUIRING_BINARIES("* / %"); // binary ops that in asm must be coerced
-//
-//StringSet ASSOCIATIVE_BINARIES("+ * | & ^"),
+
+lazy_static! {
+    static ref ASSOCIATIVE_BINARIES: phf::Set<IString> = iss![
+        "+",
+        "*",
+        "|",
+        "&",
+        "^",
+   ];
 //          CONTROL_FLOW("do while for if switch"),
 //          LOOP("do while for"),
-//          NAME_OR_NUM("name num"),
 //          CONDITION_CHECKERS("if do while switch"),
 //          BOOLEAN_RECEIVERS("if do while conditional"),
 //          SAFE_TO_DROP_COERCION("unary-prefix name num");
-//
+}
+
+// RSTODO
 //StringSet BREAK_CAPTURERS("do while for switch"),
 //          CONTINUE_CAPTURERS("do while for"),
 //          FUNCTIONS_THAT_ALWAYS_THROW("abort ___resumeException ___cxa_throw ___cxa_rethrow");
@@ -964,53 +1022,64 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 //  }
 //  return node;
 //}
+
+// Passes
+
+// Eliminator aka Expressionizer
 //
-//// Passes
+// The goal of this pass is to eliminate unneeded variables (which represent one of the infinite registers in the LLVM
+// model) and thus to generate complex expressions where possible, for example
 //
-//// Eliminator aka Expressionizer
-////
-//// The goal of this pass is to eliminate unneeded variables (which represent one of the infinite registers in the LLVM
-//// model) and thus to generate complex expressions where possible, for example
-////
-////  var x = a(10);
-////  var y = HEAP[20];
-////  print(x+y);
-////
-//// can be transformed into
-////
-////  print(a(10)+HEAP[20]);
-////
-//// The basic principle is to scan along the code in the order of parsing/execution, and keep a list of tracked
-//// variables that are current contenders for elimination. We must untrack when we see something that we cannot
-//// cross, for example, a write to memory means we must invalidate variables that depend on reading from
-//// memory, since if we change the order then we do not preserve the computation.
-////
-//// We rely on some assumptions about emscripten-generated code here, which means we can do a lot more than
-//// a general JS optimization can. For example, we assume that SUB nodes (indexing like HEAP[..]) are
-//// memory accesses or FUNCTION_TABLE accesses, and in both cases that the symbol cannot be replaced although
-//// the contents can. So we assume FUNCTION_TABLE might have its contents changed but not be pointed to
-//// a different object, which allows
-////
-////  var x = f();
-////  FUNCTION_TABLE[x]();
-////
-//// to be optimized (f could replace FUNCTION_TABLE, so in general JS eliminating x is not valid).
-////
-//// In memSafe mode, we are more careful and assume functions can replace HEAP and FUNCTION_TABLE, which
-//// can happen in ALLOW_MEMORY_GROWTH mode
+//  var x = a(10);
+//  var y = HEAP[20];
+//  print(x+y);
 //
-//StringSet ELIMINATION_SAFE_NODES("assign call if toplevel do return label switch binary unary-prefix"); // do is checked carefully, however
-//StringSet IGNORABLE_ELIMINATOR_SCAN_NODES("num toplevel string break continue dot"); // dot can only be STRING_TABLE.*
-//StringSet ABORTING_ELIMINATOR_SCAN_NODES("new object function defun for while array throw"); // we could handle some of these, TODO, but nontrivial (e.g. for while, the condition is hit multiple times after the body)
-//StringSet HEAP_NAMES("HEAP8 HEAP16 HEAP32 HEAPU8 HEAPU16 HEAPU32 HEAPF32 HEAPF64");
+// can be transformed into
 //
-//bool isTempDoublePtrAccess(Ref node) { // these are used in bitcasts; they are not really affecting memory, and should cause no invalidation
-//  assert(node[0] == SUB);
-//  return (node[2][0] == NAME && node[2][1] == TEMP_DOUBLE_PTR) ||
-//         (node[2][0] == BINARY && ((node[2][2][0] == NAME && node[2][2][1] == TEMP_DOUBLE_PTR) ||
-//                                     (node[2][3][0] == NAME && node[2][3][1] == TEMP_DOUBLE_PTR)));
-//}
+//  print(a(10)+HEAP[20]);
 //
+// The basic principle is to scan along the code in the order of parsing/execution, and keep a list of tracked
+// variables that are current contenders for elimination. We must untrack when we see something that we cannot
+// cross, for example, a write to memory means we must invalidate variables that depend on reading from
+// memory, since if we change the order then we do not preserve the computation.
+//
+// We rely on some assumptions about emscripten-generated code here, which means we can do a lot more than
+// a general JS optimization can. For example, we assume that SUB nodes (indexing like HEAP[..]) are
+// memory accesses or FUNCTION_TABLE accesses, and in both cases that the symbol cannot be replaced although
+// the contents can. So we assume FUNCTION_TABLE might have its contents changed but not be pointed to
+// a different object, which allows
+//
+//  var x = f();
+//  FUNCTION_TABLE[x]();
+//
+// to be optimized (f could replace FUNCTION_TABLE, so in general JS eliminating x is not valid).
+//
+// In memSafe mode, we are more careful and assume functions can replace HEAP and FUNCTION_TABLE, which
+// can happen in ALLOW_MEMORY_GROWTH mode
+
+lazy_static! {
+    static ref HEAP_NAMES: phf::Set<IString> = iss![
+        "HEAP8",
+        "HEAP16",
+        "HEAP32",
+        "HEAPU8",
+        "HEAPU16",
+        "HEAPU32",
+        "HEAPF32",
+        "HEAPF64",
+   ];
+}
+
+fn isTempDoublePtrAccess(node: &AstValue) -> bool { // these are used in bitcasts; they are not really affecting memory, and should cause no invalidation
+    assert!(node.isSub());
+    // RSTODO: second arm in if-let https://github.com/rust-lang/rfcs/issues/935#issuecomment-213800427?
+    if let Sub(_, mast!(Name(is!("tempDoublePtr")))) = *node { return true }
+    if let Sub(_, mast!(Binary(_, Name(is!("tempDoublePtr")), _))) = *node { return true }
+    if let Sub(_, mast!(Binary(_, _, Name(is!("tempDoublePtr"))))) = *node { return true }
+    false
+}
+
+// RSTODO
 //class StringIntMap : public std::unordered_map<IString, int> {
 //public:
 //  HASES
@@ -1030,727 +1099,826 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 //public:
 //  HASES
 //};
-//
-//void eliminate(Ref ast, bool memSafe) {
-//#ifdef PROFILING
-//  clock_t tasmdata = 0;
-//  clock_t tfnexamine = 0;
-//  clock_t tvarcheck = 0;
-//  clock_t tstmtelim = 0;
-//  clock_t tstmtscan = 0;
-//  clock_t tcleanvars = 0;
-//  clock_t treconstruct = 0;
-//#endif
-//
-//  // Find variables that have a single use, and if they can be eliminated, do so
-//  traverseFunctions(ast, [&](Ref func) {
-//
-//#ifdef PROFILING
-//    clock_t start = clock();
-//#endif
-//
-//    AsmData asmData(func);
-//
-//#ifdef PROFILING
-//    tasmdata += clock() - start;
-//    start = clock();
-//#endif
-//
-//    // First, find the potentially eliminatable functions: that have one definition and one use
-//
-//    StringIntMap definitions;
-//    StringIntMap uses;
-//    StringIntMap namings;
-//    StringRefMap values;
-//    StringIntMap varsToRemove; // variables being removed, that we can eliminate all 'var x;' of (this refers to VAR nodes we should remove)
-//                            // 1 means we should remove it, 2 means we successfully removed it
-//    StringSet varsToTryToRemove; // variables that have 0 uses, but have side effects - when we scan we can try to remove them
-//
-//    // examine body and note locals
-//    traversePre(func, [&](Ref node) {
-//      Ref type = node[0];
-//      if (type == NAME) {
-//        IString& name = node[1]->getIString();
-//        uses[name]++;
-//        namings[name]++;
-//      } else if (type == ASSIGN) {
-//        Ref target = node[2];
-//        if (target[0] == NAME) {
-//          IString& name = target[1]->getIString();
-//          // values is only used if definitions is 1
-//          if (definitions[name]++ == 0) {
-//            values[name] = node[3];
-//          }
-//          assert(node[1]->isBool(true)); // not +=, -= etc., just =
-//          uses[name]--; // because the name node will show up by itself in the previous case
-//        }
-//      }
-//    });
-//
-//#ifdef PROFILING
-//    tfnexamine += clock() - start;
-//    start = clock();
-//#endif
-//
-//    StringSet potentials; // local variables with 1 definition and 1 use
-//    StringSet sideEffectFree; // whether a local variable has no side effects in its definition. Only relevant when there are no uses
-//
-//    auto unprocessVariable = [&](IString name) {
-//      potentials.erase(name);
-//      varsToRemove.erase(name);
-//      sideEffectFree.erase(name);
-//      varsToTryToRemove.erase(name);
-//    };
-//    std::function<void (IString)> processVariable = [&](IString name) {
-//      if (definitions[name] == 1 && uses[name] == 1) {
-//        potentials.insert(name);
-//      } else if (uses[name] == 0 && definitions[name] <= 1) { // no uses, no def or 1 def (cannot operate on phis, and the llvm optimizer will remove unneeded phis anyhow) (no definition means it is a function parameter, or a local with just |var x;| but no defining assignment)
-//        bool sideEffects = false;
-//        auto val = values.find(name);
-//        Ref value;
-//        if (val != values.end()) {
-//          value = val->second;
-//          // TODO: merge with other side effect code
-//          // First, pattern-match
-//          //  (HEAP32[((tempDoublePtr)>>2)]=((HEAP32[(($_sroa_0_0__idx1)>>2)])|0),HEAP32[(((tempDoublePtr)+(4))>>2)]=((HEAP32[((($_sroa_0_0__idx1)+(4))>>2)])|0),(+(HEAPF64[(tempDoublePtr)>>3])))
-//          // which has no side effects and is the special form of converting double to i64.
-//          if (!(value[0] == SEQ && value[1][0] == ASSIGN && value[1][2][0] == SUB && value[1][2][2][0] == BINARY && value[1][2][2][1] == RSHIFT &&
-//                value[1][2][2][2][0] == NAME && value[1][2][2][2][1] == TEMP_DOUBLE_PTR)) {
-//            // If not that, then traverse and scan normally.
-//            sideEffects = hasSideEffects(value);
-//          }
-//        }
-//        if (!sideEffects) {
-//          varsToRemove[name] = !definitions[name] ? 2 : 1; // remove it normally
-//          sideEffectFree.insert(name);
-//          // Each time we remove a variable with 0 uses, if its value has no
-//          // side effects and vanishes too, then we can remove a use from variables
-//          // appearing in it, and possibly eliminate again
-//          if (!!value) {
-//            traversePre(value, [&](Ref node) {
-//              if (node[0] == NAME) {
-//                IString name = node[1]->getIString();
-//                node[1]->setString(EMPTY); // we can remove this - it will never be shown, and should not be left to confuse us as we traverse
-//                if (asmData.isLocal(name)) {
-//                  uses[name]--; // cannot be infinite recursion since we descend an energy function
-//                  assert(uses[name] >= 0);
-//                  unprocessVariable(name);
-//                  processVariable(name);
-//                }
-//              } else if (node[0] == CALL) {
-//                // no side effects, so this must be a Math.* call or such. We can just ignore it and all children
-//                node[0]->setString(NAME);
-//                node[1]->setString(EMPTY);
-//              }
-//            });
-//          }
-//        } else {
-//          varsToTryToRemove.insert(name); // try to remove it later during scanning
-//        }
-//      }
-//    };
-//    for (auto name : asmData.locals) {
-//      processVariable(name.first);
-//    }
-//
-//#ifdef PROFILING
-//    tvarcheck += clock() - start;
-//    start = clock();
-//#endif
-//
-//    //printErr('defs: ' + JSON.stringify(definitions));
-//    //printErr('uses: ' + JSON.stringify(uses));
-//    //printErr('values: ' + JSON.stringify(values));
-//    //printErr('locals: ' + JSON.stringify(locals));
-//    //printErr('varsToRemove: ' + JSON.stringify(varsToRemove));
-//    //printErr('varsToTryToRemove: ' + JSON.stringify(varsToTryToRemove));
-//    values.clear();
-//    //printErr('potentials: ' + JSON.stringify(potentials));
-//    // We can now proceed through the function. In each list of statements, we try to eliminate
-//    struct Tracking {
-//      bool usesGlobals, usesMemory, hasDeps;
-//      Ref defNode;
-//      bool doesCall;
-//    };
-//    class Tracked : public std::unordered_map<IString, Tracking> {
-//    public:
-//      HASES
-//    };
-//    Tracked tracked;
-//    #define dumpTracked() { errv("tracking %d", tracked.size()); for (auto t : tracked) errv("... %s", t.first.c_str()); }
-//    // Although a set would be more appropriate, it would also be slower
-//    std::unordered_map<IString, StringVec> depMap;
-//
-//    bool globalsInvalidated = false; // do not repeat invalidations, until we track something new
-//    bool memoryInvalidated = false;
-//    bool callsInvalidated = false;
-//    auto track = [&](IString name, Ref value, Ref defNode) { // add a potential that has just been defined to the tracked list, we hope to eliminate it
-//      Tracking& track = tracked[name];
-//      track.usesGlobals = false;
-//      track.usesMemory = false;
-//      track.hasDeps = false;
-//      track.defNode = defNode;
-//      track.doesCall = false;
-//      bool ignoreName = false; // one-time ignorings of names, as first op in sub and call
-//      traversePre(value, [&](Ref node) {
-//        Ref type = node[0];
-//        if (type == NAME) {
-//          if (!ignoreName) {
-//            IString depName = node[1]->getIString();
-//            if (!asmData.isLocal(depName)) {
-//              track.usesGlobals = true;
-//            }
-//            if (!potentials.has(depName)) { // deps do not matter for potentials - they are defined once, so no complexity
-//              depMap[depName].push_back(name);
-//              track.hasDeps = true;
-//            }
-//          } else {
-//            ignoreName = false;
-//          }
-//        } else if (type == SUB) {
-//          track.usesMemory = true;
-//          ignoreName = true;
-//        } else if (type == CALL) {
-//          track.usesGlobals = true;
-//          track.usesMemory = true;
-//          track.doesCall = true;
-//          ignoreName = true;
-//        } else {
-//          ignoreName = false;
-//        }
-//      });
-//      if (track.usesGlobals) globalsInvalidated = false;
-//      if (track.usesMemory) memoryInvalidated = false;
-//      if (track.doesCall) callsInvalidated = false;
-//    };
-//
-//    // TODO: invalidate using a sequence number for each type (if you were tracked before the last invalidation, you are cancelled). remove for.in loops
-//    #define INVALIDATE(what, check) \
-//    auto invalidate##what = [&]() { \
-//      std::vector<IString> temp; \
-//      for (auto t : tracked) { \
-//        IString name = t.first; \
-//        Tracking& info = tracked[name]; \
-//        if (check) { \
-//          temp.push_back(name); \
-//        } \
-//      } \
-//      for (size_t i = 0; i < temp.size(); i++) { \
-//        tracked.erase(temp[i]); \
-//      } \
-//    };
-//    INVALIDATE(Globals, info.usesGlobals);
-//    INVALIDATE(Memory, info.usesMemory);
-//    INVALIDATE(Calls, info.doesCall);
-//
-//    auto invalidateByDep = [&](IString dep) {
-//      for (auto name : depMap[dep]) {
-//        tracked.erase(name);
-//      }
-//      depMap.erase(dep);
-//    };
-//
-//    std::function<void (IString name, Ref node)> doEliminate;
-//
-//    // Generate the sequence of execution. This determines what is executed before what, so we know what can be reordered. Using
-//    // that, performs invalidations and eliminations
-//    auto scan = [&](Ref node) {
-//      bool abort = false;
-//      bool allowTracking = true; // false inside an if; also prevents recursing in an if
-//      std::function<void (Ref, bool)> traverseInOrder = [&](Ref node, bool ignoreSub) {
-//        if (abort) return;
-//        Ref type = node[0];
-//        if (type == ASSIGN) {
-//          Ref target = node[2];
-//          Ref value = node[3];
-//          bool nameTarget = target[0] == NAME;
-//          // If this is an assign to a name, handle it below rather than
-//          // traversing and treating as a read
-//          if (!nameTarget) {
-//            traverseInOrder(target, true); // evaluate left
-//          }
-//          traverseInOrder(value,  false); // evaluate right
-//          // do the actual assignment
-//          if (nameTarget) {
-//            IString name = target[1]->getIString();
-//            if (potentials.has(name) && allowTracking) {
-//              track(name, node[3], node);
-//            } else if (varsToTryToRemove.has(name)) {
-//              // replace it in-place
-//              safeCopy(node, value);
-//              varsToRemove[name] = 2;
-//            } else {
-//              // expensive check for invalidating specific tracked vars. This list is generally quite short though, because of
-//              // how we just eliminate in short spans and abort when control flow happens TODO: history numbers instead
-//              invalidateByDep(name); // can happen more than once per dep..
-//              if (!asmData.isLocal(name) && !globalsInvalidated) {
-//                invalidateGlobals();
-//                globalsInvalidated = true;
-//              }
-//              // if we can track this name (that we assign into), and it has 0 uses and we want to remove its VAR
-//              // definition - then remove it right now, there is no later chance
-//              if (allowTracking && varsToRemove.has(name) && uses[name] == 0) {
-//                track(name, node[3], node);
-//                doEliminate(name, node);
-//              }
-//            }
-//          } else if (target[0] == SUB) {
-//            if (isTempDoublePtrAccess(target)) {
-//              if (!globalsInvalidated) {
-//                invalidateGlobals();
-//                globalsInvalidated = true;
-//              }
-//            } else if (!memoryInvalidated) {
-//              invalidateMemory();
-//              memoryInvalidated = true;
-//            }
-//          }
-//        } else if (type == SUB) {
-//          // Only keep track of the global array names in memsafe mode i.e.
-//          // when they may change underneath us due to resizing
-//          if (node[1][0] != NAME || memSafe) {
-//            traverseInOrder(node[1], false); // evaluate inner
-//          }
-//          traverseInOrder(node[2], false); // evaluate outer
-//          // ignoreSub means we are a write (happening later), not a read
-//          if (!ignoreSub && !isTempDoublePtrAccess(node)) {
-//            // do the memory access
-//            if (!callsInvalidated) {
-//              invalidateCalls();
-//              callsInvalidated = true;
-//            }
-//          }
-//        } else if (type == BINARY) {
-//          bool flipped = false;
-//          if (ASSOCIATIVE_BINARIES.has(node[1]) && !NAME_OR_NUM.has(node[2][0]) && NAME_OR_NUM.has(node[3][0])) { // TODO recurse here?
-//            // associatives like + and * can be reordered in the simple case of one of the sides being a name, since we assume they are all just numbers
-//            Ref temp = node[2];
-//            node[2] = node[3];
-//            node[3] = temp;
-//            flipped = true;
-//          }
-//          traverseInOrder(node[2], false);
-//          traverseInOrder(node[3], false);
-//          if (flipped && NAME_OR_NUM.has(node[2][0])) { // dunno if we optimized, but safe to flip back - and keeps the code closer to the original and more readable
-//            Ref temp = node[2];
-//            node[2] = node[3];
-//            node[3] = temp;
-//          }
-//        } else if (type == NAME) {
-//          IString name = node[1]->getIString();
-//          if (tracked.has(name)) {
-//            doEliminate(name, node);
-//          } else if (!asmData.isLocal(name) && !callsInvalidated && (memSafe || !HEAP_NAMES.has(name))) { // ignore HEAP8 etc when not memory safe, these are ok to
-//                                                                                                          // access, e.g. SIMD_Int32x4_load(HEAP8, ...)
-//            invalidateCalls();
-//            callsInvalidated = true;
-//          }
-//        } else if (type == UNARY_PREFIX || type == UNARY_POSTFIX) {
-//          traverseInOrder(node[2], false);
-//        } else if (IGNORABLE_ELIMINATOR_SCAN_NODES.has(type)) {
-//        } else if (type == CALL) {
-//          // Named functions never change and are therefore safe to not track
-//          if (node[1][0] != NAME) {
-//            traverseInOrder(node[1], false);
-//          }
-//          Ref args = node[2];
-//          for (size_t i = 0; i < args->size(); i++) {
-//            traverseInOrder(args[i], false);
-//          }
-//          if (callHasSideEffects(node)) {
-//            // these two invalidations will also invalidate calls
-//            if (!globalsInvalidated) {
-//              invalidateGlobals();
-//              globalsInvalidated = true;
-//            }
-//            if (!memoryInvalidated) {
-//              invalidateMemory();
-//              memoryInvalidated = true;
-//            }
-//          }
-//        } else if (type == IF) {
-//          if (allowTracking) {
-//            traverseInOrder(node[1], false); // can eliminate into condition, but nowhere else
-//            if (!callsInvalidated) { // invalidate calls, since we cannot eliminate them into an if that may not execute!
-//              invalidateCalls();
-//              callsInvalidated = true;
-//            }
-//            allowTracking = false;
-//            traverseInOrder(node[2], false); // 2 and 3 could be 'parallel', really..
-//            if (!!node[3]) traverseInOrder(node[3], false);
-//            allowTracking = true;
-//          } else {
-//            tracked.clear();
-//          }
-//        } else if (type == BLOCK) {
-//          Ref stats = getStatements(node);
-//          if (!!stats) {
-//            for (size_t i = 0; i < stats->size(); i++) {
-//              traverseInOrder(stats[i], false);
-//            }
-//          }
-//        } else if (type == STAT) {
-//          traverseInOrder(node[1], false);
-//        } else if (type == LABEL) {
-//          traverseInOrder(node[2], false);
-//        } else if (type == SEQ) {
-//          traverseInOrder(node[1], false);
-//          traverseInOrder(node[2], false);
-//        } else if (type == DO) {
-//          if (node[1][0] == NUM && node[1][1]->getNumber() == 0) { // one-time loop
-//            traverseInOrder(node[2], false);
-//          } else {
-//            tracked.clear();
-//          }
-//        } else if (type == RETURN) {
-//          if (!!node[1]) traverseInOrder(node[1], false);
-//        } else if (type == CONDITIONAL) {
-//          if (!callsInvalidated) { // invalidate calls, since we cannot eliminate them into a branch of an LLVM select/JS conditional that does not execute
-//            invalidateCalls();
-//            callsInvalidated = true;
-//          }
-//          traverseInOrder(node[1], false);
-//          traverseInOrder(node[2], false);
-//          traverseInOrder(node[3], false);
-//        } else if (type == SWITCH) {
-//          traverseInOrder(node[1], false);
-//          Tracked originalTracked = tracked;
-//          Ref cases = node[2];
-//          for (size_t i = 0; i < cases->size(); i++) {
-//            Ref c = cases[i];
-//            assert(c[0]->isNull() || c[0][0] == NUM || (c[0][0] == UNARY_PREFIX && c[0][2][0] == NUM));
-//            Ref stats = c[1];
-//            for (size_t j = 0; j < stats->size(); j++) {
-//              traverseInOrder(stats[j], false);
-//            }
-//            // We cannot track from one switch case into another if there are external dependencies, undo all new trackings
-//            // Otherwise we can track, e.g. a var used in a case before assignment in another case is UB in asm.js, so no need for the assignment
-//            // TODO: general framework here, use in if-else as well
-//            std::vector<IString> toDelete;
-//            for (auto t : tracked) {
-//              if (!originalTracked.has(t.first)) {
-//                Tracking& info = tracked[t.first];
-//                if (info.usesGlobals || info.usesMemory || info.hasDeps) {
-//                  toDelete.push_back(t.first);
-//                }
-//              }
-//            }
-//            for (auto t : toDelete) {
-//              tracked.erase(t);
-//            }
-//          }
-//          tracked.clear(); // do not track from inside the switch to outside
-//        } else {
-//          assert(ABORTING_ELIMINATOR_SCAN_NODES.has(type));
-//          tracked.clear();
-//          abort = true;
-//        }
-//      };
-//      traverseInOrder(node, false);
-//    };
-//    //var eliminationLimit = 0; // used to debugging purposes
-//    doEliminate = [&](IString name, Ref node) {
-//      //if (eliminationLimit == 0) return;
-//      //eliminationLimit--;
-//      //printErr('elim!!!!! ' + name);
-//      // yes, eliminate!
-//      varsToRemove[name] = 2; // both assign and var definitions can have other vars we must clean up
-//      assert(tracked.has(name));
-//      Tracking& info = tracked[name];
-//      Ref defNode = info.defNode;
-//      assert(!!defNode);
-//      if (!sideEffectFree.has(name)) {
-//        assert(defNode[0] != VAR);
-//        // assign
-//        Ref value = defNode[3];
-//        // wipe out the assign
-//        safeCopy(defNode, makeEmpty());
-//        // replace this node in-place
-//        safeCopy(node, value);
-//      } else {
-//        // This has no side effects and no uses, empty it out in-place
-//        safeCopy(node, makeEmpty());
-//      }
-//      tracked.erase(name);
-//    };
-//    traversePre(func, [&](Ref block) {
-//      // Look for statements, including while-switch pattern
-//      Ref stats = getStatements(block);
-//      if (!stats && (block[0] == WHILE && block[2][0] == SWITCH)) {
-//        stats = &(makeArray(1)->push_back(block[2]));
-//      }
-//      if (!stats) return;
-//      tracked.clear();
-//      for (size_t i = 0; i < stats->size(); i++) {
-//        Ref node = deStat(stats[i]);
-//        Ref type = node[0];
-//        if (type == RETURN && i+1 < stats->size()) {
-//          stats->setSize(i+1); // remove any code after a return
-//        }
-//        // Check for things that affect elimination
-//        if (ELIMINATION_SAFE_NODES.has(type)) {
-//#ifdef PROFILING
-//          tstmtelim += clock() - start;
-//          start = clock();
-//#endif
-//          scan(node);
-//#ifdef PROFILING
-//          tstmtscan += clock() - start;
-//          start = clock();
-//#endif
-//        } else if (type == VAR) {
-//          continue; // asm normalisation has reduced 'var' to just the names
-//        } else {
-//          tracked.clear(); // not a var or assign, break all potential elimination so far
-//        }
-//      }
-//    });
-//
-//#ifdef PROFILING
-//    tstmtelim += clock() - start;
-//    start = clock();
-//#endif
-//
-//    StringIntMap seenUses;
-//    StringStringMap helperReplacements; // for looper-helper optimization
-//
-//    // clean up vars, and loop variable elimination
-//    traversePrePost(func, [&](Ref node) {
-//      // pre
-//      Ref type = node[0];
-//      /*if (type == VAR) {
-//        node[1] = node[1].filter(function(pair) { return !varsToRemove[pair[0]] });
-//        if (node[1]->size() == 0) {
-//          // wipe out an empty |var;|
-//          node[0] = TOPLEVEL;
-//          node[1] = [];
-//        }
-//      } else */
-//      if (type == ASSIGN && node[1]->isBool(true) && node[2][0] == NAME && node[3][0] == NAME && node[2][1] == node[3][1]) {
-//        // elimination led to X = X, which we can just remove
-//        safeCopy(node, makeEmpty());
-//      }
-//    }, [&](Ref node) {
-//      // post
-//      Ref type = node[0];
-//      if (type == NAME) {
-//        IString name = node[1]->getIString();
-//        if (helperReplacements.has(name)) {
-//          node[1]->setString(helperReplacements[name]);
-//          return; // no need to track this anymore, we can't loop-optimize more than once
-//        }
-//        // track how many uses we saw. we need to know when a variable is no longer used (hence we run this in the post)
-//        seenUses[name]++;
-//      } else if (type == WHILE) {
-//        // try to remove loop helper variables specifically
-//        Ref stats = node[2][1];
-//        Ref last = stats->back();
-//        if (!!last && last[0] == IF && last[2][0] == BLOCK && !!last[3] && last[3][0] == BLOCK) {
-//          Ref ifTrue = last[2];
-//          Ref ifFalse = last[3];
-//          clearEmptyNodes(ifTrue[1]);
-//          clearEmptyNodes(ifFalse[1]);
-//          bool flip = false;
-//          if (ifFalse[1]->size() > 0 && !!ifFalse[1][0] && !!ifFalse[1]->back() && ifFalse[1]->back()[0] == BREAK) { // canonicalize break in the if-true
-//            Ref temp = ifFalse;
-//            ifFalse = ifTrue;
-//            ifTrue = temp;
-//            flip = true;
-//          }
-//          if (ifTrue[1]->size() > 0 && !!ifTrue[1][0] && !!ifTrue[1]->back() && ifTrue[1]->back()[0] == BREAK) {
-//            Ref assigns = ifFalse[1];
-//            clearEmptyNodes(assigns);
-//            std::vector<IString> loopers, helpers;
-//            for (size_t i = 0; i < assigns->size(); i++) {
-//              if (assigns[i][0] == STAT && assigns[i][1][0] == ASSIGN) {
-//                Ref assign = assigns[i][1];
-//                if (assign[1]->isBool(true) && assign[2][0] == NAME && assign[3][0] == NAME) {
-//                  IString looper = assign[2][1]->getIString();
-//                  IString helper = assign[3][1]->getIString();
-//                  if (definitions[helper] == 1 && seenUses[looper] == namings[looper] &&
-//                      !helperReplacements.has(helper) && !helperReplacements.has(looper)) {
-//                    loopers.push_back(looper);
-//                    helpers.push_back(helper);
-//                  }
-//                }
-//              }
-//            }
-//            // remove loop vars that are used in the rest of the else
-//            for (size_t i = 0; i < assigns->size(); i++) {
-//              if (assigns[i][0] == STAT && assigns[i][1][0] == ASSIGN) {
-//                Ref assign = assigns[i][1];
-//                if (!(assign[1]->isBool(true) && assign[2][0] == NAME && assign[3][0] == NAME) || indexOf(loopers, assign[2][1]->getIString()) < 0) {
-//                  // this is not one of the loop assigns
-//                  traversePre(assign, [&](Ref node) {
-//                    if (node[0] == NAME) {
-//                      int index = indexOf(loopers, node[1]->getIString());
-//                      if (index < 0) index = indexOf(helpers, node[1]->getIString());
-//                      if (index >= 0) {
-//                        loopers.erase(loopers.begin() + index);
-//                        helpers.erase(helpers.begin() + index);
-//                      }
-//                    }
-//                  });
-//                }
-//              }
-//            }
-//            // remove loop vars that are used in the if
-//            traversePre(ifTrue, [&](Ref node) {
-//              if (node[0] == NAME) {
-//                int index = indexOf(loopers, node[1]->getIString());
-//                if (index < 0) index = indexOf(helpers, node[1]->getIString());
-//                if (index >= 0) {
-//                  loopers.erase(loopers.begin() + index);
-//                  helpers.erase(helpers.begin() + index);
-//                }
-//              }
-//            });
-//            if (loopers.size() == 0) return;
-//            for (size_t l = 0; l < loopers.size(); l++) {
-//              IString looper = loopers[l];
-//              IString helper = helpers[l];
-//              // the remaining issue is whether loopers are used after the assignment to helper and before the last line (where we assign to it)
-//              int found = -1;
-//              for (int i = (int)stats->size()-2; i >= 0; i--) {
-//                Ref curr = stats[i];
-//                if (curr[0] == STAT && curr[1][0] == ASSIGN) {
-//                  Ref currAssign = curr[1];
-//                  if (currAssign[1]->isBool(true) && currAssign[2][0] == NAME) {
-//                    IString to = currAssign[2][1]->getIString();
-//                    if (to == helper) {
-//                      found = i;
-//                      break;
-//                    }
-//                  }
-//                }
-//              }
-//              if (found < 0) return;
-//              // if a loop variable is used after we assigned to the helper, we must save its value and use that.
-//              // (note that this can happen due to elimination, if we eliminate an expression containing the
-//              // loop var far down, past the assignment!)
-//              // first, see if the looper and helpers overlap. Note that we check for this looper, compared to
-//              // *ALL* the helpers. Helpers will be replaced by loopers as we eliminate them, potentially
-//              // causing conflicts, so any helper is a concern.
-//              int firstLooperUsage = -1;
-//              int lastLooperUsage = -1;
-//              int firstHelperUsage = -1;
-//              for (int i = found+1; i < (int)stats->size(); i++) {
-//                Ref curr = i < (int)stats->size()-1 ? stats[i] : last[1]; // on the last line, just look in the condition
-//                traversePre(curr, [&](Ref node) {
-//                  if (node[0] == NAME) {
-//                    if (node[1] == looper) {
-//                      if (firstLooperUsage < 0) firstLooperUsage = i;
-//                      lastLooperUsage = i;
-//                    } else if (indexOf(helpers, node[1]->getIString()) >= 0) {
-//                      if (firstHelperUsage < 0) firstHelperUsage = i;
-//                    }
-//                  }
-//                });
-//              }
-//              if (firstLooperUsage >= 0) {
-//                // the looper is used, we cannot simply merge the two variables
-//                if ((firstHelperUsage < 0 || firstHelperUsage > lastLooperUsage) && lastLooperUsage+1 < (int)stats->size() && triviallySafeToMove(stats[found], asmData) &&
-//                    seenUses[helper] == namings[helper]) {
-//                  // the helper is not used, or it is used after the last use of the looper, so they do not overlap,
-//                  // and the last looper usage is not on the last line (where we could not append after it), and the
-//                  // helper is not used outside of the loop.
-//                  // just move the looper definition to after the looper's last use
-//                  stats->insert(lastLooperUsage+1, stats[found]);
-//                  stats->splice(found, 1);
-//                } else {
-//                  // they overlap, we can still proceed with the loop optimization, but we must introduce a
-//                  // loop temp helper variable
-//                  IString temp(strdupe((std::string(looper.c_str()) + "$looptemp").c_str()));
-//                  assert(!asmData.isLocal(temp));
-//                  for (int i = firstLooperUsage; i <= lastLooperUsage; i++) {
-//                    Ref curr = i < (int)stats->size()-1 ? stats[i] : last[1]; // on the last line, just look in the condition
-//
-//                    std::function<bool (Ref)> looperToLooptemp = [&](Ref node) {
-//                      if (node[0] == NAME) {
-//                        if (node[1] == looper) {
-//                          node[1]->setString(temp);
-//                        }
-//                      } else if (node[0] == ASSIGN && node[2][0] == NAME) {
-//                        // do not traverse the assignment target, phi assignments to the loop variable must remain
-//                        traversePrePostConditional(node[3], looperToLooptemp, [](Ref node){});
-//                        return false;
-//                      }
-//                      return true;
-//                    };
-//                    traversePrePostConditional(curr, looperToLooptemp, [](Ref node){});
-//                  }
-//                  asmData.addVar(temp, asmData.getType(looper));
-//                  stats->insert(found, make1(STAT, make3(ASSIGN, makeBool(true), makeName(temp), makeName(looper))));
-//                }
-//              }
-//            }
-//            for (size_t l = 0; l < helpers.size(); l++) {
-//              for (size_t k = 0; k < helpers.size(); k++) {
-//                if (l != k && helpers[l] == helpers[k]) return; // it is complicated to handle a shared helper, abort
-//              }
-//            }
-//            // hurrah! this is safe to do
-//            for (size_t l = 0; l < loopers.size(); l++) {
-//              IString looper = loopers[l];
-//              IString helper = helpers[l];
-//              varsToRemove[helper] = 2;
-//              traversePre(node, [&](Ref node) { // replace all appearances of helper with looper
-//                if (node[0] == NAME && node[1] == helper) node[1]->setString(looper);
-//              });
-//              helperReplacements[helper] = looper; // replace all future appearances of helper with looper
-//              helperReplacements[looper] = looper; // avoid any further attempts to optimize looper in this manner (seenUses is wrong anyhow, too)
-//            }
-//            // simplify the if. we remove the if branch, leaving only the else
-//            if (flip) {
-//              last[1] = simplifyNotCompsDirect(make2(UNARY_PREFIX, L_NOT, last[1]));
-//              Ref temp = last[2];
-//              last[2] = last[3];
-//              last[3] = temp;
-//            }
-//            if (loopers.size() == assigns->size()) {
-//              last->pop_back();
-//            } else {
-//              Ref elseStats = getStatements(last[3]);
-//              for (size_t i = 0; i < elseStats->size(); i++) {
-//                Ref stat = deStat(elseStats[i]);
-//                if (stat[0] == ASSIGN && stat[2][0] == NAME) {
-//                  if (indexOf(loopers, stat[2][1]->getIString()) >= 0) {
-//                    elseStats[i] = makeEmpty();
-//                  }
-//                }
-//              }
-//            }
-//          }
-//        }
-//      }
-//    });
-//
-//#ifdef PROFILING
-//    tcleanvars += clock() - start;
-//    start = clock();
-//#endif
-//
-//    for (auto v : varsToRemove) {
-//      if (v.second == 2 && asmData.isVar(v.first)) asmData.deleteVar(v.first);
-//    }
-//
-//    asmData.denormalize();
-//
-//#ifdef PROFILING
-//    treconstruct += clock() - start;
-//    start = clock();
-//#endif
-//
-//  });
-//
-//  removeAllEmptySubNodes(ast);
-//
-//#ifdef PROFILING
-//  errv("    EL stages: a:%li fe:%li vc:%li se:%li (ss:%li) cv:%li r:%li",
-//    tasmdata, tfnexamine, tvarcheck, tstmtelim, tstmtscan, tcleanvars, treconstruct);
-//#endif
-//}
-//
+
+pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
+    #[cfg(feature = "profiling")]
+    let (mut tasmdata, mut tfnexamine, mut tvarcheck, mut tstmtelim, mut tstmtscan, mut tcleanvars, mut treconstruct) = (Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0));
+
+    let mut asmFloatZero = None;
+
+    // Find variables that have a single use, and if they can be eliminated, do so
+
+    traverseFunctionsMut(ast, |func: &mut AstValue| {
+
+    #[cfg(feature = "profiling")]
+    let mut start = SystemTime::now();
+
+    let mut asmData = AsmData::new(func);
+
+    let mut varsToRemove;
+
+    {
+    let asmDataLocals = &mut asmData.locals;
+    let asmDataVars = &mut asmData.vars;
+
+    #[cfg(feature = "profiling")]
+    {
+    tasmdata += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    // First, find the potentially eliminatable functions: that have one definition and one use
+    // RSTODO: should some of these be usize?
+    let mut definitions = HashMap::<IString, isize>::new();
+    let mut namings = HashMap::<IString, isize>::new();
+    let mut uses = HashMap::<IString, isize>::new();
+    let mut potentials = HashSet::<IString>::new(); // local variables with 1 definition and 1 use
+    let mut sideEffectFree = HashSet::<IString>::new(); // whether a local variable has no side effects in its definition. Only relevant when there are no uses
+    let mut values = HashMap::<IString, *mut AstValue>::new();
+    // variables being removed, that we can eliminate all 'var x;' of (this refers to VAR nodes we should remove)
+    // 1 means we should remove it, 2 means we successfully removed it
+    // RSTODO: use enum rather than isize
+    varsToRemove = HashMap::<IString, isize>::new();
+    let mut varsToTryToRemove = HashSet::<IString>::new(); // variables that have 0 uses, but have side effects - when we scan we can try to remove them
+
+    // examine body and note locals
+    traversePreMut(asmData.func, |node: &mut AstValue| {
+        match *node {
+            Name(ref name) => {
+                *uses.entry(name.clone()).or_insert(0) += 1;
+                *namings.entry(name.clone()).or_insert(0) += 1;
+            },
+            Assign(_, mast!(Name(ref name)), ref mut value) => {
+                // values is only used if definitions is 1
+                let entry = definitions.entry(name.clone()).or_insert(0);
+                *entry += 1;
+                if *entry == 1 {
+                    let prev = values.insert(name.clone(), &mut **value as *mut _);
+                    assert!(prev.is_none());
+                }
+                // because the name node will show up by itself in the previous case
+                *uses.entry(name.clone()).or_insert(0) -= 1;
+            },
+            _ => (),
+        }
+    });
+
+    #[cfg(feature = "profiling")]
+    {
+    tfnexamine += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    {
+    fn unprocessVariable(name: &IString, potentials: &mut HashSet<IString>, sideEffectFree: &mut HashSet<IString>, varsToRemove: &mut HashMap<IString, isize>, varsToTryToRemove: &mut HashSet<IString>) {
+        // RSNOTE: all of these may not be present
+        potentials.remove(name);
+        sideEffectFree.remove(name);
+        varsToRemove.remove(name);
+        varsToTryToRemove.remove(name);
+    }
+    fn processVariable(name: &IString, asmDataLocals: &HashMap<IString, Local>, definitions: &mut HashMap<IString, isize>, potentials: &mut HashSet<IString>, sideEffectFree: &mut HashSet<IString>, uses: &mut HashMap<IString, isize>, values: &HashMap<IString, *mut AstValue>, varsToRemove: &mut HashMap<IString, isize>, varsToTryToRemove: &mut HashSet<IString>) {
+        // RSNOTE: names that only appear in var statements won't have been inserted above, do them now
+        let numdefs = *definitions.get(name).unwrap_or(&0);
+        let numuses = *uses.get(name).unwrap_or(&0);
+        if numdefs == 1 && numuses == 1 {
+            // RSNOTE: could be present already if var A has been eliminated which cascades
+            // to var B, and then var B gets processed again when iterating over the locals
+            potentials.insert(name.clone());
+        } else if numuses == 0 && numdefs <= 1 { // no uses, no def or 1 def (cannot operate on phis, and the llvm optimizer will remove unneeded phis anyhow) (no definition means it is a function parameter, or a local with just |var x;| but no defining assignment
+            let val = unsafe { values.get(name).map(|v| &mut **v) };
+            let sideEffects = match val {
+                // First, pattern-match
+                //  (HEAP32[((tempDoublePtr)>>2)]=((HEAP32[(($_sroa_0_0__idx1)>>2)])|0),HEAP32[(((tempDoublePtr)+(4))>>2)]=((HEAP32[((($_sroa_0_0__idx1)+(4))>>2)])|0),(+(HEAPF64[(tempDoublePtr)>>3])))
+                // which has no side effects and is the special form of converting double to i64.
+                // RSTODO: how does this differ to the check for isTempDoublePtrAccess below? Duplicate?
+                Some(&mut Seq(mast!(Assign(_, Sub(_, Binary(is!(">>"), Name(is!("tempDoublePtr")), _)), _)), _)) => false,
+                // If not that, then traverse and scan normally.
+                Some(ref value) => hasSideEffects(value),
+                None => false,
+            };
+            if !sideEffects {
+                // RSNOTE: could be present already if var A has been eliminated which cascades
+                // to var B, and then var B gets processed again when iterating over the locals
+                let newremoveval = if numdefs == 0 { 2 } else { 1 };
+                let prev = varsToRemove.insert(name.clone(), newremoveval); // remove it normally
+                assert!(prev.is_none() || prev.unwrap() == newremoveval);
+                sideEffectFree.insert(name.clone());
+                // Each time we remove a variable with 0 uses, if its value has no
+                // side effects and vanishes too, then we can remove a use from variables
+                // appearing in it, and possibly eliminate again
+                if let Some(value) = val {
+                    traversePreMut(value, |node: &mut AstValue| {
+                        match *node {
+                            Name(ref mut name_) => {
+                                let name = &name_.clone();
+                                *name_ = is!(""); // we can remove this - it will never be shown, and should not be left to confuse us as we traverse
+                                // RSNOTE: e.g. removing sp
+                                if asmDataLocals.contains_key(name) {
+                                    {
+                                    let numuses = uses.get_mut(name).unwrap();
+                                    *numuses -= 1; // cannot be infinite recursion since we descend an energy function
+                                    assert!(*numuses >= 0);
+                                    }
+                                    unprocessVariable(name, potentials, sideEffectFree, varsToRemove, varsToTryToRemove);
+                                    processVariable(name, asmDataLocals, definitions, potentials, sideEffectFree, uses, values, varsToRemove, varsToTryToRemove);
+                                }
+                            },
+                            // no side effects, so this must be a Math.* call or such. We can just ignore it and all children
+                            Call(_, _) => *node = Name(is!("")),
+                            _ => (),
+                        }
+                    })
+                }
+            }
+        }
+    }
+    for name in asmDataLocals.keys() {
+        processVariable(name, asmDataLocals, &mut definitions, &mut potentials, &mut sideEffectFree, &mut uses, &values, &mut varsToRemove, &mut varsToTryToRemove);
+    }
+    }
+
+    #[cfg(feature = "profiling")]
+    {
+    tvarcheck += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    //printErr('defs: ' + JSON.stringify(definitions));
+    //printErr('uses: ' + JSON.stringify(uses));
+    //printErr('values: ' + JSON.stringify(values));
+    //printErr('locals: ' + JSON.stringify(locals));
+    //printErr('varsToRemove: ' + JSON.stringify(varsToRemove));
+    //printErr('varsToTryToRemove: ' + JSON.stringify(varsToTryToRemove));
+    drop(values);
+    //printErr('potentials: ' + JSON.stringify(potentials));
+    // We can now proceed through the function. In each list of statements, we try to eliminate
+    #[derive(Debug)]
+    struct Tracking {
+        usesGlobals: bool,
+        usesMemory: bool,
+        hasDeps: bool,
+        defNode: *mut AstValue,
+        doesCall: bool,
+    }
+    let mut tracked = HashMap::<IString, Tracking>::new();
+    // #define dumpTracked() { errv("tracking %d", tracked.size()); for (auto t : tracked) errv("... %s", t.first.c_str()); }
+    // Although a set would be more appropriate, it would also be slower
+    let mut depMap = HashMap::<IString, Vec<IString>>::new();
+
+    let mut globalsInvalidated = false; // do not repeat invalidations, until we track something new
+    let mut memoryInvalidated = false;
+    let mut callsInvalidated = false;
+
+    fn track(name: IString, value: &AstValue, defNode: *mut AstValue, asmDataLocals: &HashMap<IString, Local>, potentials: &HashSet<IString>, depMap: &mut HashMap<IString, Vec<IString>>, tracked: &mut HashMap<IString, Tracking>, globalsInvalidated: &mut bool, memoryInvalidated: &mut bool, callsInvalidated: &mut bool) { // add a potential that has just been defined to the tracked list, we hope to eliminate it
+        let mut track = Tracking {
+            usesGlobals: false,
+            usesMemory: false,
+            hasDeps: false,
+            defNode: defNode,
+            doesCall: false,
+        };
+        let mut ignoreName = false; // one-time ignorings of names, as first op in sub and call
+        traversePre(value, |node: &AstValue| {
+            match *node {
+                Name(ref depName) => {
+                    if !ignoreName {
+                        if !asmDataLocals.contains_key(depName) {
+                            track.usesGlobals = true
+                        }
+                        if !potentials.contains(depName) { // deps do not matter for potentials - they are defined once, so no complexity
+                            depMap.entry(depName.clone()).or_insert(vec![]).push(name.clone());
+                            track.hasDeps = true
+                        }
+                    } else {
+                        ignoreName = false
+                    }
+                },
+                Sub(..) => {
+                    track.usesMemory = true;
+                    ignoreName = true
+                },
+                Call(..) => {
+                    track.usesGlobals = true;
+                    track.usesMemory = true;
+                    track.doesCall = true;
+                    ignoreName = true
+                },
+                _ => {
+                    ignoreName = false
+                },
+            }
+        });
+        if track.usesGlobals { *globalsInvalidated = false }
+        if track.usesMemory { *memoryInvalidated = false }
+        if track.doesCall { *callsInvalidated = false }
+        let prev = tracked.insert(name, track);
+        // RSTODO: valid assertion?
+        assert!(prev.is_none());
+    };
+
+    // TODO: invalidate using a sequence number for each type (if you were tracked before the last invalidation, you are cancelled). remove for.in loops
+    fn invalidateGlobals(tracked: &mut HashMap<IString, Tracking>) {
+        let temp: Vec<_> = tracked.iter().filter(|&(_, ref info)| info.usesGlobals).map(|(k, _)| k.clone()).collect();
+        for name in temp { tracked.remove(&name).unwrap(); }
+    }
+    fn invalidateMemory(tracked: &mut HashMap<IString, Tracking>) {
+        let temp: Vec<_> = tracked.iter().filter(|&(_, ref info)| info.usesMemory).map(|(k, _)| k.clone()).collect();
+        for name in temp { tracked.remove(&name).unwrap(); }
+    }
+    fn invalidateCalls(tracked: &mut HashMap<IString, Tracking>) {
+        let temp: Vec<_> = tracked.iter().filter(|&(_, ref info)| info.doesCall).map(|(k, _)| k.clone()).collect();
+        for name in temp { tracked.remove(&name).unwrap(); }
+    }
+
+    fn invalidateByDep(dep: &IString, depMap: &mut HashMap<IString, Vec<IString>>, tracked: &mut HashMap<IString, Tracking>) {
+        if let Some(deps) = depMap.remove(dep) {
+            for name in deps {
+                // RSNOTE: deps may not currently be in tracked
+                tracked.remove(&name);
+            }
+        }
+    }
+
+    {
+    // Generate the sequence of execution. This determines what is executed before what, so we know what can be reordered. Using
+    // that, performs invalidations and eliminations
+    let mut scan = |node: &mut AstValue, asmDataLocals: &HashMap<IString, Local>, tracked: &mut HashMap<IString, Tracking>| {
+        let mut abort = false;
+        let mut allowTracking = true; // false inside an if; also prevents recursing in an if
+        // RSTODO: rather than these all being params why not pass a reference to a single struct that looks up necessary data?
+        // RSTODO: note that this cannot be a closure because it's recursive
+        // RSTODO: maybe get rid of functions entirely and turn it into a loop with manual tracking of the state stack?
+        fn traverseInOrder(node: &mut AstValue, ignoreSub: bool, memSafe: bool, asmDataLocals: &HashMap<IString, Local>, uses: &HashMap<IString, isize>, potentials: &HashSet<IString>, sideEffectFree: &HashSet<IString>, varsToRemove: &mut HashMap<IString, isize>, varsToTryToRemove: &HashSet<IString>, depMap: &mut HashMap<IString, Vec<IString>>, tracked: &mut HashMap<IString, Tracking>, globalsInvalidated: &mut bool, memoryInvalidated: &mut bool, callsInvalidated: &mut bool, abort: &mut bool, allowTracking: &mut bool) {
+            macro_rules! traverseInOrder {
+                ($( $arg:expr ),*) => {
+                    traverseInOrder($( $arg ),+, memSafe, asmDataLocals, uses, potentials, sideEffectFree, varsToRemove, varsToTryToRemove, depMap, tracked, globalsInvalidated, memoryInvalidated, callsInvalidated, abort, allowTracking)
+                };
+            }
+            if *abort { return }
+            let nodeptr = node as *mut _;
+            match *node {
+                Assign(_, ref mut target, ref mut value) => {
+                    // If this is an assign to a name, handle it below rather than
+                    // traversing and treating as a read
+                    if !target.isName() {
+                        traverseInOrder!(target, true) // evaluate left
+                    }
+                    traverseInOrder!(value, false); // evaluate right
+                    let targetName = if let mast!(Name(ref name)) = *target { Some(name.clone()) } else { None };
+                    // do the actual assignment
+                    // RSTODO: perhaps some of these conditions could be simplified, but what we'd actually like to do is fix it so
+                    // that track doesn't need to take a pointer
+                    if let Some(name) = targetName {
+                        if potentials.contains(&name) && *allowTracking {
+                            track(name, value, nodeptr, asmDataLocals, potentials, depMap, tracked, globalsInvalidated, memoryInvalidated, callsInvalidated);
+                        } else if varsToTryToRemove.contains(&name) {
+                            // replace it in-place
+                            let mut newnode = makeEmpty();
+                            mem::swap(value, &mut newnode);
+                            // RSTODO: unsafe because target and value are invalid after this, non-lexical lifetimes might fix
+                            unsafe { mem::swap(&mut *nodeptr, &mut newnode) };
+                            let prev = varsToRemove.insert(name, 2);
+                            assert!(prev.is_none());
+                        } else {
+                            // expensive check for invalidating specific tracked vars. This list is generally quite short though, because of
+                            // how we just eliminate in short spans and abort when control flow happens TODO: history numbers instead
+                            invalidateByDep(&name, depMap, tracked); // can happen more than once per dep..
+                            if !asmDataLocals.contains_key(&name) && !*globalsInvalidated {
+                                invalidateGlobals(tracked);
+                                *globalsInvalidated = true
+                            }
+                            // if we can track this name (that we assign into), and it has 0 uses and we want to remove its VAR
+                            // definition - then remove it right now, there is no later chance
+                            if *allowTracking && varsToRemove.contains_key(&name) && *uses.get(&name).unwrap() == 0 {
+                                track(name.clone(), value, nodeptr, asmDataLocals, potentials, depMap, tracked, globalsInvalidated, memoryInvalidated, callsInvalidated);
+                                doEliminate(&name, nodeptr, sideEffectFree, varsToRemove, tracked);
+                            }
+                        }
+                    } else if target.isSub() {
+                        if isTempDoublePtrAccess(target) {
+                            if !*globalsInvalidated {
+                                invalidateGlobals(tracked);
+                                *globalsInvalidated = true
+                            }
+                        } else if !*memoryInvalidated {
+                            invalidateMemory(tracked);
+                            *memoryInvalidated = true
+                        }
+                    }
+                },
+                Sub(_, _) => {
+                    {
+                    let (target, index) = node.getMutSub();
+                    // Only keep track of the global array names in memsafe mode i.e.
+                    // when they may change underneath us due to resizing
+                    if !target.isName() || memSafe {
+                        traverseInOrder!(target, false) // evaluate inner
+                    }
+                    traverseInOrder!(index, false) // evaluate outer
+                    }
+                    // ignoreSub means we are a write (happening later), not a read
+                    if !ignoreSub && !isTempDoublePtrAccess(node) {
+                        // do the memory access
+                        if !*callsInvalidated {
+                            invalidateCalls(tracked);
+                            *callsInvalidated = true
+                        }
+                    }
+                },
+                Binary(ref op, ref mut left, ref mut right) => {
+                    let mut flipped = false;
+                    fn is_name_or_num(v: &AstValue) -> bool { v.isName() || v.isNum() }
+                    if ASSOCIATIVE_BINARIES.contains(op) && !is_name_or_num(left) && is_name_or_num(right) { // TODO recurse here?
+                        // associatives like + and * can be reordered in the simple case of one of the sides being a name, since we assume they are all just numbers
+                        mem::swap(left, right);
+                        flipped = true
+                    }
+                    traverseInOrder!(left, false);
+                    traverseInOrder!(right, false);
+                    if flipped && is_name_or_num(left) { // dunno if we optimized, but safe to flip back - and keeps the code closer to the original and more readable
+                        mem::swap(left, right);
+                    }
+                },
+                Name(ref name) => {
+                    if tracked.contains_key(name) {
+                        doEliminate(&name, nodeptr, sideEffectFree, varsToRemove, tracked);
+                    } else if !asmDataLocals.contains_key(name) && !*callsInvalidated && (memSafe || !HEAP_NAMES.contains(name)) { // ignore HEAP8 etc when not memory safe, these are ok to access, e.g. SIMD_Int32x4_load(HEAP8, ...)
+                        invalidateCalls(tracked);
+                        *callsInvalidated = true
+                    }
+                },
+                UnaryPrefix(_, ref mut right) => {
+                    traverseInOrder!(right, false)
+                },
+                Num(_) | Toplevel(_) | String(_) | Break(_) | Continue(_) | Dot(_, _) => (), // dot can only be STRING_TABLE.*
+                Call(_, _) => {
+                    {
+                    let (fnexpr, args) = node.getMutCall();
+                    // Named functions never change and are therefore safe to not track
+                    if !fnexpr.isName() {
+                        traverseInOrder!(fnexpr, false)
+                    }
+                    for arg in args.iter_mut() {
+                        traverseInOrder!(arg, false)
+                    }
+                    }
+                    if callHasSideEffects(node) {
+                        // these two invalidations will also invalidate calls
+                        if !*globalsInvalidated {
+                            invalidateGlobals(tracked);
+                            *globalsInvalidated = true
+                        }
+                        if !*memoryInvalidated {
+                            invalidateMemory(tracked);
+                            *memoryInvalidated = true
+                        }
+                    }
+                },
+                If(ref mut cond, ref mut iftrue, ref mut maybeiffalse) => {
+                    if *allowTracking {
+                        traverseInOrder!(cond, false); // can eliminate into condition, but nowhere else
+                        if !*callsInvalidated { // invalidate calls, since we cannot eliminate them into an if that may not execute!
+                            invalidateCalls(tracked);
+                            *callsInvalidated = true
+                        }
+                        *allowTracking = false;
+                        traverseInOrder!(iftrue, false); // 2 and 3 could be 'parallel', really..
+                        if let Some(ref mut iffalse) = *maybeiffalse { traverseInOrder!(iffalse, false) }
+                        *allowTracking = true
+                    } else {
+                        tracked.clear()
+                    }
+                }
+                Block(_) => {
+                    // RSTODO: why getstatements here?
+                    let maybestats = getStatements(node);
+                    if let Some(stats) = maybestats {
+                        for stat in stats.iter_mut() {
+                            traverseInOrder!(stat, false)
+                        }
+                    }
+                },
+                Stat(ref mut stat) => {
+                    traverseInOrder!(stat, false)
+                },
+                Label(_, ref mut body) => {
+                    traverseInOrder!(body, false)
+                },
+                Seq(ref mut left, ref mut right) => {
+                    traverseInOrder!(left, false);
+                    traverseInOrder!(right, false);
+                },
+                Do(ref mut cond, ref mut body) => {
+                    if let Num(0f64) = **cond { // one-time loop
+                        traverseInOrder!(body, false)
+                    } else {
+                        tracked.clear()
+                    }
+                },
+                Return(ref mut mayberetval) => {
+                    if let Some(ref mut retval) = *mayberetval { traverseInOrder!(retval, false) }
+                },
+                Conditional(ref mut cond, ref mut iftrue, ref mut iffalse) => {
+                    if !*callsInvalidated { // invalidate calls, since we cannot eliminate them into a branch of an LLVM select/JS conditional that does not execute
+                        invalidateCalls(tracked);
+                        *callsInvalidated = true
+                    }
+                    traverseInOrder!(cond, false);
+                    traverseInOrder!(iftrue, false);
+                    traverseInOrder!(iffalse, false);
+                },
+                Switch(ref mut input, ref mut cases) => {
+                    traverseInOrder!(input, false);
+                    let originalTracked = tracked.keys().cloned().collect::<HashSet<IString>>();
+                    for &mut (ref caseordefault, ref mut code) in cases.iter_mut() {
+                        if let Some(ref case) = *caseordefault {
+                            assert!(if case.isNum() { true } else if let UnaryPrefix(_, mast!(Num(_))) = **case { true } else { false })
+                        }
+                        for codepart in code.iter_mut() {
+                            traverseInOrder!(codepart, false)
+                        }
+                        // We cannot track from one switch case into another if there are external dependencies, undo all new trackings
+                        // Otherwise we can track, e.g. a var used in a case before assignment in another case is UB in asm.js, so no need for the assignment
+                        // TODO: general framework here, use in if-else as well
+                        let toDelete: Vec<_> = tracked.iter().filter_map(|(k, info)| {
+                            if !originalTracked.contains(k) && (info.usesGlobals || info.usesMemory || info.hasDeps) { Some(k.clone()) } else { None }
+                        }).collect();
+                        for name in toDelete { tracked.remove(&name).unwrap(); }
+                    }
+                    tracked.clear(); // do not track from inside the switch to outside
+                },
+                _ => {
+                    // RSTODO: note that for is not handled here because fastcomp never generated it so the original optimizer didn't touch it
+                    assert!(match *node { New(_) | Object(_) | Defun(_, _, _) | While(_, _) | Array(_) => true, _ => false, }); // we could handle some of these, TODO, but nontrivial (e.g. for while, the condition is hit multiple times after the body)
+                    tracked.clear();
+                    *abort = true
+                },
+            }
+        }
+        traverseInOrder(node, false, memSafe, asmDataLocals, &uses, &potentials, &sideEffectFree, &mut varsToRemove, &varsToTryToRemove, &mut depMap, tracked, &mut globalsInvalidated, &mut memoryInvalidated, &mut callsInvalidated, &mut abort, &mut allowTracking);
+    };
+    //var eliminationLimit = 0; // used to debugging purposes
+    fn doEliminate(name: &IString, node: *mut AstValue, sideEffectFree: &HashSet<IString>, varsToRemove: &mut HashMap<IString, isize>, tracked: &mut HashMap<IString, Tracking>) {
+        //if (eliminationLimit == 0) return;
+        //eliminationLimit--;
+        //printErr('elim!!!!! ' + name);
+        // yes, eliminate!
+        let name = &name.clone();
+        let prev = varsToRemove.insert(name.clone(), 2); // both assign and var definitions can have other vars we must clean up
+        assert!(prev.is_none() || prev.unwrap() == 1);
+        {
+        let info = tracked.get(name).unwrap();
+        // RSTODO: tread very very carefully here - node and defnode may be the same. If they *are* the same, we could
+        // hit UB with references, node is passed in as a pointer. This is then fine. However, if they are *not* the same
+        // then the situation is much less clear - traverseInOrder still holds a &mut to the parent which could allow
+        // the compiler to assume that defNode is not changed because the only active mutable reference is to parent,
+        // which is used to create the pointer to node. See https://github.com/nikomatsakis/rust-memory-model/issues/1
+        // Also be aware that swapping and removal can corrupt references into the nodes. In particular, the name passed
+        // in as an argument to this function!
+        let defNode = info.defNode;
+        if !sideEffectFree.contains(name) {
+            // assign
+            let value = unsafe { if let Assign(_, _, ref mut val) = *defNode { mem::replace(val, makeEmpty()) } else { panic!() } };
+            // wipe out the assign
+            unsafe { ptr::replace(defNode, *makeEmpty()) };
+            // replace this node in-place
+            unsafe { ptr::replace(node, *value) };
+        } else {
+            // This has no side effects and no uses, empty it out in-place
+            unsafe { ptr::replace(node, *makeEmpty()) };
+        }
+        }
+        tracked.remove(name).unwrap();
+    }
+    // RSTODO: I have a vague feeling this traversePre might be horribly inefficient here - traverseInOrder already descends into
+    // things, so why do so in traversePre as well?
+    traversePreMut(asmData.func, |block: &mut AstValue| {
+        // RSTODO: if we had a macro for concisely expressing profiling, this could be inlined
+        macro_rules! doscan {
+            ($( $arg:expr ),*) => {{
+                #[cfg(feature = "profiling")]
+                {
+                tstmtelim += start.elapsed().unwrap();
+                start = SystemTime::now();
+                }
+                scan($( $arg ),+);
+                #[cfg(feature = "profiling")]
+                {
+                tstmtscan += start.elapsed().unwrap();
+                start = SystemTime::now();
+                }
+            }};
+        }
+        // Look for statements, including while-switch pattern
+        // RSTODO: lexical borrow issue https://github.com/rust-lang/rust/issues/28449
+        let stats = if let Some(stats) = getStatements(unsafe { &mut *(block as *mut _) }) {
+            stats
+        } else {
+            if let While(_, ref mut node @ mast!(Switch(_, _))) = *block {
+                // RSNOTE: this is basically the full loop below, hand optimised for a single switch
+                doscan!(node, asmDataLocals, &mut tracked)
+            }
+            return
+        };
+        tracked.clear();
+        let mut returnfound = None;
+        for (i, stat) in stats.iter_mut().enumerate() {
+            let node = mutDeStat(stat);
+            match *node {
+                // Check for things that affect elimination
+                // do is checked carefully, however
+                Assign(..) | Call(..) | If(..) | Toplevel(..) | Do(..) | Return(..) | Label(..) | Switch(..) | Binary(..) | UnaryPrefix(..) => {
+                    doscan!(node, asmDataLocals, &mut tracked);
+                    if node.isReturn() {
+                        returnfound = Some(i);
+                        break
+                    }
+                },
+                // asm normalisation has reduced 'var' to just the names
+                Var(_) => (),
+                // not a var or assign, break all potential elimination so far
+                _ => {
+                    tracked.clear()
+                },
+            }
+        }
+        if let Some(reti) = returnfound {
+            // remove any code after a return
+            stats.truncate(reti+1)
+        }
+    });
+    }
+
+    #[cfg(feature = "profiling")]
+    {
+    tstmtelim += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    let mut seenUses = HashMap::<IString, usize>::new();
+    let mut helperReplacements = HashMap::<IString, IString>::new(); // for looper-helper optimization
+
+    // clean up vars, and loop variable elimination
+    traversePrePostMut(asmData.func, |node: &mut AstValue| {
+        // pre
+        /*if (type == VAR) {
+          node[1] = node[1].filter(function(pair) { return !varsToRemove[pair[0]] });
+          if (node[1]->size() == 0) {
+            // wipe out an empty |var;|
+            node[0] = TOPLEVEL;
+            node[1] = [];
+          }
+        } else */
+        // RSTODO: match two things as being the same?
+        let elim = if let Assign(true, mast!(Name(ref x)), mast!(Name(ref y))) = *node { x == y } else { false };
+        if elim {
+            // elimination led to X = X, which we can just remove
+            mem::replace(node, *makeEmpty());
+        }
+    }, |node: &mut AstValue| {
+        // post
+        match *node {
+            Name(ref mut name) => {
+                if let Some(replacement) = helperReplacements.get(name) {
+                    *name = replacement.clone();
+                    return // no need to track this anymore, we can't loop-optimize more than once
+                }
+                // track how many uses we saw. we need to know when a variable is no longer used (hence we run this in the post)
+                *seenUses.entry(name.clone()).or_insert(0) += 1
+            },
+            While(_, ref mut body) => {
+                // try to remove loop helper variables specifically
+                let (stats,) = body.getMutBlock();
+                let mut loopers = vec![];
+                let mut helpers = vec![];
+                let flip;
+                let numassigns;
+                {
+                let last = if let Some(last) = stats.last_mut() { last } else { return };
+                // RSTODO: why does last have to be moved?
+                let (mut iftruestats, mut iffalsestats) = if let If(_, mast!(Block(ref mut ift)), Some(mast!(Block(ref mut iff)))) = **{last} { (ift, iff) } else { return };
+                clearEmptyNodes(iftruestats);
+                clearEmptyNodes(iffalsestats);
+                if let Some(&mast!(Break(_))) = iffalsestats.last() { // canonicalize break in the if-true
+                    // RSNOTE: we're not swapping in the ast, we're preparing for it to happen later
+                    mem::swap(&mut iftruestats, &mut iffalsestats);
+                    flip = true
+                } else if let Some(&mast!(Break(_))) = iftruestats.last() {
+                    flip = false
+                } else { return }
+                let assigns = iffalsestats;
+                numassigns = assigns.len();
+                // RSTODO: uhhh...we just did this?
+                clearEmptyNodes(assigns);
+                for stat in assigns.iter() {
+                    if let Stat(mast!(Assign(true, Name(ref looper), Name(ref helper)))) = **stat {
+                        // RSTODO: all these unwraps valid?
+                        if *definitions.get(helper).unwrap_or(&0) == 1 &&
+                                *seenUses.get(looper).unwrap() as isize ==
+                                *namings.get(looper).unwrap() &&
+                                !helperReplacements.contains_key(helper) &&
+                                !helperReplacements.contains_key(looper) {
+                            loopers.push(looper.clone());
+                            helpers.push(helper.clone())
+                        }
+                    }
+                }
+                // remove loop vars that are used in the rest of the else
+                for stat in assigns.iter() {
+                    let assign = if let Stat(mast!(ref assign @ Assign(_, _, _))) = **stat { assign } else { continue };
+                    let (&boo, name1, name2) = assign.getAssign();
+                    let isloopassign = if boo && name1.isName() && name2.isName() {
+                        let (name1,) = name1.getName();
+                        loopers.iter().position(|l| l == name1).is_some()
+                    } else {
+                        false
+                    };
+                    if isloopassign { continue }
+                    // this is not one of the loop assigns
+                    traversePre(assign, |node: &AstValue| {
+                        let name = if let Name(ref name) = *node { name } else { return };
+                        let pos = loopers.iter().position(|l| l == name).or_else(|| helpers.iter().position(|h| h == name));
+                        if let Some(index) = pos {
+                            loopers.remove(index);
+                            helpers.remove(index);
+                        }
+                    })
+                }
+                // remove loop vars that are used in the if
+                for stat in iftruestats.iter() {
+                    traversePre(stat, |node: &AstValue| {
+                        let name = if let Name(ref name) = *node { name } else { return };
+                        let pos = loopers.iter().position(|l| l == name).or_else(|| helpers.iter().position(|h| h == name));
+                        if let Some(index) = pos {
+                            loopers.remove(index);
+                            helpers.remove(index);
+                        }
+                    })
+                }
+                }
+                if loopers.is_empty() { return }
+                for (looper, helper) in loopers.iter().zip(helpers.iter()) {
+                    // the remaining issue is whether loopers are used after the assignment to helper and before the last line (where we assign to it)
+                    let mut found = None;
+                    for (i, stat) in stats[..stats.len()-1].iter().enumerate().rev() {
+                        if let Stat(mast!(Assign(true, Name(ref to), _))) = **stat {
+                            if to == helper {
+                                found = Some(i);
+                                break
+                            }
+                        }
+                    }
+                    // RSTODO: why return rather than continue?
+                    let found = if let Some(found) = found { found } else { return };
+                    // if a loop variable is used after we assigned to the helper, we must save its value and use that.
+                    // (note that this can happen due to elimination, if we eliminate an expression containing the
+                    // loop var far down, past the assignment!)
+                    // first, see if the looper and helpers overlap. Note that we check for this looper, compared to
+                    // *ALL* the helpers. Helpers will be replaced by loopers as we eliminate them, potentially
+                    // causing conflicts, so any helper is a concern.
+                    let mut firstLooperUsage = None;
+                    let mut lastLooperUsage = None;
+                    let mut firstHelperUsage = None;
+                    for (i, stat) in stats[found+1..].iter().enumerate() {
+                        let i = i + found+1;
+                        let curr = if i < stats.len()-1 { stat } else { let (cond, _, _) = stat.getIf(); cond }; // on the last line, just look in the condition
+                        traversePre(curr, |node: &AstValue| {
+                            if let Name(ref name) = *node {
+                                if name == looper {
+                                    firstLooperUsage = firstLooperUsage.or(Some(i));
+                                    lastLooperUsage = Some(i);
+                                } else if helpers.iter().position(|h| h == name).is_some() {
+                                    firstHelperUsage = firstHelperUsage.or(Some(i));
+                                }
+                            }
+                        })
+                    }
+                    if let Some(firstLooperUsage) = firstLooperUsage {
+                        let lastLooperUsage = lastLooperUsage.unwrap();
+                        // the looper is used, we cannot simply merge the two variables
+                        if (firstHelperUsage.is_none() || firstHelperUsage.unwrap() > lastLooperUsage) && lastLooperUsage+1 < stats.len() && triviallySafeToMove(&*stats[found], asmDataLocals) && *seenUses.get(helper).unwrap() as isize == *namings.get(helper).unwrap() {
+                            // the helper is not used, or it is used after the last use of the looper, so they do not overlap,
+                            // and the last looper usage is not on the last line (where we could not append after it), and the
+                            // helper is not used outside of the loop.
+                            // just move the looper definition to after the looper's last use
+                            // RSTODO: doing it in two steps means some elements will get shifted twice, ideally would be one op
+                            let node = stats.remove(found);
+                            // RSNOTE: inserts after the lastLooperUsage, because everything has moved left
+                            stats.insert(lastLooperUsage, node);
+                        } else {
+                            // they overlap, we can still proceed with the loop optimization, but we must introduce a
+                            // loop temp helper variable
+                            let temp = IString::from(format!("{}$looptemp", looper));
+                            assert!(!asmDataLocals.contains_key(&temp));
+                            let statslen = stats.len();
+                            for (i, stat) in stats[firstLooperUsage..lastLooperUsage+1].iter_mut().enumerate() {
+                                let i = i + firstLooperUsage;
+                                let curr = if i < statslen-1 { stat } else { let (cond, _, _) = stat.getMutIf(); cond }; // on the last line, just look in the condition
+
+                                fn looperToLooptemp(node: &mut AstValue, looper: &IString, temp: &IString) -> bool {
+                                    match *node {
+                                        Name(ref mut name) => {
+                                            if name == looper {
+                                                *name = temp.clone()
+                                            }
+                                        },
+                                        Assign(_, mast!(Name(_)), ref mut right) => {
+                                            // do not traverse the assignment target, phi assignments to the loop variable must remain
+                                            traversePrePostConditionalMut(right, |node: &mut AstValue| looperToLooptemp(node, looper, &temp), |_| ());
+                                            return false
+                                        },
+                                        _ => (),
+                                    };
+                                    true
+                                }
+                                traversePrePostConditionalMut(curr, |node: &mut AstValue| looperToLooptemp(node, looper, &temp), |_| ());
+                            }
+                            let tempty = AsmData::getTypeFromLocals(asmDataLocals, looper).unwrap();
+                            AsmData::addVarToLocalsAndVars(asmDataLocals, asmDataVars, temp.clone(), tempty);
+                            stats.insert(found, an!(Stat(an!(Assign(true, makeName(temp), makeName(looper.clone()))))));
+                        }
+                    }
+                }
+                for (i, h1) in helpers.iter().enumerate() {
+                    for h2 in helpers[i+1..].iter() {
+                        if h1 == h2 { return } // it is complicated to handle a shared helper, abort
+                    }
+                }
+                // hurrah! this is safe to do
+                for (looper, helper) in loopers.iter().zip(helpers.iter()) {
+                    let prev = varsToRemove.insert(helper.clone(), 2);
+                    assert!(prev.is_none());
+                    for stat in stats.iter_mut() {
+                        traversePreMut(stat, |node: &mut AstValue| { // replace all appearances of helper with looper
+                            if let Name(ref mut name) = *node {
+                                if name == helper { *name = looper.clone() }
+                            }
+                        });
+                    }
+                    let prev = helperReplacements.insert(helper.clone(), looper.clone()); // replace all future appearances of helper with looper
+                    assert!(prev.is_none());
+                    let prev = helperReplacements.insert(looper.clone(), looper.clone()); // avoid any further attempts to optimize looper in this manner (seenUses is wrong anyhow, too)
+                    assert!(prev.is_none());
+                }
+                // simplify the if. we remove the if branch, leaving only the else
+                let last = stats.last_mut().unwrap();
+                let (cond, iftrue, maybeiffalse) = last.getMutIf();
+                if flip {
+                    let oldcond = mem::replace(cond, makeEmpty());
+                    *cond = an!(UnaryPrefix(is!("!"), oldcond));
+                    simplifyNotCompsDirect(cond, &mut asmFloatZero);
+                    mem::swap(iftrue, maybeiffalse.as_mut().unwrap());
+                }
+                if loopers.len() == numassigns {
+                    *maybeiffalse = None;
+                } else {
+                    let iffalse = maybeiffalse.as_mut().unwrap();
+                    for stat in getStatements(iffalse).unwrap().iter_mut() {
+                        let shouldempty = if let Assign(_, mast!(Name(ref name)), _) = *deStat(stat) {
+                            loopers.iter().position(|l| l == name).is_some()
+                        } else {
+                            false
+                        };
+                        if shouldempty { *stat = makeEmpty() }
+                    }
+                }
+            },
+            _ => (),
+        }
+    });
+
+    #[cfg(feature = "profiling")]
+    {
+    tcleanvars += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+    }
+
+    for (name, &val) in varsToRemove.iter() {
+        if val == 2 && asmData.isVar(name) { asmData.deleteVar(name) }
+    }
+
+    asmData.denormalize();
+
+    #[cfg(feature = "profiling")]
+    {
+    treconstruct += start.elapsed().unwrap();
+    //start = SystemTime::now();
+    }
+
+    });
+
+    removeAllEmptySubNodes(ast);
+
+    #[cfg(feature = "profiling")]
+    {
+    printlnerr!("    EL stages: a:{} fe:{} vc:{} se:{} (ss:{}) cv:{} r:{}",
+      tasmdata.to_us(), tfnexamine.to_us(), tvarcheck.to_us(), tstmtelim.to_us(), tstmtscan.to_us(), tcleanvars.to_us(), treconstruct.to_us());
+    }
+}
+
+// RSTODO
 //void eliminateMemSafe(Ref ast) {
 //  eliminate(ast, true);
 //}

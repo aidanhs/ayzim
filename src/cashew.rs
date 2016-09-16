@@ -843,7 +843,7 @@ pub fn traversePrePostMut<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visi
 }
 
 // Traverse, calling visitPre before the children and visitPost after. If pre returns false, do not traverse children
-fn traversePrePostConditionalMut<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visitPost: F2) where F1: FnMut(&mut AstValue) -> bool, F2: FnMut(&mut AstValue) {
+pub fn traversePrePostConditionalMut<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visitPost: F2) where F1: FnMut(&mut AstValue) -> bool, F2: FnMut(&mut AstValue) {
     type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
     if !visitPre(node) { return };
     let mut stack = StackedStack::new();

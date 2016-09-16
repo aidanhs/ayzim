@@ -36,8 +36,7 @@ use std::time;
 
 use optimizer::{
     eliminateDeadFuncs,
-    //eliminate
-    //eliminateMemSafe
+    eliminate,
     //simplifyExpressions
     //optimizeFrounds
     simplifyIfs,
@@ -207,8 +206,8 @@ pub fn libmain() {
             "receiveJSON" |
             "emitJSON" => worked = false,
             "eliminateDeadFuncs" => eliminateDeadFuncs(doc, &extraInfo),
-            //"eliminate" => eliminate(doc),
-            //"eliminateMemSafe" => eliminateMemSafe(doc),
+            "eliminate" => eliminate(doc, false),
+            "eliminateMemSafe" => eliminate(doc, true),
             //"simplifyExpressions" => simplifyExpressions(doc),
             //"optimizeFrounds" => optimizeFrounds(doc),
             "simplifyIfs" => simplifyIfs(doc),
