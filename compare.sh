@@ -14,7 +14,7 @@ EMITJSON=$(echo "$ARGS" | grep -vq emitJSON; echo $?)
 echo em
 /usr/bin/time ./emsdk/emscripten/incoming_64bit_optimizer/optimizer $ARGS > emoptout
 echo ay
-/usr/bin/time ./ayzim $ARGS > ayzimout
+RUST_BACKTRACE=1 /usr/bin/time ./ayzim $ARGS > ayzimout
 
 rmleadingspace() {
     sed 's/^ *//'
