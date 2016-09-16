@@ -679,7 +679,7 @@ fn hasSideEffects(node: &AstValue) -> bool { // this is 99% incomplete!
     match *node {
         Num(_) |
         Name(_) |
-        String(_) => false,
+        Str(_) => false,
 
         Binary(_, ref left, ref right) => hasSideEffects(left) && hasSideEffects(right),
         Call(_, ref args) => {
@@ -1449,7 +1449,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                 UnaryPrefix(_, ref mut right) => {
                     traverseInOrder!(right, false)
                 },
-                Num(_) | Toplevel(_) | String(_) | Break(_) | Continue(_) | Dot(_, _) => (), // dot can only be STRING_TABLE.*
+                Num(_) | Toplevel(_) | Str(_) | Break(_) | Continue(_) | Dot(_, _) => (), // dot can only be STRING_TABLE.*
                 Call(_, _) => {
                     {
                     let (fnexpr, args) = node.getMutCall();

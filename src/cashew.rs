@@ -211,7 +211,7 @@ AstValue!{
     Return(Option<AstNode>),           // Option<retval>
     Seq(AstNode, AstNode),             // left, right
     Stat(AstNode),                     // stat
-    String(IString),                   // string
+    Str(IString),                      // string
     Sub(AstNode, AstNode),             // target, index
     Switch(AstNode, AstVec<(Option<AstNode>, Vec<AstNode>)>), // input, [(case|default), [stat|oneblock]]
     Toplevel(AstVec<AstNode>),         // [stat]
@@ -255,7 +255,7 @@ impl AstValue {
             (is!("return"), &[retval]) => Return(maybe_parse(retval)),
             (is!("seq"), &[left, right]) => Seq(p(left), p(right)),
             (is!("stat"), &[stat]) => Stat(p(stat)),
-            (is!("string"), &[string]) => String(string.getIString()),
+            (is!("string"), &[string]) => Str(string.getIString()),
             (is!("sub"), &[target, index]) => Sub(p(target), p(index)),
             (is!("switch"), &[input, cases]) => Switch(p(input), b(cases.getArray().iter().map(|casedef| { (maybe_parse(casedef.get(0)), mkarr(casedef.get(1))) }).collect())),
             (is!("toplevel"), &[stats]) => Toplevel(b(mkarr(stats))),
@@ -294,7 +294,7 @@ impl AstValue {
             Return(ref mut retval) => if let Some(ref mut rv) = *retval { b!(iter::once(rv)) } else { b!(iter::empty()) },
             Seq(ref mut left, ref mut right) => b!(vec![left, right].into_iter()),
             Stat(ref mut stat) => b!(iter::once(stat)),
-            String(_) => b!(iter::empty()),
+            Str(_) => b!(iter::empty()),
             Sub(ref mut target, ref mut index) => b!(vec![target, index].into_iter()),
             Switch(ref mut input, ref mut cases) => {
                 let it = iter::once(input);
@@ -347,7 +347,7 @@ impl serde::Serialize for AstValue {
             Return(ref retval) => s!("return", retval),
             Seq(ref left, ref right) => s!("seq", left, right),
             Stat(ref stat) => s!("stat", stat),
-            String(ref string) => s!("string", string),
+            Str(ref string) => s!("string", string),
             Sub(ref target, ref index) => s!("sub", target, index),
             Switch(ref input, ref cases) => s!("switch", input, cases),
             Toplevel(ref stats) => s!("toplevel", stats),
@@ -1181,7 +1181,7 @@ impl<'a> JSPrinter<'a> {
                 self.print(stat);
                 if *self.buffer.last().unwrap() != b';' { self.emit(b';') }
             },
-            String(ref string) => {
+            Str(ref string) => {
                 self.emit(b'"');
                 self.emitBuf(string.as_bytes());
                 self.emit(b'"')
@@ -1489,7 +1489,7 @@ pub mod builder {
             New(..) |
             Sub(..) |
             Seq(..) |
-            String(..) |
+            Str(..) |
             Object(..) |
             Array(..) => true,
             _ => false,
@@ -1508,7 +1508,7 @@ pub mod builder {
     }
 
     pub fn makeString(s: IString) -> AstNode {
-        an!(String(s))
+        an!(Str(s))
     }
 
     pub fn makeBlock() -> AstNode {
