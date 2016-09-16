@@ -460,7 +460,7 @@ fn intoDeStat(node: AstNode) -> AstNode {
 fn getStatements(node: &mut AstValue) -> Option<&mut AstVec<AstNode>> {
     Some(match *node {
         Defun(_, _, ref mut stats) => stats,
-        Block(ref mut stats) if stats.len() > 1 => stats,
+        Block(ref mut stats) if stats.len() > 0 => stats,
         _ => return None,
     })
 }
