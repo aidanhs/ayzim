@@ -1,5 +1,31 @@
 f6d180c1f416e9e87a73679e38d05b7901fc3e89 of emscripten
 
+RSTODO, RSNOTE
+
 why does panic in match arms in rust not type check as *, whereas it does for functions? see setBlockContent
 
 DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling && cp ./target/$([ $DEBUG = 1 ] && echo debug || echo release)/ayzim ~/Desktop/emscripten/
+
+ - make sure to always assert that the last element was/wasn't present (or add
+   a note that it's not appropriate) when inserting or deleting from sets and
+   maps
+ - explicitly call .iter/.iter_mut/.into_iter
+ - make sure all traverse* closures explicitly give argument types
+ - mast may not be needed if you use **
+ - review uses of .. - should only be used when matching a number of different
+   ast types in order to ignore them
+ - consider turning all matches on _ to explicit matches of ast variations
+ - be wary about using &IString, they're needlessly inefficient
+ - if not indenting inside a traverse*, leave a blank line at beginning and end
+   of the closure
+ - make sure to never use .X tuple indexing when doing .getBlah
+ - convert all unwraps to expect
+
+
+LATER
+ - think of some nice way to get rid of mast entirely
+ - mem::swaps are interesting because they can either swap the boxes (pointers)
+   or the actual AstValues. could this distinction harm locality
+ - pattern matches should possibly unbox, so that future accesses only have to
+   dereference once
+ - is it faster to use functions rather than IStringSets?
