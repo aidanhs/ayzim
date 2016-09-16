@@ -42,7 +42,7 @@ use optimizer::{
     simplifyIfs,
     //registerize
     //registerizeHarder
-    //minifyLocals
+    minifyLocals
     //asmLastOpts
 };
 
@@ -213,7 +213,7 @@ pub fn libmain() {
             "simplifyIfs" => simplifyIfs(doc),
             //"registerize" => registerize(doc),
             //"registerizeHarder" => registerizeHarder(doc),
-            //"minifyLocals" => minifyLocals(doc),
+            "minifyLocals" => minifyLocals(doc, &extraInfo),
             "minifyWhitespace" => worked = false,
             //"asmLastOpts" => asmLastOpts(doc),
             "last" => worked = false,

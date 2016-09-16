@@ -1615,10 +1615,12 @@ pub mod builder {
     }
 
     pub fn makeBreak(label: Option<IString>) -> AstNode {
+        assert!(label.as_ref().map(|is| *is != is!("")).unwrap_or(true));
         an!(Break(label))
     }
 
     pub fn makeContinue(label: Option<IString>) -> AstNode {
+        assert!(label.as_ref().map(|is| *is != is!("")).unwrap_or(true));
         an!(Continue(label))
     }
 

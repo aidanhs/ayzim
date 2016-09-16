@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map};
 use std::i32;
 use std::io::Write;
 use std::iter;
@@ -2751,6 +2751,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
 //      assert(asmData.isLocal(name));
 //      StringVec& freeRegs = freeRegsClasses[asmData.getType(name)];
 //      if (!reg) {
+          //assert!(*reg != is!(""))
 //        // acquire register
 //        if (optimizables.has(name) && freeRegs.size() > 0 &&
 //            !(asmData.isParam(name) && paramRegs.has(freeRegs.back()))) { // do not share registers between parameters
@@ -3021,7 +3022,9 @@ pub fn simplifyIfs(ast: &mut AstValue) {
 //      LabelState newLabels = prevLabels;
 //      newLabels[EMPTY] = ContinueBreak(onContinue, onBreak);
 //      if (!!nextLoopLabel) {
+          //assert!(*reg != is!(""))
 //        newLabels[nextLoopLabel] = ContinueBreak(onContinue, onBreak);
+          //Actually make this an option
 //        nextLoopLabel = EMPTY;
 //      }
 //      // An unlabelled CONTINUE should jump to innermost loop,
@@ -4035,150 +4038,198 @@ pub fn simplifyIfs(ast: &mut AstValue) {
 //#endif
 //}
 //// end registerizeHarder
-//
-//// minified names generation
-//StringSet RESERVED("do if in for new try var env let");
-//const char *VALID_MIN_INITS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";
-//const char *VALID_MIN_LATERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$0123456789";
-//
-//StringVec minifiedNames;
-//std::vector<int> minifiedState;
-//
-//void ensureMinifiedNames(int n) { // make sure the nth index in minifiedNames exists. done 100% deterministically
-//  static int VALID_MIN_INITS_LEN = strlen(VALID_MIN_INITS);
-//  static int VALID_MIN_LATERS_LEN = strlen(VALID_MIN_LATERS);
-//
-//  while ((int)minifiedNames.size() < n+1) {
-//    // generate the current name
-//    std::string name;
-//    name += VALID_MIN_INITS[minifiedState[0]];
-//    for (size_t i = 1; i < minifiedState.size(); i++) {
-//      name += VALID_MIN_LATERS[minifiedState[i]];
-//    }
-//    IString str(strdupe(name.c_str())); // leaked!
-//    if (!RESERVED.has(str)) minifiedNames.push_back(str);
-//    // increment the state
-//    size_t i = 0;
-//    while (1) {
-//      minifiedState[i]++;
-//      if (minifiedState[i] < (i == 0 ? VALID_MIN_INITS_LEN : VALID_MIN_LATERS_LEN)) break;
-//      // overflow
-//      minifiedState[i] = 0;
-//      i++;
-//      if (i == minifiedState.size()) minifiedState.push_back(-1); // will become 0 after increment in next loop head
-//    }
-//  }
-//}
-//
-//void minifyLocals(Ref ast) {
-//  assert(!!extraInfo);
-//  IString GLOBALS("globals");
-//  assert(extraInfo->has(GLOBALS));
-//  Ref globals = extraInfo[GLOBALS];
-//
-//  if (minifiedState.size() == 0) minifiedState.push_back(0);
-//
-//  traverseFunctions(ast, [&globals](Ref fun) {
-//    // Analyse the asmjs to figure out local variable names,
-//    // but operate on the original source tree so that we don't
-//    // miss any global names in e.g. variable initializers.
-//    AsmData asmData(fun);
-//    asmData.denormalize(); // TODO: we can avoid modifying at all here - we just need a list of local vars+params
-//
-//    StringStringMap newNames;
-//    StringSet usedNames;
-//
-//    // Find all the globals that we need to minify using
-//    // pre-assigned names.  Don't actually minify them yet
-//    // as that might interfere with local variable names.
-//    traversePre(fun, [&](Ref node) {
-//      if (node[0] == NAME) {
-//        IString name = node[1]->getIString();
-//        if (!asmData.isLocal(name)) {
-//          if (globals->has(name)) {
-//            IString minified = globals[name]->getIString();
-//            assert(!!minified);
-//            newNames[name] = minified;
-//            usedNames.insert(minified);
-//          }
-//        }
-//      }
-//    });
-//
-//    // The first time we encounter a local name, we assign it a
-//    // minified name that's not currently in use.  Allocating on
-//    // demand means they're processed in a predictable order,
-//    // which is very handy for testing/debugging purposes.
-//    int nextMinifiedName = 0;
-//    auto getNextMinifiedName = [&]() {
-//      IString minified;
-//      while (1) {
-//        ensureMinifiedNames(nextMinifiedName);
-//        minified = minifiedNames[nextMinifiedName++];
-//        // TODO: we can probably remove !isLocalName here
-//        if (!usedNames.has(minified) && !asmData.isLocal(minified)) {
-//          return minified;
-//        }
-//      }
-//    };
-//
-//    // We can also minify loop labels, using a separate namespace
-//    // to the variable declarations.
-//    StringStringMap newLabels;
-//    int nextMinifiedLabel = 0;
-//    auto getNextMinifiedLabel = [&]() {
-//      ensureMinifiedNames(nextMinifiedLabel);
-//      return minifiedNames[nextMinifiedLabel++];
-//    };
-//
-//    // Traverse and minify all names.
-//    if (globals->has(fun[1]->getIString())) {
-//      fun[1]->setString(globals[fun[1]->getIString()]->getIString());
-//      assert(!!fun[1]);
-//    }
-//    if (!!fun[2]) {
-//      for (size_t i = 0; i < fun[2]->size(); i++) {
-//        IString minified = getNextMinifiedName();
-//        newNames[fun[2][i]->getIString()] = minified;
-//        fun[2][i]->setString(minified);
-//      }
-//    }
-//    traversePre(fun[3], [&](Ref node) {
-//      Ref type = node[0];
-//      if (type == NAME) {
-//        IString name = node[1]->getIString();
-//        IString minified = newNames[name];
-//        if (!!minified) {
-//          node[1]->setString(minified);
-//        } else if (asmData.isLocal(name)) {
-//          minified = getNextMinifiedName();
-//          newNames[name] = minified;
-//          node[1]->setString(minified);
-//        }
-//      } else if (type == VAR) {
-//        for (size_t i = 0; i < node[1]->size(); i++) {
-//          Ref defn = node[1][i];
-//          IString name = defn[0]->getIString();
-//          if (!(newNames.has(name))) {
-//            newNames[name] = getNextMinifiedName();
-//          }
-//          defn[0]->setString(newNames[name]);
-//        }
-//      } else if (type == LABEL) {
-//        IString name = node[1]->getIString();
-//        if (!newLabels.has(name)) {
-//          newLabels[name] = getNextMinifiedLabel();
-//        }
-//        node[1]->setString(newLabels[name]);
-//      } else if (type == BREAK || type == CONTINUE) {
-//        if (node->size() > 1 && !!node[1]) {
-//          node[1]->setString(newLabels[node[1]->getIString()]);
-//        }
-//      }
-//    });
-//  });
-//}
-//
+
+// minified names generation
+lazy_static! {
+    static ref RESERVED: phf::Set<IString> = iss![
+        "do",
+        "if",
+        "in",
+        "for",
+        "new",
+        "try",
+        "var",
+        "env",
+        "let",
+   ];
+}
+const VALID_MIN_INITS: &'static [u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";
+const VALID_MIN_LATERS: &'static [u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$0123456789";
+
+fn ensureMinifiedNames(n: usize, minifiedNames: &mut Vec<IString>, minifiedState: &mut Vec<usize>) { // make sure the nth index in minifiedNames exists. done 100% deterministically
+    while minifiedNames.len() < n+1 {
+        // generate the current name
+        let mut name = [0u8; 3]; // RSNOTE: if this needs increasing, check RESERVED
+        name[0] = VALID_MIN_INITS[minifiedState[0]];
+        for i in 1..minifiedState.len() {
+            name[i] = VALID_MIN_LATERS[minifiedState[i]]
+        }
+        let iname = IString::from(String::from_utf8(name[..minifiedState.len()].to_vec()).unwrap());
+        if !RESERVED.contains(&iname) { minifiedNames.push(iname) }
+        // increment the state
+        let mut i = 0;
+        minifiedState[i] += 1;
+        loop {
+            if minifiedState[i] < if i == 0 { VALID_MIN_INITS.len() } else { VALID_MIN_LATERS.len() } { break }
+            // overflow
+            minifiedState[i] = 0;
+            i += 1;
+            if i == minifiedState.len() {
+                minifiedState.push(0)
+            } else {
+                minifiedState[i] += 1
+            }
+        }
+    }
+}
+
+pub fn minifyLocals(ast: &mut AstValue, extraInfo: &serde_json::Value) {
+    let globals: HashMap<&str, IString> = extraInfo.find("globals").unwrap().as_object().unwrap()
+        .iter().map(|(key, val)| (key.as_str(), IString::from(val.as_str().unwrap()))).collect();
+
+    // RSTODO: original code had these two as globals so they would be preserved across passes -
+    // would they ever be used again? Maybe assert minifylocals is only called once?
+    let mut minifiedNames = vec![];
+    let mut minifiedState = vec![0];
+
+    traverseFunctionsMut(ast, |fun: &mut AstValue| {
+
+    // Analyse the asmjs to figure out local variable names,
+    // but operate on the original source tree so that we don't
+    // miss any global names in e.g. variable initializers.
+    let asmDataLocals;
+    {
+    let mut asmData = AsmData::new(fun);
+    asmData.denormalize(); // TODO: we can avoid modifying at all here - we just need a list of local vars+params
+    asmDataLocals = asmData.locals
+    }
+
+    let mut newNames = HashMap::<IString, IString>::new();
+    let mut usedNames = HashSet::<IString>::new();
+
+    // Find all the globals that we need to minify using
+    // pre-assigned names.  Don't actually minify them yet
+    // as that might interfere with local variable names.
+    traversePre(fun, |node: &AstValue| {
+        if let Name(ref name) = *node {
+            if !asmDataLocals.contains_key(name) {
+                if let Some(minified) = globals.get(&**name) {
+                    assert!(*minified != is!(""));
+                    match newNames.entry(name.clone()) {
+                        hash_map::Entry::Occupied(entry) => {
+                            assert!(entry.get() == minified);
+                            assert!(usedNames.contains(minified))
+                        },
+                        hash_map::Entry::Vacant(entry) => {
+                            entry.insert(minified.clone());
+                            let isnew = usedNames.insert(minified.clone());
+                            assert!(isnew);
+                        },
+                    };
+                }
+            }
+        }
+    });
+
+    // The first time we encounter a local name, we assign it a
+    // minified name that's not currently in use.  Allocating on
+    // demand means they're processed in a predictable order,
+    // which is very handy for testing/debugging purposes.
+    let mut nextMinifiedName = 0;
+    macro_rules! getNextMinifiedName {
+        () => { getNextMinifiedNameAfter(&mut nextMinifiedName, &usedNames, &asmDataLocals, &mut minifiedNames, &mut minifiedState) }
+    };
+    fn getNextMinifiedNameAfter(nextMinifiedName: &mut usize, usedNames: &HashSet<IString>, asmDataLocals: &HashMap<IString, Local>, minifiedNames: &mut Vec<IString>, minifiedState: &mut Vec<usize>) -> IString {
+        loop {
+            ensureMinifiedNames(*nextMinifiedName, minifiedNames, minifiedState);
+            let minified = &minifiedNames[*nextMinifiedName];
+            *nextMinifiedName += 1;
+            // TODO: we can probably remove !isLocalName here
+            if !usedNames.contains(minified) && !asmDataLocals.contains_key(minified) {
+                return minified.clone()
+            }
+        }
+    }
+
+    // We can also minify loop labels, using a separate namespace
+    // to the variable declarations.
+    let mut newLabels = HashMap::<IString, IString>::new();
+    let mut nextMinifiedLabel = 0;
+    macro_rules! getNextMinifiedLabel {
+        () => { getNextMinifiedLabelAfter(&mut nextMinifiedLabel, &mut minifiedNames, &mut minifiedState) }
+    };
+    fn getNextMinifiedLabelAfter(nextMinifiedLabel: &mut usize, minifiedNames: &mut Vec<IString>, minifiedState: &mut Vec<usize>) -> IString {
+         ensureMinifiedNames(*nextMinifiedLabel, minifiedNames, minifiedState);
+         let ret = minifiedNames[*nextMinifiedLabel].clone();
+         *nextMinifiedLabel += 1;
+         ret
+    }
+
+    // Traverse and minify all names.
+    let (fname, args, stats) = fun.getMutDefun();
+    if let Some(newfname) = globals.get(&**fname) {
+        *fname = newfname.clone()
+    }
+    for arg in args.iter_mut() {
+        let minified = getNextMinifiedName!();
+        let prev = newNames.insert(mem::replace(arg, minified.clone()), minified);
+        assert!(prev.is_none());
+    }
+    for stat in stats.iter_mut() {
+        traversePreMut(stat, |node: &mut AstValue| {
+            match *node {
+                Name(ref mut name) => {
+                    if let Some(minified) = newNames.get(name) {
+                        assert!(*minified != is!(""));
+                        *name = minified.clone();
+                        return
+                    }
+                    // RSTODO: this would just be else-if without the early return, but lexical borrows...
+                    if asmDataLocals.contains_key(name) {
+                        let minified = getNextMinifiedName!();
+                        let prev = newNames.insert(mem::replace(name, minified.clone()), minified);
+                        assert!(prev.is_none());
+                    }
+                },
+                Var(ref mut vars) => {
+                    for &mut (ref mut name, _) in vars.iter_mut() {
+                        if let Some(minified) = newNames.get(name) {
+                            *name = minified.clone();
+                            return
+                        }
+                        // RSTODO: again, lexical borrows (note early return)
+                        // else {
+                            let minified = getNextMinifiedName!();
+                            let prev = newNames.insert(mem::replace(name, minified.clone()), minified);
+                            assert!(prev.is_none());
+                        //}
+                    }
+                },
+                Label(ref mut label, _) => {
+                    if let Some(minified) = newLabels.get(label) {
+                        *label = minified.clone();
+                        return
+                    }
+                    // RSTODO: again, lexical borrows (note early return)
+                    // else {
+                        let minified = getNextMinifiedLabel!();
+                        let prev = newLabels.insert(mem::replace(label, minified.clone()), minified);
+                        assert!(prev.is_none());
+                    //}
+                },
+                Break(Some(ref mut maybelabel)) |
+                Continue(Some(ref mut maybelabel)) => {
+                    *maybelabel = newLabels.get(maybelabel).unwrap().clone()
+                },
+                _ => (),
+            }
+        })
+    }
+
+    })
+}
+
+// RSTODO
 //void asmLastOpts(Ref ast) {
 //  std::vector<Ref> statsStack;
 //  traverseFunctions(ast, [&](Ref fun) {
@@ -4342,5 +4393,5 @@ pub fn eliminateDeadFuncs(ast: &mut AstValue, extraInfo: &serde_json::Value) {
     asmData.vars.clear();
     asmData.denormalize();
 
-    });
+    })
 }

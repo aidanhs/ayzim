@@ -109,4 +109,7 @@ pub static ATOMS: &'static [&'static str] = &[
 
     // optimizer.cpp
     "abort", // eliminateDeadFuncs
+    "in", // RESERVED
+    "env", // RESERVED
+    "let", // RESERVED
 ];

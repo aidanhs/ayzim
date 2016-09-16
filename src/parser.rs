@@ -911,10 +911,12 @@ impl Parser {
             if hasChar(seps, pp!{src[0]}) { break }
             // RSTODO: combine these two conditions?
             if let Some(ref ks) = keywordSep1 {
+                assert!(*ks != is!(""));
                 let next = Frag::from_str(*src);
                 if FragData::Keyword(ks.clone()) == next.data { break }
             }
             if let Some(ref ks) = keywordSep2 {
+                assert!(*ks != is!(""));
                 let next = Frag::from_str(*src);
                 if FragData::Keyword(ks.clone()) == next.data { break }
             }
