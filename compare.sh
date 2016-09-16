@@ -28,7 +28,7 @@ if [ $EMITJSON = 1 ]; then
     done
 else
     cp emoptout emoptoutfmt
-    # convert 1.2e-06 to 1.2e-6, since emopt is inefficient here
-    sed -i 's/\([.0-9]e-*\)0*\([1-9]\)/\1\2/g' emoptoutfmt
+    # bunch of float tweaks since emopt is inefficient here
+    sed -i 's/\([0-9]\)[.]*\(e-*\)+*0*\([1-9]\)/\1\2\3/g' emoptoutfmt
     cp ayzimout ayzimoutfmt
 fi
