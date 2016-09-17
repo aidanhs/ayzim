@@ -78,7 +78,7 @@ impl<'a> AsmData<'a> {
 
         {
         let (_, fnparams, stats) = func.getMutDefun();
-        let fnparams: &AstVec<_> = &*fnparams;
+        let fnparams: &AstVec<_> = &fnparams;
         let mut stati = 0;
 
         // process initial params
@@ -109,7 +109,7 @@ impl<'a> AsmData<'a> {
                 if !locals.contains_key(name) {
                     vars.push(name.clone());
                     let val = val.take().unwrap(); // make an un-assigning var
-                    let localty = detectType(&*val, None, &mut floatZero, false);
+                    let localty = detectType(&val, None, &mut floatZero, false);
                     // RSTODO: valid to not have type?
                     let prev = locals.insert(name.clone(), Local::new(localty.unwrap(), false));
                     assert!(prev.is_none());
@@ -180,7 +180,7 @@ impl<'a> AsmData<'a> {
         let numParams = self.params.len();
         let mut emptyNodes = 0;
         while emptyNodes < stats.len() {
-            if !isEmpty(&*stats[emptyNodes]) { break }
+            if !isEmpty(&stats[emptyNodes]) { break }
             emptyNodes += 1
         }
         // params plus one big var if there are vars
@@ -341,7 +341,7 @@ fn detectType(node: &AstValue, asmData: Option<AsmData>, asmFloatZero: &mut Opti
             // RSTODO: istring match? Are there any 2 char unary prefixes?
             match op.as_bytes()[0] {
                 b'+' => Some(AsmType::AsmDouble),
-                b'-' => detectType(&*right, asmData, asmFloatZero, inVarDef),
+                b'-' => detectType(&right, asmData, asmFloatZero, inVarDef),
                 b'!' |
                 b'~' => Some(AsmType::AsmInt),
                 _ => None,
@@ -377,20 +377,20 @@ fn detectType(node: &AstValue, asmData: Option<AsmData>, asmFloatZero: &mut Opti
             }
         },
         Conditional(_, ref iftrue, _) => {
-            detectType(&*iftrue, asmData, asmFloatZero, inVarDef)
+            detectType(&iftrue, asmData, asmFloatZero, inVarDef)
         },
         Binary(ref op, ref left, _) => {
             match op.as_bytes()[0] {
                 b'+' | b'-' |
                 b'*' | b'/' |
-                b'%' => detectType(&*left, asmData, asmFloatZero, inVarDef),
+                b'%' => detectType(&left, asmData, asmFloatZero, inVarDef),
                 b'|' | b'&' | b'^' |
                 b'<' | b'>' | // handles <<, >>, >>=, <=
                 b'=' | b'!' => Some(AsmType::AsmInt), // handles ==, !=
                 _ => None,
             }
         },
-        Seq(_, ref right) => detectType(&*right, asmData, asmFloatZero, inVarDef),
+        Seq(_, ref right) => detectType(&right, asmData, asmFloatZero, inVarDef),
         Sub(ref target, _) => {
             let name = target.getName().0;
             Some(if let Some(info) = parseHeap(name) {
@@ -444,7 +444,7 @@ fn detectSign(node: &AstValue) -> AsmSign {
             }
         },
         Name(_) => AsmSign::AsmFlexible,
-        Conditional(_, ref iftrue, _) => detectSign(&*iftrue),
+        Conditional(_, ref iftrue, _) => detectSign(&iftrue),
         Call(mast!(Name(is!("Math_fround"))), _) => AsmSign::AsmNonsigned,
         _ => panic!(),
     }
@@ -671,7 +671,7 @@ fn isMathFunc(name: &str) -> bool {
 
 fn callHasSideEffects(node: &AstValue) -> bool { // checks if the call itself (not the args) has side effects (or is not statically known)
     assert!(node.isCall());
-    if let Call(mast!(Name(ref name)), _) = *node { !isMathFunc(&*name) } else { true }
+    if let Call(mast!(Name(ref name)), _) = *node { !isMathFunc(&name) } else { true }
 }
 
 // RSTODO: just run hasSideEffects on all children?
@@ -1795,7 +1795,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                     if let Some(firstLooperUsage) = firstLooperUsage {
                         let lastLooperUsage = lastLooperUsage.unwrap();
                         // the looper is used, we cannot simply merge the two variables
-                        if (firstHelperUsage.is_none() || firstHelperUsage.unwrap() > lastLooperUsage) && lastLooperUsage+1 < stats.len() && triviallySafeToMove(&*stats[found], asmDataLocals) && *seenUses.get(helper).unwrap() as isize == *namings.get(helper).unwrap() {
+                        if (firstHelperUsage.is_none() || firstHelperUsage.unwrap() > lastLooperUsage) && lastLooperUsage+1 < stats.len() && triviallySafeToMove(&stats[found], asmDataLocals) && *seenUses.get(helper).unwrap() as isize == *namings.get(helper).unwrap() {
                             // the helper is not used, or it is used after the last use of the looper, so they do not overlap,
                             // and the last looper usage is not on the last line (where we could not append after it), and the
                             // helper is not used outside of the loop.

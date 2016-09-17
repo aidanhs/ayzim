@@ -117,6 +117,7 @@ pub type ArrayStorage = Vec<Ref>;
 pub type ObjectStorage = HashMap<IString, Ref>;
 
 // RSTODO: why can't expr be tt?
+// RSTODO: use arena
 macro_rules! an {
     { $variant:ident( $( $x:expr ),* ) } => {
         Box::new(AstValue::$variant( $( $x ),* ))

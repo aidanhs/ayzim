@@ -42,7 +42,7 @@ use optimizer::{
     simplifyIfs,
     //registerize
     //registerizeHarder
-    minifyLocals
+    minifyLocals,
     //asmLastOpts
 };
 
