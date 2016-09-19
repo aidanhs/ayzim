@@ -1278,6 +1278,9 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                         }
                     })
                 }
+            } else {
+                let isnew = varsToTryToRemove.insert(name.clone()); // try to remove it later during scanning
+                assert!(isnew)
             }
         }
     }
