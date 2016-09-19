@@ -1,6 +1,7 @@
-use std::cell::Cell;
+use std::cell::{Cell, UnsafeCell};
+use std::cmp;
 use std::collections::{HashMap, HashSet, hash_map};
-use std::i32;
+use std::{f64, i32};
 use std::io::Write;
 use std::iter;
 use std::mem;
@@ -18,7 +19,7 @@ use super::cashew::{AstValue, AstNode, AstVec};
 use super::cashew::AstValue::*;
 use super::cashew::{traversePre, traversePreMut, traversePrePostMut, traversePrePostConditionalMut, traverseFunctionsMut};
 use super::cashew::builder;
-use super::num::{f64tou32, isInteger, isInteger32};
+use super::num::{jsD2I, f64toi32, f64tou32, isInteger, isInteger32};
 
 const NUM_ASMTYPES: usize = 12;
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -304,7 +305,7 @@ fn parseHeap(name_str: &str) -> Option<HeapInfo> {
     Some(HeapInfo { unsign: unsign, floaty: floaty, bits: bits, ty: ty })
 }
 
-fn detectType(node: &AstValue, asmData: Option<AsmData>, asmFloatZero: &mut Option<IString>, inVarDef: bool) -> Option<AsmType> {
+fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, asmFloatZero: &mut Option<IString>, inVarDef: bool) -> Option<AsmType> {
     return match *node {
         Num(n) => {
             Some(if !isInteger(n) {
@@ -314,8 +315,8 @@ fn detectType(node: &AstValue, asmData: Option<AsmData>, asmFloatZero: &mut Opti
             })
         },
         Name(ref name) => {
-            if let Some(asmData) = asmData {
-                let ret = asmData.getType(name);
+            if let Some(asmDataLocals) = asmDataLocals {
+                let ret = AsmData::getTypeFromLocals(asmDataLocals, name);
                 if ret.is_some() { return ret }
             }
             Some(if !inVarDef {
@@ -341,7 +342,7 @@ fn detectType(node: &AstValue, asmData: Option<AsmData>, asmFloatZero: &mut Opti
             // RSTODO: istring match? Are there any 2 char unary prefixes?
             match op.as_bytes()[0] {
                 b'+' => Some(AsmType::AsmDouble),
-                b'-' => detectType(&right, asmData, asmFloatZero, inVarDef),
+                b'-' => detectType(&right, asmDataLocals, asmFloatZero, inVarDef),
                 b'!' |
                 b'~' => Some(AsmType::AsmInt),
                 _ => None,
@@ -377,20 +378,20 @@ fn detectType(node: &AstValue, asmData: Option<AsmData>, asmFloatZero: &mut Opti
             }
         },
         Conditional(_, ref iftrue, _) => {
-            detectType(&iftrue, asmData, asmFloatZero, inVarDef)
+            detectType(&iftrue, asmDataLocals, asmFloatZero, inVarDef)
         },
         Binary(ref op, ref left, _) => {
             match op.as_bytes()[0] {
                 b'+' | b'-' |
                 b'*' | b'/' |
-                b'%' => detectType(&left, asmData, asmFloatZero, inVarDef),
+                b'%' => detectType(&left, asmDataLocals, asmFloatZero, inVarDef),
                 b'|' | b'&' | b'^' |
                 b'<' | b'>' | // handles <<, >>, >>=, <=
                 b'=' | b'!' => Some(AsmType::AsmInt), // handles ==, !=
                 _ => None,
             }
         },
-        Seq(_, ref right) => detectType(&right, asmData, asmFloatZero, inVarDef),
+        Seq(_, ref right) => detectType(&right, asmDataLocals, asmFloatZero, inVarDef),
         Sub(ref target, _) => {
             let name = target.getName().0;
             Some(if let Some(info) = parseHeap(name) {
@@ -897,24 +898,43 @@ fn removeAllEmptySubNodes(ast: &mut AstValue) {
 //  }
 //  return ret;
 //}
-//
-//// Calculations
-//
-//int measureCost(Ref ast) {
-//  int size = 0;
-//  traversePre(ast, [&size](Ref node) {
-//    Ref type = node[0];
-//    if (type == NUM || type == UNARY_PREFIX) size--;
-//    else if (type == BINARY) {
-//      if (node[3][0] == NUM && node[3][1]->getNumber() == 0) size--;
-//      else if (node[1] == DIV || node[1] == MOD) size += 2;
-//    }
-//    else if (type == CALL && !callHasSideEffects(node)) size -= 2;
-//    else if (type == SUB) size++;
-//    size++;
-//  });
-//  return size;
-//}
+
+// Calculations
+
+fn measureCost(ast: &AstValue) -> isize {
+    let mut size = 0isize;
+    traversePre(ast, |node: &AstValue| {
+        size += match *node {
+            Num(_) |
+            UnaryPrefix(_, _) => -1,
+            Binary(_, _, mast!(Num(0f64))) => -1,
+            Binary(is!("/"), _, _) |
+            Binary(is!("%"), _, _) => 2,
+            // RSTODO: call subtracts cost?
+            Call(_, _) if !callHasSideEffects(node) => -2,
+            Sub(_, _) => 1,
+            _ => 0,
+        };
+        // RSTODO: the emoptimizer traversals actually traverse over arrays,
+        // so the below nodes are given additional weight - not sure if this
+        // is intentional or not, so we just simulate it. However, measureCost
+        // is only ever called on an expression so some of relevant nodes
+        // shouldn't be possible.
+        size += match *node {
+            Array(_) |
+            Call(_, _) |
+            Object(_) => 1,
+            Block(_) |
+            Defun(_, _, _) |
+            Switch(_, _) |
+            Toplevel(_) |
+            Var(_) => panic!(),
+            _ => 0,
+        };
+        size += 1
+    });
+    size
+}
 
 //=====================
 // Optimization passes
@@ -944,13 +964,44 @@ fn removeAllEmptySubNodes(ast: &mut AstValue) {
 //    err("===");
 //  }
 //};
-//
-//StringSet USEFUL_BINARY_OPS("<< >> | & ^"),
-//          COMPARE_OPS("< <= > >= == == != !=="),
-//          BITWISE("| & ^"),
-//          SAFE_BINARY_OPS("+ -"), // division is unsafe as it creates non-ints in JS; mod is unsafe as signs matter so we can't remove |0's; mul does not nest with +,- in asm
-//          COERCION_REQUIRING_OPS("sub unary-prefix"), // ops that in asm must be coerced right away
-//          COERCION_REQUIRING_BINARIES("* / %"); // binary ops that in asm must be coerced
+
+lazy_static! {
+    static ref USEFUL_BINARY_OPS: phf::Set<IString> = iss![
+        "<<",
+        ">>",
+        "|",
+        "&",
+        "^",
+    ];
+    static ref COMPARE_OPS: phf::Set<IString> = iss![
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "==",
+        // RSTODO: should be ===?
+        //"==",
+        "!=",
+        // RSTODO: present in emoptimizer, but don't think necessary?
+        //"!==",
+    ];
+    static ref BITWISE: phf::Set<IString> = iss![
+        "|",
+        "&",
+        "^",
+    ];
+    // division is unsafe as it creates non-ints in JS; mod is unsafe as signs matter so we can't remove |0's; mul does not nest with +,- in asm
+    static ref SAFE_BINARY_OPS: phf::Set<IString> = iss![
+        "+",
+        "-",
+    ];
+    // binary ops that in asm must be coerced
+    static ref COERCION_REQUIRING_BINARIES: phf::Set<IString> = iss![
+        "*",
+        "/",
+        "%",
+    ];
+}
 
 lazy_static! {
     static ref ASSOCIATIVE_BINARIES: phf::Set<IString> = iss![
@@ -960,10 +1011,10 @@ lazy_static! {
         "&",
         "^",
    ];
+// RSTODO
 //          CONTROL_FLOW("do while for if switch"),
 //          LOOP("do while for"),
 //          CONDITION_CHECKERS("if do while switch"),
-//          BOOLEAN_RECEIVERS("if do while conditional"),
 //          SAFE_TO_DROP_COERCION("unary-prefix name num");
 }
 
@@ -971,17 +1022,12 @@ lazy_static! {
 //StringSet BREAK_CAPTURERS("do while for switch"),
 //          CONTINUE_CAPTURERS("do while for"),
 //          FUNCTIONS_THAT_ALWAYS_THROW("abort ___resumeException ___cxa_throw ___cxa_rethrow");
-//
-//bool isFunctionTable(const char *name) {
-//  static const char *functionTable = "FUNCTION_TABLE";
-//  static unsigned size = strlen(functionTable);
-//  return strncmp(name, functionTable, size) == 0;
-//}
-//
-//bool isFunctionTable(Ref value) {
-//  return value->isString() && isFunctionTable(value->getCString());
-//}
-//
+
+fn isFunctionTable(name: &str) -> bool {
+    name.starts_with("FUNCTION_TABLE")
+}
+
+// RSTODO
 //// Internal utilities
 //
 //bool canDropCoercion(Ref node) {
@@ -1916,464 +1962,602 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
     }
 }
 
-// RSTODO
-//void eliminateMemSafe(Ref ast) {
-//  eliminate(ast, true);
-//}
-//
-//void simplifyExpressions(Ref ast) {
-//  // Simplify common expressions used to perform integer conversion operations
-//  // in cases where no conversion is needed.
-//  auto simplifyIntegerConversions = [](Ref ast) {
-//    traversePre(ast, [](Ref node) {
-//      Ref type = node[0];
-//      if (type == BINARY       && node[1]    == RSHIFT && node[3][0] == NUM &&
-//          node[2][0] == BINARY && node[2][1] == LSHIFT && node[2][3][0] == NUM && node[3][1]->getNumber() == node[2][3][1]->getNumber()) {
-//        // Transform (x&A)<<B>>B to X&A.
-//        Ref innerNode = node[2][2];
-//        double shifts = node[3][1]->getNumber();
-//        if (innerNode[0] == BINARY && innerNode[1] == AND && innerNode[3][0] == NUM) {
-//          double mask = innerNode[3][1]->getNumber();
-//          if (isInteger32(mask) && isInteger32(shifts) && ((jsD2I(mask) << jsD2I(shifts)) >> jsD2I(shifts)) == jsD2I(mask)) {
-//            safeCopy(node, innerNode);
-//            return;
-//          }
-//        }
-//      } else if (type == BINARY && BITWISE.has(node[1])) {
-//        for (int i = 2; i <= 3; i++) {
-//          Ref subNode = node[i];
-//          if (subNode[0] == BINARY && subNode[1] == AND && subNode[3][0] == NUM && subNode[3][1]->getNumber() == 1) {
-//            // Rewrite (X < Y) & 1 to X < Y , when it is going into a bitwise operator. We could
-//            // remove even more (just replace &1 with |0, then subsequent passes could remove the |0)
-//            // but v8 issue #2513 means the code would then run very slowly in chrome.
-//            Ref input = subNode[2];
-//            if (input[0] == BINARY && COMPARE_OPS.has(input[1])) {
-//              safeCopy(node[i], input);
-//            }
-//          }
-//        }
-//      }
-//    });
-//  };
-//
-//  // When there is a bunch of math like (((8+5)|0)+12)|0, only the external |0 is needed, one correction is enough.
-//  // At each node, ((X|0)+Y)|0 can be transformed into (X+Y): The inner corrections are not needed
-//  // TODO: Is the same is true for 0xff, 0xffff?
-//  // Likewise, if we have |0 inside a block that will be >>'d, then the |0 is unnecessary because some
-//  // 'useful' mathops already |0 anyhow.
-//
-//  auto simplifyOps = [](Ref ast) {
-//    auto removeMultipleOrZero = [&ast] {
-//      bool rerun = true;
-//      while (rerun) {
-//        rerun = false;
-//        std::vector<int> stack;
-//        std::function<void (Ref)> process = [&stack, &rerun, &process, &ast](Ref node) {
-//          Ref type = node[0];
-//          if (type == BINARY && node[1] == OR) {
-//            if (node[2][0] == NUM && node[3][0] == NUM) {
-//              node[2][1]->setNumber(jsD2I(node[2][1]->getNumber()) | jsD2I(node[3][1]->getNumber()));
-//              stack.push_back(0);
-//              safeCopy(node, node[2]);
-//              return;
-//            }
-//            bool go = false;
-//            if (node[2][0] == NUM && node[2][1]->getNumber() == 0) {
-//              // canonicalize order
-//              Ref temp = node[3];
-//              node[3] = node[2];
-//              node[2] = temp;
-//              go = true;
-//            } else if (node[3][0] == NUM && node[3][1]->getNumber() == 0) {
-//              go = true;
-//            }
-//            if (!go) {
-//              stack.push_back(1);
-//              return;
-//            }
-//            // We might be able to remove this correction
-//            for (int i = stack.size()-1; i >= 0; i--) {
-//              if (stack[i] >= 1) {
-//                if (stack.back() < 2 && node[2][0] == CALL) break; // we can only remove multiple |0s on these
-//                if (stack.back() < 1 && (COERCION_REQUIRING_OPS.has(node[2][0]) ||
-//                                                 (node[2][0] == BINARY && COERCION_REQUIRING_BINARIES.has(node[2][1])))) break; // we can remove |0 or >>2
-//                // we will replace ourselves with the non-zero side. Recursively process that node.
-//                Ref result = node[2][0] == NUM && node[2][1]->getNumber() == 0 ? node[3] : node[2], other;
-//                // replace node in-place
-//                safeCopy(node, result);
-//                rerun = true;
-//                process(result);
-//                return;
-//              } else if (stack[i] == -1) {
-//                break; // Too bad, we can't
-//              }
-//            }
-//            stack.push_back(2); // From here on up, no need for this kind of correction, it's done at the top
-//                           // (Add this at the end, so it is only added if we did not remove it)
-//          } else if (type == BINARY && USEFUL_BINARY_OPS.has(node[1])) {
-//            stack.push_back(1);
-//          } else if ((type == BINARY && SAFE_BINARY_OPS.has(node[1])) || type == NUM || type == NAME) {
-//            stack.push_back(0); // This node is safe in that it does not interfere with this optimization
-//          } else if (type == UNARY_PREFIX && node[1] == B_NOT) {
-//            stack.push_back(1);
-//          } else {
-//            stack.push_back(-1); // This node is dangerous! Give up if you see this before you see '1'
-//          }
-//        };
-//
-//        traversePrePost(ast, process, [&stack](Ref node) {
-//          assert(!stack.empty());
-//          stack.pop_back();
-//        });
-//      }
-//    };
-//
-//    removeMultipleOrZero();
-//
-//    // & and heap-related optimizations
-//
-//    bool hasTempDoublePtr = false, rerunOrZeroPass = false;
-//
-//    traversePrePostConditional(ast, [](Ref node) {
-//      // Detect trees which should not
-//      // be simplified.
-//      if (node[0] == SUB && node[1][0] == NAME && isFunctionTable(node[1][1])) {
-//        return false; // do not traverse subchildren here, we should not collapse 55 & 126.
-//      }
-//      return true;
-//    }, [&hasTempDoublePtr, &rerunOrZeroPass](Ref node) {
-//      // Simplifications are done now so
-//      // that we simplify a node's operands before the node itself. This allows
-//      // optimizations to cascade.
-//      Ref type = node[0];
-//      if (type == NAME) {
-//        if (node[1] == TEMP_DOUBLE_PTR) hasTempDoublePtr = true;
-//      } else if (type == BINARY && node[1] == AND && node[3][0] == NUM) {
-//        if (node[2][0] == NUM) {
-//          safeCopy(node, makeNum(jsD2I(node[2][1]->getNumber()) & jsD2I(node[3][1]->getNumber())));
-//          return;
-//        }
-//        Ref input = node[2];
-//        double amount = node[3][1]->getNumber();
-//        if (input[0] == BINARY && input[1] == AND && input[3][0] == NUM) {
-//          // Collapse X & 255 & 1
-//          node[3][1]->setNumber(jsD2I(amount) & jsD2I(input[3][1]->getNumber()));
-//          node[2] = input[2];
-//        } else if (input[0] == SUB && input[1][0] == NAME) {
-//          // HEAP8[..] & 255 => HEAPU8[..]
-//          HeapInfo hi = parseHeap(input[1][1]->getCString());
-//          if (hi.valid) {
-//            if (isInteger32(amount) && amount == powl(2, hi.bits)-1) {
-//              if (!hi.unsign) {
-//                input[1][1]->setString(getHeapStr(hi.bits, true)); // make unsigned
-//              }
-//              // we cannot return HEAPU8 without a coercion, but at least we do HEAP8 & 255 => HEAPU8 | 0
-//              node[1]->setString(OR);
-//              node[3][1]->setNumber(0);
-//              return;
-//            }
-//          }
-//        } else if (input[0] == BINARY && input[1] == RSHIFT &&
-//                   input[2][0] == BINARY && input[2][1] == LSHIFT &&
-//                   input[2][3][0] == NUM && input[3][0] == NUM &&
-//                   input[2][3][1]->getInteger() == input[3][1]->getInteger() &&
-//                   (~(0xFFFFFFFFu >> input[3][1]->getInteger()) & jsD2I(amount)) == 0) {
-//            // x << 24 >> 24 & 255 => x & 255
-//            return safeCopy(node, make3(BINARY, AND, input[2][2], node[3]));
-//        }
-//      } else if (type == BINARY && node[1] == XOR) {
-//        // LLVM represents bitwise not as xor with -1. Translate it back to an actual bitwise not.
-//        if (node[3][0] == UNARY_PREFIX && node[3][1] == MINUS && node[3][2][0] == NUM &&
-//            node[3][2][1]->getNumber() == 1 &&
-//            !(node[2][0] == UNARY_PREFIX && node[2][1] == B_NOT)) { // avoid creating ~~~ which is confusing for asm given the role of ~~
-//          safeCopy(node, make2(UNARY_PREFIX, B_NOT, node[2]));
-//          return;
-//        }
-//      } else if (type       == BINARY && node[1]    == RSHIFT && node[3][0]    == NUM &&
-//                 node[2][0] == BINARY && node[2][1] == LSHIFT && node[2][3][0] == NUM &&
-//                 node[2][2][0] == SUB && node[2][2][1][0] == NAME) {
-//        // collapse HEAPU?8[..] << 24 >> 24 etc. into HEAP8[..] | 0
-//        double amount = node[3][1]->getNumber();
-//        if (amount == node[2][3][1]->getNumber()) {
-//          HeapInfo hi = parseHeap(node[2][2][1][1]->getCString());
-//          if (hi.valid && hi.bits == 32 - amount) {
-//            node[2][2][1][1]->setString(getHeapStr(hi.bits, false));
-//            node[1]->setString(OR);
-//            node[2] = node[2][2];
-//            node[3][1]->setNumber(0);
-//            rerunOrZeroPass = true;
-//            return;
-//          }
-//        }
-//      } else if (type == ASSIGN) {
-//        // optimizations for assigning into HEAP32 specifically
-//        if (node[1]->isBool(true) && node[2][0] == SUB && node[2][1][0] == NAME) {
-//          if (node[2][1][1] == HEAP32) {
-//            // HEAP32[..] = x | 0 does not need the | 0 (unless it is a mandatory |0 of a call)
-//            if (node[3][0] == BINARY && node[3][1] == OR) {
-//              if (node[3][2][0] == NUM && node[3][2][1]->getNumber() == 0 && node[3][3][0] != CALL) {
-//                node[3] = node[3][3];
-//              } else if (node[3][3][0] == NUM && node[3][3][1]->getNumber() == 0 && node[3][2][0] != CALL) {
-//                node[3] = node[3][2];
-//              }
-//            }
-//          } else if (node[2][1][1] == HEAP8) {
-//            // HEAP8[..] = x & 0xff does not need the & 0xff
-//            if (node[3][0] == BINARY && node[3][1] == AND && node[3][3][0] == NUM && node[3][3][1]->getNumber() == 0xff) {
-//              node[3] = node[3][2];
-//            }
-//          } else if (node[2][1][1] == HEAP16) {
-//            // HEAP16[..] = x & 0xffff does not need the & 0xffff
-//            if (node[3][0] == BINARY && node[3][1] == AND && node[3][3][0] == NUM && node[3][3][1]->getNumber() == 0xffff) {
-//              node[3] = node[3][2];
-//            }
-//          }
-//        }
-//        Ref value = node[3];
-//        if (value[0] == BINARY && value[1] == OR) {
-//          // canonicalize order of |0 to end
-//          if (value[2][0] == NUM && value[2][1]->getNumber() == 0) {
-//            Ref temp = value[2];
-//            value[2] = value[3];
-//            value[3] = temp;
-//          }
-//          // if a seq ends in an |0, remove an external |0
-//          // note that it is only safe to do this in assigns, like we are doing here (return (x, y|0); is not valid)
-//          if (value[2][0] == SEQ && value[2][2][0] == BINARY && USEFUL_BINARY_OPS.has(value[2][2][1])) {
-//            node[3] = value[2];
-//          }
-//        }
-//      } else if (type == BINARY && node[1] == RSHIFT && node[2][0] == NUM && node[3][0] == NUM) {
-//        // optimize num >> num, in asm we need this since we do not optimize shifts in asm.js
-//        node[0]->setString(NUM);
-//        node[1]->setNumber(jsD2I(node[2][1]->getNumber()) >> jsD2I(node[3][1]->getNumber()));
-//        node->setSize(2);
-//        return;
-//      } else if (type == BINARY && node[1] == PLUS) {
-//        // The most common mathop is addition, e.g. in getelementptr done repeatedly. We can join all of those,
-//        // by doing (num+num) ==> newnum.
-//        if (node[2][0] == NUM && node[3][0] == NUM) {
-//          node[2][1]->setNumber(jsD2I(node[2][1]->getNumber()) + jsD2I(node[3][1]->getNumber()));
-//          safeCopy(node, node[2]);
-//          return;
-//        }
-//      }
-//    });
-//
-//    if (rerunOrZeroPass) removeMultipleOrZero();
-//
-//    if (hasTempDoublePtr) {
-//      AsmData asmData(ast);
-//      traversePre(ast, [](Ref node) {
-//        Ref type = node[0];
-//        if (type == ASSIGN) {
-//          if (node[1]->isBool(true) && node[2][0] == SUB && node[2][1][0] == NAME && node[2][1][1] == HEAP32) {
-//            // remove bitcasts that are now obviously pointless, e.g.
-//            // HEAP32[$45 >> 2] = HEAPF32[tempDoublePtr >> 2] = ($14 < $28 ? $14 : $28) - $42, HEAP32[tempDoublePtr >> 2] | 0;
-//            Ref value = node[3];
-//            if (value[0] == SEQ && value[1][0] == ASSIGN && value[1][2][0] == SUB && value[1][2][1][0] == NAME && value[1][2][1][1] == HEAPF32 &&
-//                value[1][2][2][0] == BINARY && value[1][2][2][2][0] == NAME && value[1][2][2][2][1] == TEMP_DOUBLE_PTR) {
-//              // transform to HEAPF32[$45 >> 2] = ($14 < $28 ? $14 : $28) - $42;
-//              node[2][1][1]->setString(HEAPF32);
-//              node[3] = value[1][3];
-//            }
-//          }
-//        } else if (type == SEQ) {
-//          // (HEAP32[tempDoublePtr >> 2] = HEAP32[$37 >> 2], +HEAPF32[tempDoublePtr >> 2])
-//          //   ==>
-//          // +HEAPF32[$37 >> 2]
-//          if (node[0] == SEQ && node[1][0] == ASSIGN && node[1][2][0] == SUB && node[1][2][1][0] == NAME &&
-//              (node[1][2][1][1] == HEAP32 || node[1][2][1][1] == HEAPF32) &&
-//              node[1][2][2][0] == BINARY && node[1][2][2][2][0] == NAME && node[1][2][2][2][1] == TEMP_DOUBLE_PTR &&
-//              node[1][3][0] == SUB && node[1][3][1][0] == NAME && (node[1][3][1][1] == HEAP32 || node[1][3][1][1] == HEAPF32) &&
-//              node[2][0] != SEQ) { // avoid (x, y, z) which can be used for tempDoublePtr on doubles for alignment fixes
-//            if (node[1][2][1][1] == HEAP32) {
-//              node[1][3][1][1]->setString(HEAPF32);
-//              safeCopy(node, makeAsmCoercion(node[1][3], detectType(node[2])));
-//              return;
-//            } else {
-//              node[1][3][1][1]->setString(HEAP32);
-//              safeCopy(node, make3(BINARY, OR, node[1][3], makeNum(0)));
-//              return;
-//            }
-//          }
-//        }
-//      });
-//
-//      // finally, wipe out remaining ones by finding cases where all assignments to X are bitcasts, and all uses are writes to
-//      // the other heap type, then eliminate the bitcast
-//      struct BitcastData {
-//        int define_HEAP32, define_HEAPF32, use_HEAP32, use_HEAPF32, namings;
-//        bool ok;
-//        std::vector<Ref> defines, uses;
-//
-//        BitcastData() : define_HEAP32(0), define_HEAPF32(0), use_HEAP32(0), use_HEAPF32(0), namings(0), ok(false) {}
-//      };
-//      std::unordered_map<IString, BitcastData> bitcastVars;
-//      traversePre(ast, [&bitcastVars](Ref node) {
-//        if (node[0] == ASSIGN && node[1]->isBool(true) && node[2][0] == NAME) {
-//          Ref value = node[3];
-//          if (value[0] == SEQ && value[1][0] == ASSIGN && value[1][2][0] == SUB && value[1][2][1][0] == NAME &&
-//              (value[1][2][1][1] == HEAP32 || value[1][2][1][1] == HEAPF32) &&
-//              value[1][2][2][0] == BINARY && value[1][2][2][2][0] == NAME && value[1][2][2][2][1] == TEMP_DOUBLE_PTR) {
-//            IString name = node[2][1]->getIString();
-//            IString heap = value[1][2][1][1]->getIString();
-//            if (heap == HEAP32) {
-//              bitcastVars[name].define_HEAP32++;
-//            } else {
-//              assert(heap == HEAPF32);
-//              bitcastVars[name].define_HEAPF32++;
-//            }
-//            bitcastVars[name].defines.push_back(node);
-//            bitcastVars[name].ok = true;
-//          }
-//        }
-//      });
-//      traversePre(ast, [&bitcastVars](Ref node) {
-//        Ref type = node[0];
-//        if (type == NAME && bitcastVars[node[1]->getCString()].ok) {
-//          bitcastVars[node[1]->getCString()].namings++;
-//        } else if (type == ASSIGN && node[1]->isBool(true)) {
-//          Ref value = node[3];
-//          if (value[0] == NAME) {
-//            IString name = value[1]->getIString();
-//            if (bitcastVars[name].ok) {
-//              Ref target = node[2];
-//              if (target[0] == SUB && target[1][0] == NAME && (target[1][1] == HEAP32 || target[1][1] == HEAPF32)) {
-//                if (target[1][1] == HEAP32) {
-//                  bitcastVars[name].use_HEAP32++;
-//                } else {
-//                  bitcastVars[name].use_HEAPF32++;
-//                }
-//                bitcastVars[name].uses.push_back(node);
-//              }
-//            }
-//          }
-//        }
-//      });
-//      for (auto iter : bitcastVars) {
-//        const IString& v = iter.first;
-//        BitcastData& info = iter.second;
-//        // good variables define only one type, use only one type, have definitions and uses, and define as a different type than they use
-//        if (info.define_HEAP32*info.define_HEAPF32 == 0 && info.use_HEAP32*info.use_HEAPF32 == 0 &&
-//            info.define_HEAP32+info.define_HEAPF32 > 0  && info.use_HEAP32+info.use_HEAPF32 > 0 &&
-//            info.define_HEAP32*info.use_HEAP32 == 0 && info.define_HEAPF32*info.use_HEAPF32 == 0 &&
-//            asmData.isLocal(v.c_str()) && info.namings == info.define_HEAP32+info.define_HEAPF32+info.use_HEAP32+info.use_HEAPF32) {
-//          IString& correct = info.use_HEAP32 ? HEAPF32 : HEAP32;
-//          for (auto define : info.defines) {
-//            define[3] = define[3][1][3];
-//            if (correct == HEAP32) {
-//              define[3] = make3(BINARY, OR, define[3], makeNum(0));
-//            } else {
-//              assert(correct == HEAPF32);
-//              define[3] = makeAsmCoercion(define[3], preciseF32 ? ASM_FLOAT : ASM_DOUBLE);
-//            }
-//            // do we want a simplifybitops on the new values here?
-//          }
-//          for (auto use : info.uses) {
-//            use[2][1][1]->setString(correct.c_str());
-//          }
-//          AsmType correctType;
-//          switch(asmData.getType(v.c_str())) {
-//            case ASM_INT: correctType = preciseF32 ? ASM_FLOAT : ASM_DOUBLE; break;
-//            case ASM_FLOAT: case ASM_DOUBLE: correctType = ASM_INT; break;
-//            default: assert(0);
-//          }
-//          asmData.setType(v.c_str(), correctType);
-//        }
-//      }
-//      asmData.denormalize();
-//    }
-//  };
-//
-//  std::function<bool (Ref)> emitsBoolean = [&emitsBoolean](Ref node) {
-//    Ref type = node[0];
-//    if (type == NUM) {
-//      return node[1]->getNumber() == 0 || node[1]->getNumber() == 1;
-//    }
-//    if (type == BINARY) return COMPARE_OPS.has(node[1]);
-//    if (type == UNARY_PREFIX) return node[1] == L_NOT;
-//    if (type == CONDITIONAL) return emitsBoolean(node[2]) && emitsBoolean(node[3]);
-//    return false;
-//  };
-//
-//  //   expensive | expensive can be turned into expensive ? 1 : expensive, and
-//  //   expensive | cheap     can be turned into cheap     ? 1 : expensive,
-//  // so that we can avoid the expensive computation, if it has no side effects.
-//  auto conditionalize = [&emitsBoolean](Ref ast) {
-//    traversePre(ast, [&emitsBoolean](Ref node) {
-//        const int MIN_COST = 7;
-//        if (node[0] == BINARY && (node[1] == OR || node[1] == AND) && node[3][0] != NUM && node[2][0] != NUM) {
-//        // logical operator on two non-numerical values
-//        Ref left = node[2];
-//        Ref right = node[3];
-//        if (!emitsBoolean(left) || !emitsBoolean(right)) return;
-//        bool leftEffects = hasSideEffects(left);
-//        bool rightEffects = hasSideEffects(right);
-//        if (leftEffects && rightEffects) return; // both must execute
-//        // canonicalize with side effects, if any, happening on the left
-//        if (rightEffects) {
-//          if (measureCost(left) < MIN_COST) return; // avoidable code is too cheap
-//          Ref temp = left;
-//          left = right;
-//          right = temp;
-//        } else if (leftEffects) {
-//          if (measureCost(right) < MIN_COST) return; // avoidable code is too cheap
-//        } else {
-//          // no side effects, reorder based on cost estimation
-//          int leftCost = measureCost(left);
-//          int rightCost = measureCost(right);
-//          if (std::max(leftCost, rightCost) < MIN_COST) return; // avoidable code is too cheap
-//          // canonicalize with expensive code on the right
-//          if (leftCost > rightCost) {
-//            Ref temp = left;
-//            left = right;
-//            right = temp;
-//          }
-//        }
-//        // worth it, perform conditionalization
-//        Ref ret;
-//        if (node[1] == OR) {
-//          ret = make3(CONDITIONAL, left, makeNum(1), right);
-//        } else { // &
-//          ret = make3(CONDITIONAL, left, right, makeNum(0));
-//        }
-//        if (left[0] == UNARY_PREFIX && left[1] == L_NOT) {
-//          ret[1] = flipCondition(left);
-//          Ref temp = ret[2];
-//          ret[2] = ret[3];
-//          ret[3] = temp;
-//        }
-//        safeCopy(node, ret);
-//        return;
-//      }
-//    });
-//  };
-//
-//  auto simplifyNotZero = [](Ref ast) {
-//    traversePre(ast, [](Ref node) {
-//      if (BOOLEAN_RECEIVERS.has(node[0])) {
-//        auto boolean = node[1];
-//        if (boolean[0] == BINARY && boolean[1] == NE && boolean[3][0] == NUM && boolean[3][1]->getNumber() == 0) {
-//          node[1] = boolean[2];
-//        }
-//      }
-//    });
-//  };
-//
-//  traverseFunctions(ast, [&](Ref func) {
-//    simplifyIntegerConversions(func);
-//    simplifyOps(func);
-//    traversePre(func, [](Ref node) {
-//      Ref ret = simplifyNotCompsDirect(node);
-//      if (ret.get() != node.get()) { // if we received a different pointer in return, then we need to copy the new value
-//        safeCopy(node, ret);
-//      }
-//    });
-//    conditionalize(func);
-//    simplifyNotZero(func);
-//  });
-//}
+pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
+    // Simplify common expressions used to perform integer conversion operations
+    // in cases where no conversion is needed.
+    fn simplifyIntegerConversions(ast: &mut AstValue) {
+        traversePreMut(ast, |node: &mut AstValue| {
+            match *node {
+                Binary(is!(">>"), mast!(Binary(is!("<<"), Binary(is!("&"), _, Num(mask)), Num(s1))), mast!(Num(s2))) if s1 == s2 => {
+                    let shifts = s1;
+                    if !(isInteger32(mask) && isInteger32(shifts) && ((jsD2I(mask) << jsD2I(shifts)) >> jsD2I(shifts)) == jsD2I(mask)) { return }
+                    // Transform (x&A)<<B>>B to X&A
+                    // RSTODO: lexical borrows strike again - we should be able to bind innernode in the match itself
+                    let innerNode = {
+                        let (_, inner1, _) = node.getMutBinary();
+                        let (_, inner2, _) = inner1.getMutBinary();
+                        mem::replace(inner2, makeEmpty())
+                    };
+                    *node = *innerNode;
+                },
+                Binary(ref op, ref mut node1, ref mut node2) if BITWISE.contains(op) => {
+                    fn simplify(subNode: &mut AstValue) {
+                        if let Binary(is!("&"), mast!(Binary(_, _, _)), mast!(Num(1f64))) = *subNode {
+                            // Rewrite (X < Y) & 1 to X < Y , when it is going into a bitwise operator. We could
+                            // remove even more (just replace &1 with |0, then subsequent passes could remove the |0)
+                            // but v8 issue #2513 means the code would then run very slowly in chrome.
+                            // RSTODO: more lexical borrow issue
+                            let input = {
+                                let (_, input, _) = subNode.getMutBinary();
+                                {
+                                let (op, _, _) = input.getBinary();
+                                if !COMPARE_OPS.contains(op) { return }
+                                }
+                                mem::replace(input, makeEmpty())
+                            };
+                            *subNode = *input;
+                        }
+                    }
+                    simplify(node1);
+                    simplify(node2);
+                },
+                _ => (),
+            }
+        })
+    }
+
+    // When there is a bunch of math like (((8+5)|0)+12)|0, only the external |0 is needed, one correction is enough.
+    // At each node, ((X|0)+Y)|0 can be transformed into (X+Y): The inner corrections are not needed
+    // TODO: Is the same is true for 0xff, 0xffff?
+    // Likewise, if we have |0 inside a block that will be >>'d, then the |0 is unnecessary because some
+    // 'useful' mathops already |0 anyhow.
+
+    fn simplifyOps(ast: &mut AstValue, asmFloatZero: &mut Option<IString>, preciseF32: bool) {
+        fn removeMultipleOrZero(ast: &mut AstValue) {
+            let mut rerun = true;
+            while rerun {
+                rerun = false;
+                let stack = UnsafeCell::new(vec![]);
+                let process = |node: &mut AstValue| {
+                    processInner(node, &mut rerun, unsafe { &mut *stack.get() })
+                };
+                fn processInner(node: &mut AstValue, rerun: &mut bool, stack: &mut Vec<isize>) {
+                    // RSTODO: the only reason the node unsafecell stuff is here is because of lexical
+                    // lifetimes not understanding that we can assign to node at the end of match arms
+                    match *node {
+                        Binary(is!("|"), mast!(Num(nleft)), mast!(Num(nright))) => {
+                            stack.push(0);
+                            *node = Num((jsD2I(nleft) | jsD2I(nright)) as f64)
+                        },
+                        Binary(is!("|"), _, _) => {
+                            {
+                            let (_, left, right) = node.getMutBinary();
+                            let go = if let Num(0f64) = **left {
+                                // canonicalize order
+                                mem::swap(left, right);
+                                true
+                            } else if let Num(0f64) = **right {
+                                true
+                            } else {
+                                false
+                            };
+                            if !go {
+                                stack.push(1);
+                                return
+                            }
+                            }
+                            // We might be able to remove this correction
+                            for i in (0..stack.len()).rev() {
+                                let stackval = stack[i];
+                                if stackval >= 1 {
+                                    let newnode;
+                                    {
+                                    let (_, left, right) = node.getMutBinary();
+                                    let stackbackval = *stack.last().unwrap();
+                                    if stackbackval < 2 && left.isCall() { break } // we can only remove multiple |0s on these
+                                    if stackbackval < 1 && match **left { Sub(_, _) | UnaryPrefix(_, _) => /* ops that in asm must be coerced right away */ true, Binary(ref op, _, _) if COERCION_REQUIRING_BINARIES.contains(op) => true, _ => false } { break } // we can remove |0 or >>2
+                                    // we will replace ourselves with the non-zero side. Recursively process that node.
+                                    newnode = mem::replace(if let Num(0f64) = **left { right } else { left }, makeEmpty())
+                                    }
+                                    *node = *newnode;
+                                    *rerun = true;
+                                    processInner(node, rerun, stack);
+                                    return
+                                } else if stackval == -1 {
+                                    break // Too bad, we can't
+                                }
+                            }
+                            stack.push(2) // From here on up, no need for this kind of correction, it's done at the top
+                                          // (Add this at the end, so it is only added if we did not remove it)
+                        },
+                        Binary(ref op, _, _) if USEFUL_BINARY_OPS.contains(op) => {
+                            stack.push(1)
+                        },
+                        // RSTODO: should be connected to num and name, see https://github.com/rust-lang/rfcs/pull/99
+                        Binary(ref op, _, _) if SAFE_BINARY_OPS.contains(op) => {
+                            stack.push(0) // This node is safe in that it does not interfere with this optimization
+                        },
+                        Num(_) |
+                        Name(_) => {
+                            stack.push(0) // This node is safe in that it does not interfere with this optimization
+                        },
+                        UnaryPrefix(is!("~"), _) => {
+                            stack.push(1)
+                        },
+                        _ => {
+                            stack.push(-1) // This node is dangerous! Give up if you see this before you see '1'
+                        },
+                    }
+                };
+
+                traversePrePostMut(ast, process, |_| {
+                    let stack = unsafe { &mut *stack.get() };
+                    assert!(!stack.is_empty());
+                    stack.pop().unwrap();
+                })
+            }
+        }
+
+        removeMultipleOrZero(ast);
+
+        // & and heap-related optimizations
+
+        let mut hasTempDoublePtr = false;
+        let mut rerunOrZeroPass = false;
+
+        traversePrePostConditionalMut(ast, |node: &mut AstValue| {
+            // Detect trees which should not
+            // be simplified.
+            match *node {
+                // do not traverse subchildren here, we should not collapse 55 & 126.
+                Sub(mast!(Name(ref name)), _) if isFunctionTable(&name) => false,
+                _ => true,
+            }
+        }, |node: &mut AstValue| {
+            // Simplifications are done now so
+            // that we simplify a node's operands before the node itself. This allows
+            // optimizations to cascade.
+            match *node {
+                Name(is!("tempDoublePtr")) => hasTempDoublePtr = true,
+                Binary(is!("&"), mast!(Num(n1)), mast!(Num(n2))) => {
+                    *node = *makeNum((jsD2I(n1) & jsD2I(n2)) as f64)
+                },
+                Binary(is!("&"), ref mut input @ mast!(Binary(is!("&"), _, Num(_))), mast!(Num(ref mut amount))) => {
+                    // Collapse X & 255 & 1
+                    let newinput = {
+                        let (_, inputleft, inputright) = input.getMutBinary();
+                        let (&inputamount,) = inputright.getNum();
+                        *amount = (jsD2I(*amount) & jsD2I(inputamount)) as f64;
+                        mem::replace(inputleft, makeEmpty())
+                    };
+                    *input = newinput
+                },
+                Binary(ref mut op @ is!("&"), mast!(Sub(Name(ref mut name), _)), mast!(Num(ref mut amount))) => {
+                    // HEAP8[..] & 255 => HEAPU8[..]
+                    if let Some(hi) = parseHeap(&name) {
+                        if isInteger32(*amount) && *amount == f64::powf(2.0, hi.bits as f64) - 1f64 {
+                            if !hi.unsign {
+                                *name = getHeapStr(hi.bits, true) // make unsigned
+                            }
+                            // we cannot return HEAPU8 without a coercion, but at least we do HEAP8 & 255 => HEAPU8 | 0
+                            *op = is!("|");
+                            *amount = 0f64
+                        }
+                    }
+                },
+                Binary(is!("&"), mast!(Binary(is!(">>"), Binary(is!("<<"), _, Num(n1)), Num(n2))), mast!(Num(amount)))
+                        if f64toi32(n1) == f64toi32(n2) && (!(0xFFFFFFFFu32 as i32 >> f64toi32(n2))) & jsD2I(amount) == 0 => {
+                    // x << 24 >> 24 & 255 => x & 255
+                    // RSTODO: lexical lifetime inconvenience
+                    let (_, input, _) = node.getMutBinary();
+                    let newinput = {
+                        let (_, inputinner, _) = input.getMutBinary();
+                        let (_, newinput, _) = inputinner.getMutBinary();
+                        mem::replace(newinput, makeEmpty())
+                    };
+                    *input = newinput
+                },
+                Binary(is!("^"), _, mast!(UnaryPrefix(is!("-"), Num(1f64)))) => {
+                    // RSTODO: more lexical lifetime problems
+                    // LLVM represents bitwise not as xor with -1. Translate it back to an actual bitwise not.
+                    let maybeval = {
+                        let (_, val, _) = node.getMutBinary();
+                        // avoid creating ~~~ which is confusing for asm given the role of ~~
+                        if let UnaryPrefix(is!("~"), _) = **val { None } else { Some(mem::replace(val, makeEmpty())) }
+                    };
+                    if let Some(val) = maybeval {
+                        *node = UnaryPrefix(is!("~"), val)
+                    }
+                },
+                Binary(ref mut op @ is!(">>"), ref mut inner @ mast!(Binary(is!("<<"), Sub(Name(_), _), Num(_))), mast!(Num(ref mut amount))) => {
+                    // collapse HEAPU?8[..] << 24 >> 24 etc. into HEAP8[..] | 0
+                    // RSTODO: lexical lifetimes
+                    let newinner = {
+                        let mut replaceinner = false;
+                        let (_, innersub, innernum) = inner.getMutBinary();
+                        let (&mut inneramount,) = innernum.getMutNum();
+                        if *amount == inneramount {
+                            let (subleft, _) = innersub.getMutSub();
+                            let (subname,) = subleft.getMutName();
+                            if let Some(hi) = parseHeap(subname) {
+                                if hi.bits == 32 - f64tou32(*amount) {
+                                    *subname = getHeapStr(hi.bits, false);
+                                    *op = is!("|");
+                                    replaceinner = true;
+                                    *amount = 0f64;
+                                    rerunOrZeroPass = true
+                                }
+                            }
+                        }
+                        if replaceinner { Some(mem::replace(innersub, makeEmpty())) } else { None }
+                    };
+                    if let Some(newinner) = newinner {
+                        *inner = newinner
+                    }
+                },
+                Assign(b, ref mut target, ref mut value) => {
+                    // optimizations for assigning into HEAP32 specifically
+                    assert!(b);
+                    if let Sub(mast!(Name(ref name)), _) = **target {
+                        match *name {
+                            is!("HEAP32") => {
+                                // HEAP32[..] = x | 0 does not need the | 0 (unless it is a mandatory |0 of a call)
+                                let maybenewvalue = match **value {
+                                    Binary(is!("|"), mast!(Num(0f64)), ref mut newvalue) |
+                                    Binary(is!("|"), ref mut newvalue, mast!(Num(0f64))) if
+                                        !newvalue.isCall() => {
+                                        Some(mem::replace(newvalue, makeEmpty()))
+                                    },
+                                    _ => None,
+                                };
+                                if let Some(newvalue) = maybenewvalue {
+                                    *value = newvalue
+                                }
+                            },
+                            is!("HEAP8") => {
+                                // HEAP8[..] = x & 0xff does not need the & 0xff
+                                // RSTODO: lexical lifetimes
+                                if let Binary(is!("&"), _, mast!(Num(255f64))) = **value {
+                                    let newvalue = {
+                                        let (_, newvalue, _) = value.getMutBinary();
+                                        mem::replace(newvalue, makeEmpty())
+                                    };
+                                    *value = newvalue
+                                }
+                            },
+                            is!("HEAP16") => {
+                                // HEAP16[..] = x & 0xffff does not need the & 0xffff
+                                // RSTODO: lexical lifetimes
+                                if let Binary(is!("&"), _, mast!(Num(65535f64))) = **value {
+                                    let newvalue = {
+                                        let (_, newvalue, _) = value.getMutBinary();
+                                        mem::replace(newvalue, makeEmpty())
+                                    };
+                                    *value = newvalue
+                                }
+                            },
+                            _ => (),
+                        }
+                    }
+                    // RSTODO: https://github.com/rust-lang/rust/issues/30104
+                    use std::ops::DerefMut;
+                    let mut maybenewvalue = None;
+                    if let Binary(is!("|"), ref mut left, ref mut right) = *value.deref_mut() {
+                        // canonicalize order of |0 to end
+                        if let Num(0f64) = **left {
+                            mem::swap(left, right)
+                        }
+                        // if a seq ends in an |0, remove an external |0
+                        // note that it is only safe to do this in assigns, like we are doing here (return (x, y|0); is not valid)
+                        let shouldswap = if let Seq(_, mast!(Binary(ref op, _, _))) = **left { USEFUL_BINARY_OPS.contains(op) } else { false };
+                        if shouldswap {
+                            maybenewvalue = Some(mem::replace(left, makeEmpty()))
+                        }
+                    }
+                    if let Some(newvalue) = maybenewvalue {
+                        mem::replace(value, newvalue);
+                    }
+                },
+                Binary(is!(">>"), mast!(Num(n1)), mast!(Num(n2))) => {
+                    // optimize num >> num, in asm we need this since we do not optimize shifts in asm.js
+                    *node = Num((jsD2I(n1) >> jsD2I(n2)) as f64)
+                },
+                Binary(is!("+"), mast!(Num(n1)), mast!(Num(n2))) => {
+                    // The most common mathop is addition, e.g. in getelementptr done repeatedly. We can join all of those,
+                    // by doing (num+num) ==> newnum.
+                    *node = Num((jsD2I(n1) + jsD2I(n2)) as f64)
+                },
+                _ => (),
+            }
+        });
+
+        if rerunOrZeroPass { removeMultipleOrZero(ast) }
+
+        if !hasTempDoublePtr { return }
+        let mut asmData = AsmData::new(ast);
+        {
+        let asmDataLocals = &asmData.locals;
+        traversePreMut(asmData.func, |node: &mut AstValue| {
+            match *node {
+                Assign(b, mast!(Sub(Name(ref mut heapname @ is!("HEAP32")), _)), ref mut value) => {
+                    assert!(b);
+                    // remove bitcasts that are now obviously pointless, e.g.
+                    // HEAP32[$45 >> 2] = HEAPF32[tempDoublePtr >> 2] = ($14 < $28 ? $14 : $28) - $42, HEAP32[tempDoublePtr >> 2] | 0;
+                    // RSTODO: lexical lifetimes
+                    let mut maybenewvalue = None;
+                    if let Seq(mast!(Assign(_, Sub(Name(is!("HEAPF32")), Binary(_, Name(is!("tempDoublePtr")), _)), ref mut newvalue)), _) = **value {
+                        // transform to HEAPF32[$45 >> 2] = ($14 < $28 ? $14 : $28) - $42;
+                        *heapname = is!("HEAPF32");
+                        maybenewvalue = Some(mem::replace(newvalue, makeEmpty()))
+                    }
+                    if let Some(newvalue) = maybenewvalue {
+                        mem::replace(value, newvalue);
+                    }
+                },
+                Seq(_, _) => {
+                    // (HEAP32[tempDoublePtr >> 2] = HEAP32[$37 >> 2], +HEAPF32[tempDoublePtr >> 2])
+                    //   ==>
+                    // +HEAPF32[$37 >> 2]
+                    // RSTODO: lexical lifetimes...maybe
+                    use std::ops::DerefMut;
+                    let maybenewpart;
+                    {
+                    // RSTODO: https://github.com/rust-lang/rust/issues/30104
+                    let mut node = &mut *node;
+                    maybenewpart = match *node.deref_mut() {
+                        Seq(mast!(Assign(b, Sub(Name(ref mut n1), Binary(_, Name(is!("tempDoublePtr")), _)), ref mut newpart @ Sub(Name(_), _))), ref mut nextseq) if
+                                (*n1 == is!("HEAP32") || *n1 == is!("HEAPF32")) &&
+                                !nextseq.isSeq() => { // avoid (x, y, z) which can be used for tempDoublePtr on doubles for alignment fixes
+                            // RSTODO: lexical lifetimes strike again - this condition should be part of the match above (so we'd never return
+                            // None from this match arm, but you can't have submatches of an @ match
+                            let n2 = {
+                                let (left, _) = newpart.getSub();
+                                let (name,) = left.getName();
+                                name.clone()
+                            };
+                            if n2 == is!("HEAP32") || n2 == is!("HEAPF32") {
+                                assert!(b);
+                                // RSTODO: valid assertion?
+                                assert!(*n1 == n2);
+                                Some((n1.clone(), mem::replace(newpart, makeEmpty())))
+                            } else {
+                                None
+                            }
+                        },
+                        _ => None,
+                    };
+                    }
+                    match maybenewpart {
+                        Some((is!("HEAP32"), mut newpart)) => {
+                            {
+                                let (left, _) = newpart.getMutSub();
+                                let (name,) = left.getMutName();
+                                *name = is!("HEAPF32")
+                            }
+                            let asmType = {
+                                let (_, right) = node.getSeq();
+                                detectType(right, Some(asmDataLocals), asmFloatZero, false).unwrap()
+                            };
+                            *node = *makeAsmCoercion(newpart, asmType)
+
+                        },
+                        Some((is!("HEAPF32"), mut newpart)) => {
+                            {
+                                let (left, _) = newpart.getMutSub();
+                                let (name,) = left.getMutName();
+                                *name = is!("HEAP32")
+                            }
+                            *node = *an!(Binary(is!("|"), newpart, makeNum(0f64)))
+                        },
+                        Some(_) => panic!(),
+                        None => (),
+                    }
+                },
+                _ => (),
+            }
+        });
+        }
+
+        // finally, wipe out remaining ones by finding cases where all assignments to X are bitcasts, and all uses are writes to
+        // the other heap type, then eliminate the bitcast
+        struct BitcastData {
+            // RSTODO: could any of the usizes be bools?
+            define_HEAP32: usize,
+            define_HEAPF32: usize,
+            use_HEAP32: usize,
+            use_HEAPF32: usize,
+            namings: usize,
+            defines: Vec<*mut AstValue>,
+            uses: Vec<*mut AstValue>,
+        }
+        let mut bitcastVars = HashMap::<IString, BitcastData>::new();
+        traversePreMut(asmData.func, |node: &mut AstValue| {
+            let nodeptr = node as *mut _;
+            match *node {
+                Assign(b1, mast!(Name(ref name)), mast!(Seq(Assign(b2, Sub(Name(ref heap), Binary(_, Name(is!("tempDoublePtr")), _)), _), _))) if
+                        *heap == is!("HEAP32") || *heap == is!("HEAPF32") => {
+                    assert!(b1 && b2);
+                    let entry = bitcastVars.entry(name.clone()).or_insert(BitcastData {
+                        define_HEAP32: 0,
+                        define_HEAPF32: 0,
+                        use_HEAP32: 0,
+                        use_HEAPF32: 0,
+                        namings: 0,
+                        defines: vec![],
+                        uses: vec![],
+                    });
+                    if *heap == is!("HEAP32") {
+                        entry.define_HEAP32 += 1
+                    } else {
+                        assert!(*heap == is!("HEAPF32"));
+                        entry.define_HEAPF32 += 1
+                    }
+                    entry.defines.push(nodeptr)
+                },
+                _ => (),
+            }
+        });
+        traversePreMut(asmData.func, |node: &mut AstValue| {
+            let nodeptr = node as *mut _;
+            match *node {
+                Name(ref name) => {
+                    if let Some(val) = bitcastVars.get_mut(name) { val.namings += 1 }
+                },
+                Assign(b, mast!(Sub(Name(ref heap), _)), mast!(Name(ref name))) if
+                        *heap == is!("HEAP32") || *heap == is!("HEAPF32") => {
+                    assert!(b);
+                    if let Some(val) = bitcastVars.get_mut(name) {
+                        match *heap {
+                            is!("HEAP32") => val.use_HEAP32 += 1,
+                            is!("HEAPF32") => val.use_HEAPF32 += 1,
+                            _ => panic!(),
+                        }
+                        val.uses.push(nodeptr)
+                    }
+                },
+                _ => (),
+            }
+        });
+        for (v, info) in bitcastVars.into_iter() {
+            // good variables define only one type, use only one type, have definitions and uses, and define as a different type than they use
+            let goodvar = info.define_HEAP32*info.define_HEAPF32 == 0 && info.use_HEAP32*info.use_HEAPF32 == 0 &&
+                          info.define_HEAP32+info.define_HEAPF32 > 0  && info.use_HEAP32+info.use_HEAPF32 > 0 &&
+                          info.define_HEAP32*info.use_HEAP32 == 0 && info.define_HEAPF32*info.use_HEAPF32 == 0 &&
+                          asmData.isLocal(&v) && info.namings == info.define_HEAP32+info.define_HEAPF32+info.use_HEAP32+info.use_HEAPF32;
+            if !goodvar { continue }
+            let correct = if info.use_HEAP32 > 0 { is!("HEAPF32") } else { is!("HEAP32") };
+            for define in info.defines.into_iter() {
+                // RSTODO: this could theoretically be UB - the compiler could conclude that nothing has access to asmData and do some
+                // optimisation where it figures it can do the denormalize below early, or something equally strange. Search rust
+                // memory model and see also doEliminate where there are similar issues
+                let define = unsafe { &mut *define };
+                let (_, _, defineval) = define.getMutAssign();
+                let definepart = {
+                    let (left, _) = defineval.getMutSeq();
+                    let (_, _, definepart) = left.getMutAssign();
+                    mem::replace(definepart, makeEmpty())
+                };
+                let newdefineval = match correct {
+                    is!("HEAP32") => an!(Binary(is!("|"), definepart, makeNum(0f64))),
+                    is!("HEAPF32") => makeAsmCoercion(definepart, if preciseF32 { AsmType::AsmFloat } else { AsmType::AsmDouble }),
+                    _ => panic!(),
+                };
+                *defineval = newdefineval
+                // do we want a simplifybitops on the new values here?
+            }
+            for use_ in info.uses.into_iter() {
+                // RSTODO: also potentially UB, see above
+                let use_ = unsafe { &mut *use_ };
+                let (_, left, _) = use_.getMutAssign();
+                let (left, _) = left.getMutSub();
+                let (name,) = left.getMutName();
+                *name = correct.clone()
+            }
+            let correctType = match asmData.getType(&v).unwrap() {
+                AsmType::AsmInt => if preciseF32 { AsmType::AsmFloat } else { AsmType::AsmDouble },
+                AsmType::AsmFloat |
+                AsmType::AsmDouble => AsmType::AsmInt,
+                _ => panic!(),
+            };
+            asmData.setType(v, correctType)
+        }
+        asmData.denormalize()
+    }
+
+    fn emitsBoolean(node: &AstValue) -> bool {
+        match *node {
+            Num(n) => n == 0f64 || n == 1f64,
+            Binary(ref op, _, _) => COMPARE_OPS.contains(op),
+            UnaryPrefix(ref op, _) => *op == is!("!"),
+            Conditional(_, ref iftrue, ref iffalse) => emitsBoolean(iftrue) && emitsBoolean(iffalse),
+            _ => false,
+        }
+    }
+
+    //   expensive | expensive can be turned into expensive ? 1 : expensive, and
+    //   expensive | cheap     can be turned into cheap     ? 1 : expensive,
+    // so that we can avoid the expensive computation, if it has no side effects.
+    fn conditionalize(ast: &mut AstValue, asmFloatZero: &mut Option<IString>) {
+        traversePreMut(ast, |node: &mut AstValue| {
+            {
+            const MIN_COST: isize = 7;
+            let (_, left, right) = match *node {
+                Binary(ref op, ref mut left, ref mut right)
+                    if (*op == is!("|") || *op == is!("&")) && !left.isNum() && !right.isNum() => (op, left, right),
+                _ => return,
+            };
+            // logical operator on two non-numerical values
+            if !emitsBoolean(left) || !emitsBoolean(right) { return }
+            let leftEffects = hasSideEffects(left);
+            let rightEffects = hasSideEffects(right);
+            if leftEffects && rightEffects { return }
+            // canonicalize with side effects, if any, happening on the left
+            if rightEffects {
+              if measureCost(left) < MIN_COST { return } // avoidable code is too cheap
+              mem::swap(left, right)
+            } else if leftEffects {
+              if measureCost(right) < MIN_COST { return } // avoidable code is too cheap
+            } else {
+              // no side effects, reorder based on cost estimation
+              let leftCost = measureCost(left);
+              let rightCost = measureCost(right);
+              if cmp::max(leftCost, rightCost) < MIN_COST { return } // avoidable code is too cheap
+              if leftCost > rightCost {
+                  mem::swap(left, right)
+              }
+            }
+            // worth it, perform conditionalization
+            }
+            let (op, left, right) = mem::replace(node, *makeEmpty()).intoBinary();
+            let mut ret = if op == is!("|") {
+                an!(Conditional(left, makeNum(1f64), right))
+            } else { // &
+                an!(Conditional(left, right, makeNum(0f64)))
+            };
+            // RSTODO: https://github.com/rust-lang/rust/issues/30104
+            use std::ops::DerefMut;
+            if let Conditional(ref mut cond @ mast!(UnaryPrefix(is!("!"), _)), ref mut iftrue, ref mut iffalse) = *ret.deref_mut() {
+                flipCondition(cond, asmFloatZero);
+                mem::swap(iftrue, iffalse)
+            }
+            mem::replace(node, *ret);
+        })
+    }
+
+    fn simplifyNotZero(ast: &mut AstValue) {
+        traversePreMut(ast, |node: &mut AstValue| {
+            match *node {
+                If(ref mut boolean, _, _) |
+                Do(ref mut boolean, _) |
+                While(ref mut boolean, _) |
+                Conditional(ref mut boolean, _, _) => {
+                    if let Binary(is!("!="), _, mast!(Num(0f64))) = **boolean {
+                        let newboolean = {
+                            let (_, newboolean, _) = boolean.getMutBinary();
+                            mem::replace(newboolean, makeEmpty())
+                        };
+                        *boolean = newboolean
+                    }
+                },
+                _ => return,
+            }
+        })
+    }
+
+    let mut asmFloatZero = None;
+
+    traverseFunctionsMut(ast, |func: &mut AstValue| {
+
+    simplifyIntegerConversions(func);
+    simplifyOps(func, &mut asmFloatZero, preciseF32);
+    traversePreMut(func, |node: &mut AstValue| {
+        simplifyNotCompsDirect(node, &mut asmFloatZero)
+    });
+    conditionalize(func, &mut asmFloatZero);
+    simplifyNotZero(func);
+
+    })
+}
 
 pub fn simplifyIfs(ast: &mut AstValue) {
 
@@ -2474,7 +2658,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
         traversePreMut(func, |node: &mut AstValue| {
             if let Assign(_, mast!(Name(is!("label"))), ref right) = *node {
                 if let Num(fvalue) = **right {
-                    let value = f64tou32(fvalue);
+                    let value = f64toi32(fvalue);
                     *labelAssigns.entry(value).or_insert(0) += 1
                 } else {
                    // label is assigned a dynamic value (like from indirectbr), we cannot do anything
@@ -2489,7 +2673,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
         traversePreMut(func, |node: &mut AstValue| {
             if let Binary(is!("=="), mast!(Binary(is!("|"), Name(is!("label")), _)), ref right) = *node {
                 if let Num(fvalue) = **right {
-                    let value = f64tou32(fvalue);
+                    let value = f64toi32(fvalue);
                     *labelChecks.entry(value).or_insert(0) += 1
                 } else {
                     // label is checked vs a dynamic value (like from indirectbr), we cannot do anything
@@ -2513,14 +2697,14 @@ pub fn simplifyIfs(ast: &mut AstValue) {
                 let (postcond, postiftrue, postmaybeiffalse) = post.getMutIf();
                 if postmaybeiffalse.is_some() { continue }
                 let postfvalue = if let mast!(Binary(is!("=="), Binary(is!("|"), Name(is!("label")), Num(0f64)), Num(n))) = *postcond { n } else { continue };
-                let postvalue = f64tou32(postfvalue);
+                let postvalue = f64toi32(postfvalue);
                 // RSTODO: is it ok to blindly unwrap and assume the keys exist?
                 if *labelAssigns.get(&postvalue).unwrap() != 1 || *labelChecks.get(&postvalue).unwrap() != 1 { continue }
                 let prestats = if let Block(ref mut s) = **preiffalse { s } else { continue };
                 let prestat = if prestats.len() == 1 { &mut prestats[0] } else { continue };
                 let prefvalue = if let mast!(Stat(Assign(true, Name(is!("label")), Num(n)))) = *prestat { n } else { continue };
-                // RSTODO: curiously, c++ doesn't do the conversion to float before comparing
-                let prevalue = f64tou32(prefvalue);
+                // RSTODO: curiously, c++ doesn't do the conversion to int before comparing
+                let prevalue = f64toi32(prefvalue);
                 if prevalue != postvalue { continue }
                 // Conditions match, just need to make sure the post clears label
                 // RSTODO: the following two lines could be one if rust supported vec destructuring

@@ -37,7 +37,7 @@ use std::time;
 use optimizer::{
     eliminateDeadFuncs,
     eliminate,
-    //simplifyExpressions
+    simplifyExpressions,
     //optimizeFrounds
     simplifyIfs,
     //registerize
@@ -116,6 +116,10 @@ mod num {
     pub fn f64tou64(x: f64) -> u64 {
         assert!(isInteger(x));
         x.approx().unwrap()
+    }
+    pub fn jsD2I(x: f64) -> i32 {
+        assert!(isInteger(x));
+        f64toi64(x) as i32
     }
 }
 
@@ -208,7 +212,7 @@ pub fn libmain() {
             "eliminateDeadFuncs" => eliminateDeadFuncs(doc, &extraInfo),
             "eliminate" => eliminate(doc, false),
             "eliminateMemSafe" => eliminate(doc, true),
-            //"simplifyExpressions" => simplifyExpressions(doc),
+            "simplifyExpressions" => simplifyExpressions(doc, unsafe { preciseF32 }),
             //"optimizeFrounds" => optimizeFrounds(doc),
             "simplifyIfs" => simplifyIfs(doc),
             //"registerize" => registerize(doc),
