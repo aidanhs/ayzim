@@ -793,8 +793,8 @@ impl<T> StackedStack<T> {
         unsafe { self.storage.get_unchecked_mut(len-1) }
     }
 
-    fn pop_back(&mut self) {
-        self.storage.pop().unwrap();
+    fn pop_back(&mut self) -> T {
+        self.storage.pop().unwrap()
     }
 }
 
@@ -836,8 +836,8 @@ pub fn traversePrePostMut<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visi
             visitPre(node);
             stack.push_back((node as *mut _, node.children_mut::<It>()));
         } else {
-            visitPost(unsafe { &mut *stack.back().0 });
-            stack.pop_back();
+            let (node, _) = stack.pop_back();
+            visitPost(unsafe { &mut *node });
             if stack.len() == 0 { break }
         }
     }
@@ -854,8 +854,8 @@ pub fn traversePrePostConditionalMut<F1,F2>(node: &mut AstValue, mut visitPre: F
             if !visitPre(node) { continue };
             stack.push_back((node as *mut _, node.children_mut::<It>()));
         } else {
-            visitPost(unsafe { &mut *stack.back().0 });
-            stack.pop_back();
+            let (node, _) = stack.pop_back();
+            visitPost(unsafe { &mut *node });
             if stack.len() == 0 { break }
         }
     }

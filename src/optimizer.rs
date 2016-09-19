@@ -1234,6 +1234,9 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
             // to var B, and then var B gets processed again when iterating over the locals
             potentials.insert(name.clone());
         } else if numuses == 0 && numdefs <= 1 { // no uses, no def or 1 def (cannot operate on phis, and the llvm optimizer will remove unneeded phis anyhow) (no definition means it is a function parameter, or a local with just |var x;| but no defining assignment
+            // RSNOTE: this is unsafe because we have multiple pointers into the ast, and one of them could
+            // theoretically contain another, allowing us to make one dangling. In practice, an Assign never
+            // contains another Assign so it's safe (for non-malicious input)
             let val = unsafe { values.get(name).map(|v| &mut **v) };
             let sideEffects = match val {
                 // First, pattern-match
@@ -1625,7 +1628,8 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
         // the compiler to assume that defNode is not changed because the only active mutable reference is to parent,
         // which is used to create the pointer to node. See https://github.com/nikomatsakis/rust-memory-model/issues/1
         // Also be aware that swapping and removal can corrupt references into the nodes. In particular, the name passed
-        // in as an argument to this function!
+        // in as an argument to this function! An attacker could also take advantage of this by crafting invalid input that
+        // puts node as a subnode of defnode, causing memory unsafety
         let defNode = info.defNode;
         if !sideEffectFree.contains(name) {
             // assign
@@ -2028,8 +2032,6 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                     processInner(node, &mut rerun, unsafe { &mut *stack.get() })
                 };
                 fn processInner(node: &mut AstValue, rerun: &mut bool, stack: &mut Vec<isize>) {
-                    // RSTODO: the only reason the node unsafecell stuff is here is because of lexical
-                    // lifetimes not understanding that we can assign to node at the end of match arms
                     match *node {
                         Binary(is!("|"), mast!(Num(nleft)), mast!(Num(nright))) => {
                             stack.push(0);
@@ -2435,7 +2437,8 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
             for define in info.defines.into_iter() {
                 // RSTODO: this could theoretically be UB - the compiler could conclude that nothing has access to asmData and do some
                 // optimisation where it figures it can do the denormalize below early, or something equally strange. Search rust
-                // memory model and see also doEliminate where there are similar issues
+                // memory model and see also doEliminate where there are similar issues. Additionally, malicious input could nest assigns
+                // and cause invalid memory access like that (this code assumes no nesting)
                 let define = unsafe { &mut *define };
                 let (_, _, defineval) = define.getMutAssign();
                 let definepart = {
