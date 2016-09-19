@@ -2732,31 +2732,43 @@ pub fn simplifyIfs(ast: &mut AstValue) {
     })
 }
 
-//void optimizeFrounds(Ref ast) {
-//  // collapse fround(fround(..)), which can happen due to elimination
-//  // also emit f0 instead of fround(0) (except in returns)
-//  int inReturn = 0;
-//  traversePrePost(ast, [&](Ref node) {
-//    if (node[0] == RETURN) {
-//      inReturn++;
-//    }
-//  }, [&](Ref node) {
-//    if (node[0] == RETURN) {
-//      inReturn--;
-//    }
-//    if (node[0] == CALL && node[1][0] == NAME && node[1][1] == MATH_FROUND) {
-//      Ref arg = node[2][0];
-//      if (arg[0] == NUM) {
-//        if (!inReturn && arg[1]->getInteger() == 0) {
-//          safeCopy(node, makeName(F0));
-//        }
-//      } else if (arg[0] == CALL && arg[1][0] == NAME && arg[1][1] == MATH_FROUND) {
-//        safeCopy(node, arg);
-//      }
-//    }
-//  });
-//}
-//
+// RSTODO: untested because I couldn't find anything to test it on. Maybe
+// the emscripten test suite?
+pub fn optimizeFrounds(ast: &mut AstValue) {
+    // collapse fround(fround(..)), which can happen due to elimination
+    // also emit f0 instead of fround(0) (except in returns)
+    // RSTODO: could be a bool?
+    let inReturn = Cell::new(0isize);
+    traversePrePostMut(ast, |node: &mut AstValue| {
+        if node.isReturn() { inReturn.set(inReturn.get() + 1) }
+    }, |node: &mut AstValue| {
+        match *node {
+            Return(_) => inReturn.set(inReturn.get() - 1),
+            Call(mast!(Name(is!("Math_fround"))), _) => {
+                let maybenewnode;
+                {
+                let (_, args) = node.getMutCall();
+                // RSTODO: valid assertion?
+                assert!(args.len() == 1);
+                let arg = &mut args[0];
+                maybenewnode = match **arg {
+                    Num(0f64) if inReturn.get() == 0 => Some(makeName(is!("f0"))),
+                    Call(mast!(Name(is!("Math_fround"))), _) => Some(mem::replace(arg, makeEmpty())),
+                    _ => None,
+                }
+                }
+                if let Some(newnode) = maybenewnode {
+                    *node = *newnode
+                }
+            },
+            _ => (),
+        }
+    });
+    // RSTODO: valid assertion?
+    assert!(inReturn.get() == 0)
+}
+
+// RSTODO
 //// Very simple 'registerization', coalescing of variables into a smaller number.
 //
 //const char* getRegPrefix(AsmType type) {

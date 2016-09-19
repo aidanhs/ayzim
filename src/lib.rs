@@ -38,7 +38,7 @@ use optimizer::{
     eliminateDeadFuncs,
     eliminate,
     simplifyExpressions,
-    //optimizeFrounds
+    optimizeFrounds,
     simplifyIfs,
     //registerize
     //registerizeHarder
@@ -213,7 +213,7 @@ pub fn libmain() {
             "eliminate" => eliminate(doc, false),
             "eliminateMemSafe" => eliminate(doc, true),
             "simplifyExpressions" => simplifyExpressions(doc, unsafe { preciseF32 }),
-            //"optimizeFrounds" => optimizeFrounds(doc),
+            "optimizeFrounds" => optimizeFrounds(doc),
             "simplifyIfs" => simplifyIfs(doc),
             //"registerize" => registerize(doc),
             //"registerizeHarder" => registerizeHarder(doc),
