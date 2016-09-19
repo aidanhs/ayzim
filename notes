@@ -20,6 +20,8 @@ DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling 
    of the closure
  - make sure to never use .X tuple indexing when doing .getBlah
  - convert all unwraps to expect
+ - check for &* - the * isn't needed if rust knows the target type
+ - consider mem::replace to be must_use - just use *x = y otherwise
 
 
 LATER

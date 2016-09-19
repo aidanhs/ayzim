@@ -670,8 +670,8 @@ fn isMathFunc(name: &str) -> bool {
 }
 
 fn callHasSideEffects(node: &AstValue) -> bool { // checks if the call itself (not the args) has side effects (or is not statically known)
-    assert!(node.isCall());
-    if let Call(mast!(Name(ref name)), _) = *node { !isMathFunc(&name) } else { true }
+    let (fname, _) = node.getCall();
+    if let Name(ref name) = **fname { !isMathFunc(&name) } else { true }
 }
 
 // RSTODO: just run hasSideEffects on all children?
@@ -681,7 +681,7 @@ fn hasSideEffects(node: &AstValue) -> bool { // this is 99% incomplete!
         Name(_) |
         Str(_) => false,
 
-        Binary(_, ref left, ref right) => hasSideEffects(left) && hasSideEffects(right),
+        Binary(_, ref left, ref right) => hasSideEffects(left) || hasSideEffects(right),
         Call(_, ref args) => {
             if callHasSideEffects(node) { return true }
             for arg in args.iter() {
@@ -689,8 +689,8 @@ fn hasSideEffects(node: &AstValue) -> bool { // this is 99% incomplete!
             }
             false
         },
-        Conditional(ref cond, ref iftrue, ref iffalse) => hasSideEffects(cond) && hasSideEffects(iftrue) && hasSideEffects(iffalse),
-        Sub(ref target, ref index) => hasSideEffects(target) && hasSideEffects(index),
+        Conditional(ref cond, ref iftrue, ref iffalse) => hasSideEffects(cond) || hasSideEffects(iftrue) || hasSideEffects(iffalse),
+        Sub(ref target, ref index) => hasSideEffects(target) || hasSideEffects(index),
         UnaryPrefix(_, ref right) => hasSideEffects(right),
 
         // RSTODO: implement these?

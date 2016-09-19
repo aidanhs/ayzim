@@ -31,4 +31,6 @@ else
     # bunch of float tweaks since emopt is inefficient here
     sed -i 's/\([0-9]\)[.]*\(e-*\)+*0*\([1-9]\)/\1\2\3/g' emoptoutfmt
     cp ayzimout ayzimoutfmt
+    # shorten floats from both since emopt tends to be longer
+    sed -i 's/\([^0-9]\)\([0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\)[0-9e]*/\1\2/g' emoptoutfmt ayzimoutfmt
 fi
