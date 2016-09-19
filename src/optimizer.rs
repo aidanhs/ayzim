@@ -2,10 +2,12 @@ use std::cell::{Cell, UnsafeCell};
 use std::cmp;
 use std::collections::{HashMap, HashSet, hash_map};
 use std::{f64, i32};
+#[cfg(feature = "profiling")]
 use std::io::Write;
 use std::iter;
 use std::mem;
 use std::ptr;
+#[cfg(feature = "profiling")]
 use std::time::{Duration, SystemTime};
 
 use odds::vec::VecExt;
@@ -14,7 +16,9 @@ use phf;
 
 use serde_json;
 
-use super::{IString, MoreTime};
+use super::IString;
+#[cfg(feature = "profiling")]
+use super::MoreTime;
 use super::cashew::{AstValue, AstNode, AstVec};
 use super::cashew::AstValue::*;
 use super::cashew::{traversePre, traversePreMut, traversePrePostMut, traversePrePostConditionalMut, traverseFunctionsMut};
@@ -24,18 +28,18 @@ use super::num::{jsD2I, f64toi32, f64tou32, isInteger, isInteger32};
 const NUM_ASMTYPES: usize = 12;
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum AsmType {
-    AsmInt,
-    AsmDouble,
-    AsmFloat,
-    AsmFloat32x4,
-    AsmFloat64x2,
-    AsmInt8x16,
-    AsmInt16x8,
-    AsmInt32x4,
-    AsmBool8x16,
-    AsmBool16x8,
-    AsmBool32x4,
-    AsmBool64x2,
+    Int,
+    Double,
+    Float,
+    Float32x4,
+    Float64x2,
+    Int8x16,
+    Int16x8,
+    Int32x4,
+    Bool8x16,
+    Bool16x8,
+    Bool32x4,
+    Bool64x2,
 }
 // RSTODO
 //AsmType intToAsmType(int type) {
@@ -79,7 +83,7 @@ impl<'a> AsmData<'a> {
 
         {
         let (_, fnparams, stats) = func.getMutDefun();
-        let fnparams: &AstVec<_> = &fnparams;
+        let fnparams: &AstVec<_> = fnparams;
         let mut stati = 0;
 
         // process initial params
@@ -137,13 +141,13 @@ impl<'a> AsmData<'a> {
         }
 
         // look for final RETURN statement to get return type.
-        ret = stats.last().map(|retStmt| {
+        ret = stats.last().map_or(None, |retStmt| {
             if let Return(Some(ref retval)) = **retStmt {
                 detectType(retval, None, &mut floatZero, false)
             } else {
                 None
             }
-        }).unwrap_or(None);
+        })
         }
 
         AsmData {
@@ -220,7 +224,7 @@ impl<'a> AsmData<'a> {
 
         // ensure that there's a final RETURN statement if needed.
         if let Some(ret) = self.ret {
-            let hasret = stats.last().map(|st| st.isReturn()).unwrap_or(false);
+            let hasret = stats.last().map_or(false, |st| st.isReturn());
             if !hasret {
                 let zero = makeAsmCoercedZero(ret, self.floatZero.clone());
                 stats.push(an!(Return(Some(zero))))
@@ -245,10 +249,10 @@ impl<'a> AsmData<'a> {
         self.locals.contains_key(name)
     }
     fn isParam(&self, name: &IString) -> bool {
-        self.locals.get(name).map(|l| l.param).unwrap_or(false)
+        self.locals.get(name).map_or(false, |l| l.param)
     }
     fn isVar(&self, name: &IString) -> bool {
-        self.locals.get(name).map(|l| !l.param).unwrap_or(false)
+        self.locals.get(name).map_or(false, |l| !l.param)
     }
 
     fn addParam(&mut self, name: IString, ty: AsmType) {
@@ -283,10 +287,10 @@ struct HeapInfo {
 }
 
 enum AsmSign {
-  AsmFlexible, // small constants can be signed or unsigned, variables are also flexible
-  AsmSigned,
-  AsmUnsigned,
-  AsmNonsigned,
+  Flexible, // small constants can be signed or unsigned, variables are also flexible
+  Signed,
+  Unsigned,
+  Nonsigned,
 }
 
 fn parseHeap(name_str: &str) -> Option<HeapInfo> {
@@ -296,22 +300,22 @@ fn parseHeap(name_str: &str) -> Option<HeapInfo> {
     let bit_ofs = if unsign || floaty { 5 } else { 4 };
     let bits = name_str[bit_ofs..].parse().unwrap();
     let ty = if !floaty {
-        AsmType::AsmInt
+        AsmType::Int
     } else if bits == 64 {
-        AsmType::AsmDouble
+        AsmType::Double
     } else {
-        AsmType::AsmFloat
+        AsmType::Float
     };
     Some(HeapInfo { unsign: unsign, floaty: floaty, bits: bits, ty: ty })
 }
 
 fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, asmFloatZero: &mut Option<IString>, inVarDef: bool) -> Option<AsmType> {
-    return match *node {
+    match *node {
         Num(n) => {
             Some(if !isInteger(n) {
-                AsmType::AsmDouble
+                AsmType::Double
             } else {
-                AsmType::AsmInt
+                AsmType::Int
             })
         },
         Name(ref name) => {
@@ -322,8 +326,8 @@ fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, 
             Some(if !inVarDef {
                 match *name {
                     is!("inf") |
-                    is!("nan") => AsmType::AsmDouble,
-                    is!("tempRet0") => AsmType::AsmInt,
+                    is!("nan") => AsmType::Double,
+                    is!("tempRet0") => AsmType::Int,
                     _ => return None,
                 }
             } else {
@@ -335,16 +339,16 @@ fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, 
                     // RSTODO: asmFloatZero is currently per pass, but in emoptimizer it's per file
                     *asmFloatZero = Some(nodestr.clone())
                 }
-                AsmType::AsmFloat
+                AsmType::Float
             })
         },
         UnaryPrefix(ref op, ref right) => {
             // RSTODO: istring match? Are there any 2 char unary prefixes?
             match op.as_bytes()[0] {
-                b'+' => Some(AsmType::AsmDouble),
-                b'-' => detectType(&right, asmDataLocals, asmFloatZero, inVarDef),
+                b'+' => Some(AsmType::Double),
+                b'-' => detectType(right, asmDataLocals, asmFloatZero, inVarDef),
                 b'!' |
-                b'~' => Some(AsmType::AsmInt),
+                b'~' => Some(AsmType::Int),
                 _ => None,
             }
         },
@@ -352,25 +356,25 @@ fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, 
             match **fnexpr {
                 Name(ref name) => {
                     Some(match *name {
-                        is!("Math_fround") => AsmType::AsmFloat,
+                        is!("Math_fround") => AsmType::Float,
                         is!("SIMD_Float32x4") |
-                        is!("SIMD_Float32x4_check") => AsmType::AsmFloat32x4,
+                        is!("SIMD_Float32x4_check") => AsmType::Float32x4,
                         is!("SIMD_Float64x2") |
-                        is!("SIMD_Float64x2_check") => AsmType::AsmFloat64x2,
+                        is!("SIMD_Float64x2_check") => AsmType::Float64x2,
                         is!("SIMD_Int8x16") |
-                        is!("SIMD_Int8x16_check") => AsmType::AsmInt8x16,
+                        is!("SIMD_Int8x16_check") => AsmType::Int8x16,
                         is!("SIMD_Int16x8") |
-                        is!("SIMD_Int16x8_check") => AsmType::AsmInt16x8,
+                        is!("SIMD_Int16x8_check") => AsmType::Int16x8,
                         is!("SIMD_Int32x4") |
-                        is!("SIMD_Int32x4_check") => AsmType::AsmInt32x4,
+                        is!("SIMD_Int32x4_check") => AsmType::Int32x4,
                         is!("SIMD_Bool8x16") |
-                        is!("SIMD_Bool8x16_check") => AsmType::AsmBool8x16,
+                        is!("SIMD_Bool8x16_check") => AsmType::Bool8x16,
                         is!("SIMD_Bool16x8") |
-                        is!("SIMD_Bool16x8_check") => AsmType::AsmBool16x8,
+                        is!("SIMD_Bool16x8_check") => AsmType::Bool16x8,
                         is!("SIMD_Bool32x4") |
-                        is!("SIMD_Bool32x4_check") => AsmType::AsmBool32x4,
+                        is!("SIMD_Bool32x4_check") => AsmType::Bool32x4,
                         is!("SIMD_Bool64x2") |
-                        is!("SIMD_Bool64x2_check") => AsmType::AsmBool64x2,
+                        is!("SIMD_Bool64x2_check") => AsmType::Bool64x2,
                         _ => return None,
                     })
                 },
@@ -378,25 +382,25 @@ fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, 
             }
         },
         Conditional(_, ref iftrue, _) => {
-            detectType(&iftrue, asmDataLocals, asmFloatZero, inVarDef)
+            detectType(iftrue, asmDataLocals, asmFloatZero, inVarDef)
         },
         Binary(ref op, ref left, _) => {
             match op.as_bytes()[0] {
                 b'+' | b'-' |
                 b'*' | b'/' |
-                b'%' => detectType(&left, asmDataLocals, asmFloatZero, inVarDef),
+                b'%' => detectType(left, asmDataLocals, asmFloatZero, inVarDef),
                 b'|' | b'&' | b'^' |
                 b'<' | b'>' | // handles <<, >>, >>=, <=
-                b'=' | b'!' => Some(AsmType::AsmInt), // handles ==, !=
+                b'=' | b'!' => Some(AsmType::Int), // handles ==, !=
                 _ => None,
             }
         },
-        Seq(_, ref right) => detectType(&right, asmDataLocals, asmFloatZero, inVarDef),
+        Seq(_, ref right) => detectType(right, asmDataLocals, asmFloatZero, inVarDef),
         Sub(ref target, _) => {
             let name = target.getName().0;
             Some(if let Some(info) = parseHeap(name) {
                 // XXX ASM_FLOAT?
-                if info.floaty { AsmType::AsmDouble } else { AsmType::AsmInt }
+                if info.floaty { AsmType::Double } else { AsmType::Int }
             } else {
                 return None
             })
@@ -413,40 +417,40 @@ fn detectSign(node: &AstValue) -> AsmSign {
         Binary(ref op, _, _) => {
             let opch = op.as_bytes()[0];
             if opch == b'>' && *op == is!(">>>") {
-                return AsmSign::AsmUnsigned
+                return AsmSign::Unsigned
             }
             match opch {
                 b'|' | b'&' | b'^' |
                 b'<' | b'>' |
-                b'=' | b'!' => AsmSign::AsmSigned,
-                b'+' | b'-' => AsmSign::AsmFlexible,
-                b'*' | b'/' => AsmSign::AsmNonsigned,
+                b'=' | b'!' => AsmSign::Signed,
+                b'+' | b'-' => AsmSign::Flexible,
+                b'*' | b'/' => AsmSign::Nonsigned,
                 _ => panic!(),
             }
         },
         UnaryPrefix(ref op, _) => {
             // RSTODO: istring match? Are there any 2 char unary prefixes?
             match op.as_bytes()[0] {
-                b'-' => AsmSign::AsmFlexible,
-                b'+' => AsmSign::AsmNonsigned,
-                b'~' => AsmSign::AsmSigned,
+                b'-' => AsmSign::Flexible,
+                b'+' => AsmSign::Nonsigned,
+                b'~' => AsmSign::Signed,
                 _ => panic!(),
             }
         },
         Num(value) => {
             if value < 0f64 {
-                AsmSign::AsmSigned
+                AsmSign::Signed
             } else if !isInteger32(value) {
-                AsmSign::AsmNonsigned
+                AsmSign::Nonsigned
             } else if value <= i32::MAX as f64 {
-                AsmSign::AsmFlexible
+                AsmSign::Flexible
             } else {
-                AsmSign::AsmUnsigned
+                AsmSign::Unsigned
             }
         },
-        Name(_) => AsmSign::AsmFlexible,
-        Conditional(_, ref iftrue, _) => detectSign(&iftrue),
-        Call(mast!(Name(is!("Math_fround"))), _) => AsmSign::AsmNonsigned,
+        Name(_) => AsmSign::Flexible,
+        Conditional(_, ref iftrue, _) => detectSign(iftrue),
+        Call(mast!(Name(is!("Math_fround"))), _) => AsmSign::Nonsigned,
         _ => panic!(),
     }
 }
@@ -579,40 +583,40 @@ fn makeAsmCoercedZero(ty: AsmType, asmFloatZero: Option<IString>) -> AstNode {
         arr
     }
     match ty {
-        AsmType::AsmInt => makeNum(0f64),
-        AsmType::AsmDouble => an!(UnaryPrefix(is!("+"), makeNum(0f64))),
-        AsmType::AsmFloat => {
+        AsmType::Int => makeNum(0f64),
+        AsmType::Double => an!(UnaryPrefix(is!("+"), makeNum(0f64))),
+        AsmType::Float => {
             if let Some(f0) = asmFloatZero {
                 makeName(f0)
             } else {
                 an!(Call(makeName(is!("Math_fround")), zarr(1)))
             }
         },
-        AsmType::AsmFloat32x4 => {
+        AsmType::Float32x4 => {
             an!(Call(makeName(is!("SIMD_Float32x4")), zarr(4)))
         },
-        AsmType::AsmFloat64x2 => {
+        AsmType::Float64x2 => {
             an!(Call(makeName(is!("SIMD_Float64x2")), zarr(2)))
         },
-        AsmType::AsmInt8x16 => {
+        AsmType::Int8x16 => {
             an!(Call(makeName(is!("SIMD_Int8x16")), zarr(16)))
         },
-        AsmType::AsmInt16x8 => {
+        AsmType::Int16x8 => {
             an!(Call(makeName(is!("SIMD_Int16x8")), zarr(8)))
         },
-        AsmType::AsmInt32x4 => {
+        AsmType::Int32x4 => {
             an!(Call(makeName(is!("SIMD_Int32x4")), zarr(4)))
         },
-        AsmType::AsmBool8x16 => {
+        AsmType::Bool8x16 => {
             an!(Call(makeName(is!("SIMD_Bool8x16")), zarr(16)))
         },
-        AsmType::AsmBool16x8 => {
+        AsmType::Bool16x8 => {
             an!(Call(makeName(is!("SIMD_Bool16x8")), zarr(8)))
         },
-        AsmType::AsmBool32x4 => {
+        AsmType::Bool32x4 => {
             an!(Call(makeName(is!("SIMD_Bool32x4")), zarr(4)))
         },
-        AsmType::AsmBool64x2 => {
+        AsmType::Bool64x2 => {
             an!(Call(makeName(is!("SIMD_Bool64x2")), zarr(2)))
         },
     }
@@ -625,19 +629,19 @@ fn makeAsmCoercion(node: AstNode, ty: AsmType) -> AstNode {
         arr
     }
     match ty {
-        AsmType::AsmInt => an!(Binary(is!("|"), node, makeNum(0f64))),
-        AsmType::AsmDouble => an!(UnaryPrefix(is!("+"), node)),
-        AsmType::AsmFloat => an!(Call(makeName(is!("Math_fround")), arr(node))),
-        AsmType::AsmFloat32x4 => an!(Call(makeName(is!("SIMD_Float32x4_check")), arr(node))),
-        AsmType::AsmFloat64x2 => an!(Call(makeName(is!("SIMD_Float64x2_check")), arr(node))),
-        AsmType::AsmInt8x16 => an!(Call(makeName(is!("SIMD_Int8x16_check")), arr(node))),
-        AsmType::AsmInt16x8 => an!(Call(makeName(is!("SIMD_Int16x8_check")), arr(node))),
-        AsmType::AsmInt32x4 => an!(Call(makeName(is!("SIMD_Int32x4_check")), arr(node))),
+        AsmType::Int => an!(Binary(is!("|"), node, makeNum(0f64))),
+        AsmType::Double => an!(UnaryPrefix(is!("+"), node)),
+        AsmType::Float => an!(Call(makeName(is!("Math_fround")), arr(node))),
+        AsmType::Float32x4 => an!(Call(makeName(is!("SIMD_Float32x4_check")), arr(node))),
+        AsmType::Float64x2 => an!(Call(makeName(is!("SIMD_Float64x2_check")), arr(node))),
+        AsmType::Int8x16 => an!(Call(makeName(is!("SIMD_Int8x16_check")), arr(node))),
+        AsmType::Int16x8 => an!(Call(makeName(is!("SIMD_Int16x8_check")), arr(node))),
+        AsmType::Int32x4 => an!(Call(makeName(is!("SIMD_Int32x4_check")), arr(node))),
         // non-validating code, emit nothing XXX this is dangerous, we should only allow this when we know we are not validating
-        AsmType::AsmBool8x16 |
-        AsmType::AsmBool16x8 |
-        AsmType::AsmBool32x4 |
-        AsmType::AsmBool64x2 => node,
+        AsmType::Bool8x16 |
+        AsmType::Bool16x8 |
+        AsmType::Bool32x4 |
+        AsmType::Bool64x2 => node,
     }
 }
 
@@ -646,7 +650,7 @@ fn makeAsmCoercion(node: AstNode, ty: AsmType) -> AstNode {
 fn isEmpty(node: &AstValue) -> bool {
     match *node {
         Toplevel(ref stats) |
-        Block(ref stats) if stats.len() == 0 => true,
+        Block(ref stats) if stats.is_empty() => true,
         _ => false,
     }
 }
@@ -672,7 +676,7 @@ fn isMathFunc(name: &str) -> bool {
 
 fn callHasSideEffects(node: &AstValue) -> bool { // checks if the call itself (not the args) has side effects (or is not statically known)
     let (fname, _) = node.getCall();
-    if let Name(ref name) = **fname { !isMathFunc(&name) } else { true }
+    if let Name(ref name) = **fname { !isMathFunc(name) } else { true }
 }
 
 // RSTODO: just run hasSideEffects on all children?
@@ -767,8 +771,8 @@ fn simplifyNotCompsDirect(node: &mut AstValue, asmFloatZero: &mut Option<IString
                 {
                 // RSTODO: no way to capture whole expression as well as subexpressions?
                 let (op, left, right) = bin.getMutBinary();
-                if !(detectType(left, None, asmFloatZero, false) == Some(AsmType::AsmInt) &&
-                     detectType(right, None, asmFloatZero, false) == Some(AsmType::AsmInt)) { return }
+                if !(detectType(left, None, asmFloatZero, false) == Some(AsmType::Int) &&
+                     detectType(right, None, asmFloatZero, false) == Some(AsmType::Int)) { return }
                 match *op {
                     is!("<") => *op = is!(">="),
                     is!("<=") => *op = is!(">"),
@@ -786,7 +790,7 @@ fn simplifyNotCompsDirect(node: &mut AstValue, asmFloatZero: &mut Option<IString
         };
         mem::replace(oldpos, *makeEmpty())
     };
-    mem::replace(node, newvalue);
+    *node = newvalue
 }
 
 fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
@@ -841,7 +845,7 @@ fn removeAllEmptySubNodes(ast: &mut AstValue) {
                     }
                 };
                 if let Some(newnode) = maybenewnode {
-                    mem::replace(node, *newnode);
+                    *node = *newnode
                 }
             },
             _ => (),
@@ -1331,7 +1335,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                             track.usesGlobals = true
                         }
                         if !potentials.contains(depName) { // deps do not matter for potentials - they are defined once, so no complexity
-                            depMap.entry(depName.clone()).or_insert(vec![]).push(name.clone());
+                            depMap.entry(depName.clone()).or_insert_with(Vec::new).push(name.clone());
                             track.hasDeps = true
                         }
                     } else {
@@ -1363,15 +1367,15 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
 
     // TODO: invalidate using a sequence number for each type (if you were tracked before the last invalidation, you are cancelled). remove for.in loops
     fn invalidateGlobals(tracked: &mut HashMap<IString, Tracking>) {
-        let temp: Vec<_> = tracked.iter().filter(|&(_, ref info)| info.usesGlobals).map(|(k, _)| k.clone()).collect();
+        let temp: Vec<_> = tracked.iter().filter(|&(_, info)| info.usesGlobals).map(|(k, _)| k.clone()).collect();
         for name in temp { tracked.remove(&name).unwrap(); }
     }
     fn invalidateMemory(tracked: &mut HashMap<IString, Tracking>) {
-        let temp: Vec<_> = tracked.iter().filter(|&(_, ref info)| info.usesMemory).map(|(k, _)| k.clone()).collect();
+        let temp: Vec<_> = tracked.iter().filter(|&(_, info)| info.usesMemory).map(|(k, _)| k.clone()).collect();
         for name in temp { tracked.remove(&name).unwrap(); }
     }
     fn invalidateCalls(tracked: &mut HashMap<IString, Tracking>) {
-        let temp: Vec<_> = tracked.iter().filter(|&(_, ref info)| info.doesCall).map(|(k, _)| k.clone()).collect();
+        let temp: Vec<_> = tracked.iter().filter(|&(_, info)| info.doesCall).map(|(k, _)| k.clone()).collect();
         for name in temp { tracked.remove(&name).unwrap(); }
     }
 
@@ -1462,12 +1466,11 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                     traverseInOrder!(index, false) // evaluate outer
                     }
                     // ignoreSub means we are a write (happening later), not a read
-                    if !ignoreSub && !isTempDoublePtrAccess(node) {
-                        // do the memory access
-                        if !*callsInvalidated {
-                            invalidateCalls(tracked);
-                            *callsInvalidated = true
-                        }
+                    if !ignoreSub && !isTempDoublePtrAccess(node)
+                            // do the memory access
+                            && !*callsInvalidated {
+                        invalidateCalls(tracked);
+                        *callsInvalidated = true
                     }
                 },
                 Binary(ref op, ref mut left, ref mut right) => {
@@ -1486,7 +1489,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                 },
                 Name(ref name) => {
                     if tracked.contains_key(name) {
-                        doEliminate(&name, nodeptr, sideEffectFree, varsToRemove, tracked);
+                        doEliminate(name, nodeptr, sideEffectFree, varsToRemove, tracked);
                     } else if !asmDataLocals.contains_key(name) && !*callsInvalidated && (memSafe || !HEAP_NAMES.contains(name)) { // ignore HEAP8 etc when not memory safe, these are ok to access, e.g. SIMD_Int32x4_load(HEAP8, ...)
                         invalidateCalls(tracked);
                         *callsInvalidated = true
@@ -1718,7 +1721,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
         let elim = if let Assign(true, mast!(Name(ref x)), mast!(Name(ref y))) = *node { x == y } else { false };
         if elim {
             // elimination led to X = X, which we can just remove
-            mem::replace(node, *makeEmpty());
+            *node = *makeEmpty()
         }
     }, |node: &mut AstValue| {
         // post
@@ -1774,7 +1777,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                     let (&boo, name1, name2) = assign.getAssign();
                     let isloopassign = if boo && name1.isName() && name2.isName() {
                         let (name1,) = name1.getName();
-                        loopers.iter().position(|l| l == name1).is_some()
+                        loopers.iter().any(|l| l == name1)
                     } else {
                         false
                     };
@@ -1830,10 +1833,10 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                         traversePre(curr, |node: &AstValue| {
                             if let Name(ref name) = *node {
                                 if name == looper {
-                                    firstLooperUsage = firstLooperUsage.or(Some(i));
+                                    firstLooperUsage = firstLooperUsage.or_else(|| Some(i));
                                     lastLooperUsage = Some(i);
-                                } else if helpers.iter().position(|h| h == name).is_some() {
-                                    firstHelperUsage = firstHelperUsage.or(Some(i));
+                                } else if helpers.iter().any(|h| h == name) {
+                                    firstHelperUsage = firstHelperUsage.or_else(|| Some(i));
                                 }
                             }
                         })
@@ -1869,7 +1872,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                                         },
                                         Assign(_, mast!(Name(_)), ref mut right) => {
                                             // do not traverse the assignment target, phi assignments to the loop variable must remain
-                                            traversePrePostConditionalMut(right, |node: &mut AstValue| looperToLooptemp(node, looper, &temp), |_| ());
+                                            traversePrePostConditionalMut(right, |node: &mut AstValue| looperToLooptemp(node, looper, temp), |_| ());
                                             return false
                                         },
                                         _ => (),
@@ -1920,7 +1923,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                     let iffalse = maybeiffalse.as_mut().unwrap();
                     for stat in getStatements(iffalse).unwrap().iter_mut() {
                         let shouldempty = if let Assign(_, mast!(Name(ref name)), _) = *deStat(stat) {
-                            loopers.iter().position(|l| l == name).is_some()
+                            loopers.iter().any(|l| l == name)
                         } else {
                             false
                         };
@@ -2110,7 +2113,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
             // be simplified.
             match *node {
                 // do not traverse subchildren here, we should not collapse 55 & 126.
-                Sub(mast!(Name(ref name)), _) if isFunctionTable(&name) => false,
+                Sub(mast!(Name(ref name)), _) if isFunctionTable(name) => false,
                 _ => true,
             }
         }, |node: &mut AstValue| {
@@ -2134,7 +2137,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                 },
                 Binary(ref mut op @ is!("&"), mast!(Sub(Name(ref mut name), _)), mast!(Num(ref mut amount))) => {
                     // HEAP8[..] & 255 => HEAPU8[..]
-                    if let Some(hi) = parseHeap(&name) {
+                    if let Some(hi) = parseHeap(name) {
                         if isInteger32(*amount) && *amount == f64::powf(2.0, hi.bits as f64) - 1f64 {
                             if !hi.unsign {
                                 *name = getHeapStr(hi.bits, true) // make unsigned
@@ -2255,7 +2258,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                         }
                     }
                     if let Some(newvalue) = maybenewvalue {
-                        mem::replace(value, newvalue);
+                        *value = newvalue;
                     }
                 },
                 Binary(is!(">>"), mast!(Num(n1)), mast!(Num(n2))) => {
@@ -2291,7 +2294,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                         maybenewvalue = Some(mem::replace(newvalue, makeEmpty()))
                     }
                     if let Some(newvalue) = maybenewvalue {
-                        mem::replace(value, newvalue);
+                        *value = newvalue
                     }
                 },
                 Seq(_, _) => {
@@ -2439,7 +2442,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                 };
                 let newdefineval = match correct {
                     is!("HEAP32") => an!(Binary(is!("|"), definepart, makeNum(0f64))),
-                    is!("HEAPF32") => makeAsmCoercion(definepart, if preciseF32 { AsmType::AsmFloat } else { AsmType::AsmDouble }),
+                    is!("HEAPF32") => makeAsmCoercion(definepart, if preciseF32 { AsmType::Float } else { AsmType::Double }),
                     _ => panic!(),
                 };
                 *defineval = newdefineval
@@ -2454,9 +2457,9 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                 *name = correct.clone()
             }
             let correctType = match asmData.getType(&v).unwrap() {
-                AsmType::AsmInt => if preciseF32 { AsmType::AsmFloat } else { AsmType::AsmDouble },
-                AsmType::AsmFloat |
-                AsmType::AsmDouble => AsmType::AsmInt,
+                AsmType::Int => if preciseF32 { AsmType::Float } else { AsmType::Double },
+                AsmType::Float |
+                AsmType::Double => AsmType::Int,
                 _ => panic!(),
             };
             asmData.setType(v, correctType)
@@ -2520,7 +2523,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                 flipCondition(cond, asmFloatZero);
                 mem::swap(iftrue, iffalse)
             }
-            mem::replace(node, *ret);
+            *node = *ret
         })
     }
 

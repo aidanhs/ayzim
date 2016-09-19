@@ -36,7 +36,7 @@ impl Ref {
         unsafe { &mut (*self.inst) }
     }
     pub fn is_something(&self) -> bool {
-        self.inst != ptr::null_mut() && !self.isNull()
+        !self.inst.is_null() && !self.isNull()
     }
 // RSTODO
 //  Value& operator*() { return *inst; }
@@ -267,7 +267,7 @@ impl AstValue {
         })
     }
 
-    fn children_mut<'a, 'b: 'a, I>(&'a mut self) -> Box<Iterator<Item=&'a mut AstNode> + 'a> {
+    fn children_mut<'a, I>(&'a mut self) -> Box<Iterator<Item=&'a mut AstNode> + 'a> {
         macro_rules! b {
             ($e: expr) => (Box::new($e));
         };
@@ -485,53 +485,53 @@ impl Value {
     }
 
     pub fn isString(&self) -> bool {
-        if let &Value::str(_) = self { true } else { false }
+        if let Value::str(_) = *self { true } else { false }
     }
     fn isNumber(&self) -> bool {
-        if let &Value::num(_) = self { true } else { false }
+        if let Value::num(_) = *self { true } else { false }
     }
     fn isArray(&self) -> bool {
-        if let &Value::arr(_) = self { true } else { false }
+        if let Value::arr(_) = *self { true } else { false }
     }
     fn isNull(&self) -> bool {
-        if let &Value::null = self { true } else { false }
+        if let Value::null = *self { true } else { false }
     }
     fn isBool(&self) -> bool {
-        if let &Value::boo(_) = self { true } else { false }
+        if let Value::boo(_) = *self { true } else { false }
     }
     fn isObject(&self) -> bool {
-        if let &Value::obj(_) = self { true } else { false }
+        if let Value::obj(_) = *self { true } else { false }
     }
 
     // RSTODO: is this comment relevant?
     // avoid overloading == as it might overload over int
     fn isBoolEqual(&self, b: bool) -> bool {
-        if let &Value::boo(sb) = self { b == sb } else { false }
+        if let Value::boo(sb) = *self { b == sb } else { false }
     }
 
     pub fn getStr(&self) -> &str {
-        if let &Value::str(ref a) = self { &*a } else { panic!() }
+        if let Value::str(ref a) = *self { &*a } else { panic!() }
     }
     pub fn getIString(&self) -> IString {
-        if let &Value::str(ref a) = self { a.clone() } else { panic!() }
+        if let Value::str(ref a) = *self { a.clone() } else { panic!() }
     }
     pub fn getNumber(&self) -> f64 {
-        if let &Value::num(d) = self { d } else { panic!() }
+        if let Value::num(d) = *self { d } else { panic!() }
     }
     fn getBool(&self) -> bool {
-        if let &Value::boo(b) = self { b } else { panic!() }
+        if let Value::boo(b) = *self { b } else { panic!() }
     }
     pub fn getArray(&self) -> &ArrayStorage {
-        if let &Value::arr(ref a) = self { a } else { panic!() }
+        if let Value::arr(ref a) = *self { a } else { panic!() }
     }
     pub fn getArrayMut(&mut self) -> &mut ArrayStorage {
-        if let &mut Value::arr(ref mut a) = self { a } else { panic!() }
+        if let Value::arr(ref mut a) = *self { a } else { panic!() }
     }
     fn getObject(&self) -> &ObjectStorage {
-        if let &Value::obj(ref o) = self { o } else { panic!() }
+        if let Value::obj(ref o) = *self { o } else { panic!() }
     }
     fn getObjectMut(&mut self) -> &mut ObjectStorage {
-        if let &mut Value::obj(ref mut o) = self { o } else { panic!() }
+        if let Value::obj(ref mut o) = *self { o } else { panic!() }
     }
 
     // convenience function to get a known integer
@@ -712,7 +712,7 @@ impl Value {
         {
             let mut retarr = ret.getArrayMut();
             for r in a {
-                retarr.push(func(r.clone()));
+                retarr.push(func(*r));
             }
         }
         ret
@@ -725,7 +725,7 @@ impl Value {
         {
             let mut retarr = ret.getArrayMut();
             for r in a {
-                if func(r.clone()) { retarr.push(r.clone()) }
+                if func(*r) { retarr.push(*r) }
             }
         }
         ret
@@ -738,7 +738,7 @@ impl Value {
     // Object operations
 
     fn lookup(&mut self, x: IString) -> Ref {
-        self.getObjectMut().entry(x).or_insert(EMPTYREF).clone()
+        *self.getObjectMut().entry(x).or_insert(EMPTYREF)
     }
 
     fn has(&self, x: IString) -> bool {
@@ -1237,7 +1237,7 @@ impl<'a> JSPrinter<'a> {
                     // emit a finalized number
                     let last = self.buffer.len();
                     self.print(right);
-                    if self.buffer[last..].iter().position(|&b| b == b'.').is_some() {
+                    if self.buffer[last..].iter().any(|&b| b == b'.') {
                         return // already a decimal point, all good
                     }
                     let e = if let Some(e) = self.buffer[last..].iter().position(|&b| b == b'e') {
@@ -1401,8 +1401,10 @@ impl<'a> JSPrinter<'a> {
         //fprintf(stderr, "options:\n%s\n%s\n (first? %d)\n", storage_e, storage_f, strlen(storage_e) < strlen(storage_f));
         let mut ret = if err_e == err_f {
             if storage_e.len() < storage_f.len() { storage_e } else { storage_f }
+        } else if err_e < err_f {
+            storage_e
         } else {
-            if err_e < err_f { storage_e } else { storage_f }
+            storage_f
         };
         if neg {
             // RSTODO: probably a way to do this function without inserting
@@ -1523,7 +1525,7 @@ pub mod builder {
     pub fn setBlockContent(target: &mut AstValue, block: AstNode) {
         let (stats,) = block.intoBlock();
         match *target {
-            Toplevel(ref mut s) => *s = stats,
+            Toplevel(ref mut s) |
             Defun(_, _, ref mut s) => *s = stats,
             _ => panic!(),
         };

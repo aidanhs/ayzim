@@ -617,7 +617,7 @@ impl Parser {
                 let exprelt = ExprElt::Node(self.parseIndexing(frag.parse(), src));
                 self.parseExpression(exprelt, src, seps)
             },
-            b':' if self.expressionPartsStack.last().unwrap().len() == 0 => {
+            b':' if self.expressionPartsStack.last().unwrap().is_empty() => {
                 pp!{src+=1};
                 skipSpace(src);
                 let inner = if pp!{src[0]} == b'{' {
@@ -752,7 +752,7 @@ impl Parser {
         skipSpace(src);
         if pp!{src[0]} == b'\0' || hasChar(seps, pp!{src[0]}) {
             let parts = getParts(self);
-            if parts.len() > 0 {
+            if !parts.is_empty() {
                 // RSTODO: This is ridiculously unsafe but is needed because of
                 // the way the expression stack works. When parseExpression is
                 // called with an empty top level of the stack, the bit between
@@ -775,7 +775,7 @@ impl Parser {
             let next = Frag::from_str(*src);
             if let Frag { data: FragData::Operator(s), size: n } = next {
                 let parts = getParts(self);
-                top = parts.len() == 0;
+                top = parts.is_empty();
                 parts.push(ExprElt::Node(node));
                 pp!{src+=n};
                 parts.push(ExprElt::Op(s))
@@ -792,7 +792,7 @@ impl Parser {
             }
         } else {
             let parts = getParts(self);
-            top = parts.len() == 0;
+            top = parts.is_empty();
             parts.push(initial)
         }
         let last = self.parseElement(src, seps);
