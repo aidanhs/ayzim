@@ -21,7 +21,7 @@ use super::IString;
 use super::MoreTime;
 use super::cashew::{AstValue, AstNode, AstVec};
 use super::cashew::AstValue::*;
-use super::cashew::{traversePre, traversePreMut, traversePrePostMut, traversePrePostConditionalMut, traverseFunctionsMut};
+use super::cashew::{traversePre, traversePreMut, traversePrePost, traversePrePostMut, traversePrePostConditionalMut, traverseFunctionsMut};
 use super::cashew::builder;
 use super::num::{jsD2I, f64toi32, f64tou32, isInteger, isInteger32};
 
@@ -254,6 +254,15 @@ impl<'a> AsmData<'a> {
     fn isVar(&self, name: &IString) -> bool {
         self.locals.get(name).map_or(false, |l| !l.param)
     }
+    fn isLocalInLocals(locals: &HashMap<IString, Local>, name: &IString) -> bool {
+        locals.contains_key(name)
+    }
+    fn isParamInLocals(locals: &HashMap<IString, Local>, name: &IString) -> bool {
+        locals.get(name).map_or(false, |l| l.param)
+    }
+    fn isVarInLocals(locals: &HashMap<IString, Local>, name: &IString) -> bool {
+        locals.get(name).map_or(false, |l| !l.param)
+    }
 
     fn addParam(&mut self, name: IString, ty: AsmType) {
         let prev = self.locals.insert(name.clone(), Local::new(ty, true));
@@ -337,6 +346,8 @@ fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, 
                     assert!(asmFloatZero == nodestr)
                 } else {
                     // RSTODO: asmFloatZero is currently per pass, but in emoptimizer it's per file
+                    // RSTODO: asmFloatZero is also stored on asmdata, possibly in an attempt by me
+                    // to have some common place to access it
                     *asmFloatZero = Some(nodestr.clone())
                 }
                 AsmType::Float
@@ -733,7 +744,7 @@ fn triviallySafeToMove(node: &AstValue, asmDataLocals: &HashMap<IString, Local>)
             UnaryPrefix(..) |
             Assign(..) |
             Num(..) => (),
-            Name(ref name) => if !asmDataLocals.contains_key(name) { ok = false },
+            Name(ref name) => if !AsmData::isLocalInLocals(asmDataLocals, name) { ok = false },
             Call(_, _) => if callHasSideEffects(node) { ok = false },
             _ => ok = false,
         }
@@ -1017,59 +1028,80 @@ lazy_static! {
    ];
 // RSTODO
 //          CONTROL_FLOW("do while for if switch"),
-//          LOOP("do while for"),
-//          CONDITION_CHECKERS("if do while switch"),
-//          SAFE_TO_DROP_COERCION("unary-prefix name num");
 }
 
 // RSTODO
-//StringSet BREAK_CAPTURERS("do while for switch"),
-//          CONTINUE_CAPTURERS("do while for"),
 //          FUNCTIONS_THAT_ALWAYS_THROW("abort ___resumeException ___cxa_throw ___cxa_rethrow");
+
+fn isLoop(node: &AstValue) -> bool {
+    match *node {
+        Do(..) | While(..) => true,
+        _ => false
+    }
+}
 
 fn isFunctionTable(name: &str) -> bool {
     name.starts_with("FUNCTION_TABLE")
 }
 
-// RSTODO
-//// Internal utilities
-//
-//bool canDropCoercion(Ref node) {
-//  if (SAFE_TO_DROP_COERCION.has(node[0])) return true;
-//  if (node[0] == BINARY) {
-//    switch (node[1]->getCString()[0]) {
-//      case '>': return node[1] == RSHIFT || node[1] == TRSHIFT;
-//      case '<': return node[1] == LSHIFT;
-//      case '|': case '^': case '&': return true;
-//    }
-//  }
-//  return false;
-//}
-//
-//Ref simplifyCondition(Ref node) {
-//  node = simplifyNotCompsDirect(node);
-//  // on integers, if (x == 0) is the same as if (x), and if (x != 0) as if (!x)
-//  if (node[0] == BINARY && (node[1] == EQ || node[1] == NE)) {
-//    Ref target;
-//    if (detectType(node[2]) == ASM_INT && node[3][0] == NUM && node[3][1]->getNumber() == 0) {
-//      target = node[2];
-//    } else if (detectType(node[3]) == ASM_INT && node[2][0] == NUM && node[2][1]->getNumber() == 0) {
-//      target = node[3];
-//    }
-//    if (!!target) {
-//      if (target[0] == BINARY && (target[1] == OR || target[1] == TRSHIFT) && target[3][0] == NUM && target[3][1]->getNumber() == 0 &&
-//          canDropCoercion(target[2])) {
-//        target = target[2]; // drop the coercion, in a condition it is ok to do if (x)
-//      }
-//      if (node[1] == EQ) {
-//        return make2(UNARY_PREFIX, L_NOT, target);
-//      } else {
-//        return target;
-//      }
-//    }
-//  }
-//  return node;
-//}
+// Internal utilities
+
+fn canDropCoercion(node: &AstValue) -> bool {
+    match *node {
+        UnaryPrefix(..) |
+        Name(..) |
+        Num(..) |
+        Binary(is!(">>"), _, _) |
+        Binary(is!(">>>"), _, _) |
+        Binary(is!("<<"), _, _) |
+        Binary(is!("|"), _, _) |
+        Binary(is!("^"), _, _) |
+        Binary(is!("&"), _, _) => true,
+        _ => false,
+    }
+}
+
+fn simplifyCondition(node: &mut AstValue, asmFloatZero: &mut Option<IString>) {
+    simplifyNotCompsDirect(node, asmFloatZero);
+    // on integers, if (x == 0) is the same as if (x), and if (x != 0) as if (!x)
+    match *node {
+        Binary(is!("=="), _, _) |
+        Binary(is!("!="), _, _) => {
+            // RSTODO: lexical lifetimes
+            let iseqop;
+            let maybetarget;
+            {
+            let (op, left, right) = node.getMutBinary();
+            iseqop = *op == is!("==");
+            maybetarget = if detectType(left, None, asmFloatZero, false) == Some(AsmType::Int) && **right == Num(0f64) {
+                Some(mem::replace(left, makeEmpty()))
+            } else if detectType(right, None, asmFloatZero, false) == Some(AsmType::Int) && **left == Num(0f64) {
+                Some(mem::replace(right, makeEmpty()))
+            } else {
+                None
+            }
+            }
+            if let Some(mut target) = maybetarget {
+                if let Binary(_, _, mast!(Num(0f64))) = *target {
+                    // RSTODO: lexical lifetimes
+                    let maybenewtarget = {
+                        let (op, left, _) = target.getMutBinary();
+                        if (*op == is!("|") || *op == is!(">>>")) && canDropCoercion(left) {
+                            Some(mem::replace(left, makeEmpty()))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(newtarget) = maybenewtarget {
+                        *target = *newtarget
+                    }
+                };
+                *node = if iseqop { *an!(UnaryPrefix(is!("!"), target)) } else { *target }
+            }
+        },
+        _ => (),
+    };
+}
 
 // Passes
 
@@ -1265,7 +1297,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                                 let name = &name_.clone();
                                 *name_ = is!(""); // we can remove this - it will never be shown, and should not be left to confuse us as we traverse
                                 // RSNOTE: e.g. removing sp
-                                if asmDataLocals.contains_key(name) {
+                                if AsmData::isLocalInLocals(asmDataLocals, name) {
                                     {
                                     let numuses = uses.get_mut(name).unwrap();
                                     *numuses -= 1; // cannot be infinite recursion since we descend an energy function
@@ -1337,7 +1369,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
             match *node {
                 Name(ref depName) => {
                     if !ignoreName {
-                        if !asmDataLocals.contains_key(depName) {
+                        if !AsmData::isLocalInLocals(asmDataLocals, depName) {
                             track.usesGlobals = true
                         }
                         if !potentials.contains(depName) { // deps do not matter for potentials - they are defined once, so no complexity
@@ -1438,7 +1470,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                             // expensive check for invalidating specific tracked vars. This list is generally quite short though, because of
                             // how we just eliminate in short spans and abort when control flow happens TODO: history numbers instead
                             invalidateByDep(&name, depMap, tracked); // can happen more than once per dep..
-                            if !asmDataLocals.contains_key(&name) && !*globalsInvalidated {
+                            if !AsmData::isLocalInLocals(asmDataLocals, &name) && !*globalsInvalidated {
                                 invalidateGlobals(tracked);
                                 *globalsInvalidated = true
                             }
@@ -1496,7 +1528,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                 Name(ref name) => {
                     if tracked.contains_key(name) {
                         doEliminate(name, nodeptr, sideEffectFree, varsToRemove, tracked);
-                    } else if !asmDataLocals.contains_key(name) && !*callsInvalidated && (memSafe || !HEAP_NAMES.contains(name)) { // ignore HEAP8 etc when not memory safe, these are ok to access, e.g. SIMD_Int32x4_load(HEAP8, ...)
+                    } else if !AsmData::isLocalInLocals(asmDataLocals, name) && !*callsInvalidated && (memSafe || !HEAP_NAMES.contains(name)) { // ignore HEAP8 etc when not memory safe, these are ok to access, e.g. SIMD_Int32x4_load(HEAP8, ...)
                         invalidateCalls(tracked);
                         *callsInvalidated = true
                     }
@@ -1666,8 +1698,9 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
         }
         // Look for statements, including while-switch pattern
         // RSTODO: lexical borrow issue https://github.com/rust-lang/rust/issues/28449
-        let stats = if let Some(stats) = getStatements(unsafe { &mut *(block as *mut _) }) {
-            stats
+        //let stats = if let Some(stats) = getStatements(block) {
+        let stats = if getStatements(block).is_some() {
+            getStatements(block).unwrap()
         } else {
             if let While(_, ref mut node @ mast!(Switch(_, _))) = *block {
                 // RSNOTE: this is basically the full loop below, hand optimised for a single switch
@@ -1864,7 +1897,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                             // they overlap, we can still proceed with the loop optimization, but we must introduce a
                             // loop temp helper variable
                             let temp = IString::from(format!("{}$looptemp", looper));
-                            assert!(!asmDataLocals.contains_key(&temp));
+                            assert!(!AsmData::isLocalInLocals(asmDataLocals, &temp));
                             let statslen = stats.len();
                             for (i, stat) in stats[firstLooperUsage..lastLooperUsage+1].iter_mut().enumerate() {
                                 let i = i + firstLooperUsage;
@@ -4317,7 +4350,7 @@ pub fn minifyLocals(ast: &mut AstValue, extraInfo: &serde_json::Value) {
     // as that might interfere with local variable names.
     traversePre(fun, |node: &AstValue| {
         if let Name(ref name) = *node {
-            if !asmDataLocals.contains_key(name) {
+            if !AsmData::isLocalInLocals(&asmDataLocals, name) {
                 if let Some(minified) = globals.get(&**name) {
                     assert!(*minified != is!(""));
                     match newNames.entry(name.clone()) {
@@ -4350,7 +4383,7 @@ pub fn minifyLocals(ast: &mut AstValue, extraInfo: &serde_json::Value) {
             let minified = &minifiedNames[*nextMinifiedName];
             *nextMinifiedName += 1;
             // TODO: we can probably remove !isLocalName here
-            if !usedNames.contains(minified) && !asmDataLocals.contains_key(minified) {
+            if !usedNames.contains(minified) && !AsmData::isLocalInLocals(asmDataLocals, minified) {
                 return minified.clone()
             }
         }
@@ -4390,7 +4423,7 @@ pub fn minifyLocals(ast: &mut AstValue, extraInfo: &serde_json::Value) {
                         return
                     }
                     // RSTODO: this would just be else-if without the early return, but lexical borrows...
-                    if asmDataLocals.contains_key(name) {
+                    if AsmData::isLocalInLocals(&asmDataLocals, name) {
                         let minified = getNextMinifiedName!();
                         let prev = newNames.insert(mem::replace(name, minified.clone()), minified);
                         assert!(prev.is_none());
@@ -4434,146 +4467,174 @@ pub fn minifyLocals(ast: &mut AstValue, extraInfo: &serde_json::Value) {
     })
 }
 
-// RSTODO
-//void asmLastOpts(Ref ast) {
-//  std::vector<Ref> statsStack;
-//  traverseFunctions(ast, [&](Ref fun) {
-//    traversePrePost(fun, [&](Ref node) {
-//      Ref type = node[0];
-//      Ref stats = getStatements(node);
-//      if (!!stats) statsStack.push_back(stats);
-//      if (CONDITION_CHECKERS.has(type)) {
-//        node[1] = simplifyCondition(node[1]);
-//      }
-//      if (type == WHILE && node[1][0] == NUM && node[1][1]->getNumber() == 1 && node[2][0] == BLOCK && node[2]->size() == 2) {
-//        // This is at the end of the pipeline, we can assume all other optimizations are done, and we modify loops
-//        // into shapes that might confuse other passes
-//
-//        // while (1) { .. if (..) { break } } ==> do { .. } while(..)
-//        Ref stats = node[2][1];
-//        Ref last = stats->back();
-//        if (!!last && last[0] == IF && (last->size() < 4 || !last[3]) && last[2][0] == BLOCK && !!last[2][1][0]) {
-//          Ref lastStats = last[2][1];
-//          int lastNum = lastStats->size();
-//          Ref lastLast = lastStats[lastNum-1];
-//          if (!(lastLast[0] == BREAK && !lastLast[1])) return;// if not a simple break, dangerous
-//          for (int i = 0; i < lastNum; i++) {
-//            if (lastStats[i][0] != STAT && lastStats[i][0] != BREAK) return; // something dangerous
-//          }
-//          // ok, a bunch of statements ending in a break
-//          bool abort = false;
-//          int stack = 0;
-//          int breaks = 0;
-//          traversePrePost(stats, [&](Ref node) {
-//            Ref type = node[0];
-//            if (type == CONTINUE) {
-//              if (stack == 0 || !!node[1]) { // abort if labeled (we do not analyze labels here yet), or a continue directly on us
-//                abort = true;
-//              }
-//            } else if (type == BREAK) {
-//              if (stack == 0 || !!node[1]) { // relevant if labeled (we do not analyze labels here yet), or a break directly on us
-//                breaks++;
-//              }
-//            } else if (LOOP.has(type)) {
-//              stack++;
-//            }
-//          }, [&](Ref node) {
-//            if (LOOP.has(node[0])) {
-//              stack--;
-//            }
-//          });
-//          if (abort) return;
-//          assert(breaks > 0);
-//          if (lastStats->size() > 1 && breaks != 1) return; // if we have code aside from the break, we can only move it out if there is just one break
-//          if (statsStack.size() < 1) return; // no chance we have this stats on hand
-//          // start to optimize
-//          if (lastStats->size() > 1) {
-//            Ref parent = statsStack.back();
-//            int me = parent->indexOf(node);
-//            if (me < 0) return; // not always directly on a stats, could be in a label for example
-//            parent->insert(me+1, lastStats->size()-1);
-//            for (size_t i = 0; i+1 < lastStats->size(); i++) {
-//              parent[me+1+i] = lastStats[i];
-//            }
-//          }
-//          Ref conditionToBreak = last[1];
-//          stats->pop_back();
-//          node[0]->setString(DO);
-//          node[1] = simplifyNotCompsDirect(make2(UNARY_PREFIX, L_NOT, conditionToBreak));
-//        }
-//      } else if (type == BINARY) {
-//        if (node[1] == AND) {
-//          if (node[3][0] == UNARY_PREFIX && node[3][1] == MINUS && node[3][2][0] == NUM && node[3][2][1]->getNumber() == 1) {
-//            // Change &-1 into |0, at this point the hint is no longer needed
-//            node[1]->setString(OR);
-//            node[3] = node[3][2];
-//            node[3][1]->setNumber(0);
-//          }
-//        } else if (node[1] == MINUS && node[3][0] == UNARY_PREFIX) {
-//          // avoid X - (-Y) because some minifiers buggily emit X--Y which is invalid as -- can be a unary. Transform to
-//          //        X + Y
-//          if (node[3][1] == MINUS) { // integer
-//            node[1]->setString(PLUS);
-//            node[3] = node[3][2];
-//          } else if (node[3][1] == PLUS) { // float
-//            if (node[3][2][0] == UNARY_PREFIX && node[3][2][1] == MINUS) {
-//              node[1]->setString(PLUS);
-//              node[3][2] = node[3][2][2];
-//            }
-//          }
-//        }
-//      }
-//    }, [&](Ref node) {
-//      if (statsStack.size() > 0) {
-//        Ref stats = getStatements(node);
-//        if (!!stats) statsStack.pop_back();
-//      }
-//    });
-//    // convert  { singleton }  into  singleton
-//    traversePre(fun, [](Ref node) {
-//      if (node[0] == BLOCK && !!getStatements(node) && node[1]->size() == 1) {
-//        safeCopy(node, node[1][0]);
-//      }
-//    });
-//    // convert L: do { .. } while(0) into L: { .. }
-//    traversePre(fun, [](Ref node) {
-//      if (node[0] == LABEL && node[1]->isString() /* careful of var label = 5 */ &&
-//          node[2][0] == DO && node[2][1][0] == NUM && node[2][1][1]->getNumber() == 0 && node[2][2][0] == BLOCK) {
-//        // there shouldn't be any continues on this, not direct break or continue
-//        IString label = node[1]->getIString();
-//        bool abort = false;
-//        int breakCaptured = 0, continueCaptured = 0;
-//        traversePrePost(node[2][2], [&](Ref node) {
-//          if (node[0] == CONTINUE) {
-//            if (!node[1] && !continueCaptured) {
-//              abort = true;
-//            } else if (node[1]->isString() && node[1]->getIString() == label) {
-//              abort = true;
-//            }
-//          }
-//          if (node[0] == BREAK && !node[1] && !breakCaptured) {
-//            abort = true;
-//          }
-//          if (BREAK_CAPTURERS.has(node[0])) {
-//            breakCaptured++;
-//          }
-//          if (CONTINUE_CAPTURERS.has(node[0])) {
-//            continueCaptured++;
-//          }
-//        }, [&](Ref node) {
-//          if (BREAK_CAPTURERS.has(node[0])) {
-//            breakCaptured--;
-//          }
-//          if (CONTINUE_CAPTURERS.has(node[0])) {
-//            continueCaptured--;
-//          }
-//        });
-//        if (abort) return;
-//        safeCopy(node[2], node[2][2]);
-//      }
-//    });
-//  });
-//}
+pub fn asmLastOpts(ast: &mut AstValue) {
+
+    let mut asmFloatZero = None;
+
+    traverseFunctionsMut(ast, |fun: &mut AstValue| {
+
+    traversePreMut(fun, |node: &mut AstValue| {
+        match *node {
+            If(ref mut cond, _, _) |
+            Do(ref mut cond, _) |
+            While(ref mut cond, _) |
+            Switch(ref mut cond, _) => simplifyCondition(cond, &mut asmFloatZero),
+            _ => (),
+        }
+        // RSTODO: lexical borrow issue https://github.com/rust-lang/rust/issues/28449
+        //if let Some(stats) = getStatements(node) {
+        if getStatements(node).is_some() {
+            let parentstats = getStatements(node).unwrap();
+            // RSNOTE: this branch of the if is a bit different to emoptimizer to deal with lifetime issues. In practice, it
+            // probably makes more sense this way anyway.
+            let mut nextparentstatpos = 0;
+            while nextparentstatpos < parentstats.len() {
+                let conditionToBreak;
+                let additionalparentstats: Vec<_>;
+                {
+                let parentstat = &mut parentstats[nextparentstatpos];
+                nextparentstatpos += 1;
+                {
+                let stats = if let While(mast!(Num(1f64)), mast!(Block(ref mut stats))) = **parentstat { stats } else { continue };
+                if stats.is_empty() { continue }
+                // This is at the end of the pipeline, we can assume all other optimizations are done, and we modify loops
+                // into shapes that might confuse other passes
+
+                // while (1) { .. if (..) { break } } ==> do { .. } while(..)
+                let lastStatsLen;
+                {
+                let last = if let Some(last) = stats.last_mut() { last } else { continue };
+                let lastStats = if let If(_, mast!(Block(ref mut lastStats)), None) = **last { lastStats } else { continue };
+                lastStatsLen = lastStats.len();
+                if let Some(&mast!(Break(None))) = lastStats.last() {} else { continue } // if not a simple break, dangerous
+                for laststat in lastStats.iter() {
+                    if !laststat.isStat() && !laststat.isBreak() { continue } // something dangerous
+                }
+                }
+                // ok, a bunch of statements ending in a break
+                let mut abort = false;
+                let stack = Cell::new(0);
+                let mut breaks = 0;
+                for stat in stats.iter() {
+                    traversePrePost(stat, |node: &AstValue| {
+                        match *node {
+                            // abort if labeled (we do not analyze labels here yet), or a continue directly on us
+                            Continue(ref label) if stack.get() == 0 || label.is_some() => abort = true,
+                            // relevant if labeled (we do not analyze labels here yet), or a break directly on us
+                            Break(ref label) if stack.get() == 0 || label.is_some() => breaks += 1,
+                            _ if isLoop(node) => stack.set(stack.get() + 1),
+                            _ => (),
+                        }
+                    }, |node: &AstValue| {
+                        if isLoop(node) {
+                            stack.set(stack.get() - 1)
+                        }
+                    });
+                }
+                if abort { continue }
+                assert!(breaks > 0);
+                // RSNOTE: we've done the checking above
+                if lastStatsLen > 1 && breaks != 1 { continue } // if we have code aside from the break, we can only move it out if there is just one break
+                // RSTODO: https://github.com/rust-lang/rfcs/issues/372
+                let (cond, mut lastStats) = if let If(cond, mast!(Block(lastStats)), None) = *stats.pop().unwrap() { (cond, *lastStats) } else { panic!() };
+                assert!(lastStats.pop().unwrap().isBreak());
+                conditionToBreak = cond;
+                additionalparentstats = lastStats;
+                // start to optimize
+                }
+                let block = {
+                    let (_, block) = parentstat.getMutWhile();
+                    mem::replace(block, makeEmpty())
+                };
+                let mut newcondition = an!(UnaryPrefix(is!("!"), conditionToBreak));
+                simplifyNotCompsDirect(&mut newcondition, &mut asmFloatZero);
+                *parentstat = an!(Do(newcondition, block))
+                }
+                parentstats.splice(nextparentstatpos..nextparentstatpos, additionalparentstats);
+            }
+        } else {
+            match *node {
+                Binary(ref mut op @ is!("&"), _, ref mut right @ mast!(UnaryPrefix(is!("-"), Num(1f64)))) => {
+                    // Change &-1 into |0, at this point the hint is no longer needed
+                    *op = is!("|");
+                    *right = an!(Num(0f64))
+                },
+                Binary(is!("-"), _, ref mut right @ mast!(UnaryPrefix(_, _))) => {
+                    // avoid X - (-Y) because some minifiers buggily emit X--Y which is invalid as -- can be a unary. Transform to
+                    //        X + Y
+                    let maybenewright = match **right {
+                        UnaryPrefix(is!("-"), ref mut newright) | // integer
+                        UnaryPrefix(is!("+"), mast!(UnaryPrefix(is!("-"), ref mut newright))) => { // float
+                            Some(mem::replace(newright, makeEmpty()))
+                        },
+                        _ => None,
+                    };
+                    if let Some(newright) = maybenewright {
+                        *right = newright
+                    }
+                },
+                _ => (),
+            }
+        }
+    });
+    // convert  { singleton }  into  singleton
+    traversePreMut(fun, |node: &mut AstValue| {
+        let mut maybenewnode = None;
+        if let Block(_) = *node {
+            let statsissome = getStatements(node).is_some();
+            let (stats,) = node.getMutBlock();
+            if let [ref mut stat] = *stats.as_mut_slice() {
+                // RSTODO: valid assertion?
+                assert!(statsissome);
+                maybenewnode = Some(mem::replace(stat, makeEmpty()))
+            }
+        }
+        if let Some(newnode) = maybenewnode {
+            *node = *newnode
+        }
+    });
+    // convert L: do { .. } while(0) into L: { .. }
+    traversePreMut(fun, |node: &mut AstValue| {
+        if let Label(ref label, ref mut body @ mast!(Do(Num(0f64), Block(_)))) = *node {
+            // there shouldn't be any continues on this, not direct break or continue
+            let mut abort = true;
+            let breakCaptured = Cell::new(0);
+            let continueCaptured = Cell::new(0);
+            let newbody;
+            {
+            let (_, block) = body.getMutDo();
+            fn isBreakCapturer(node: &AstValue) -> bool { match *node { Do(..) | While(..) | Switch(..) => true, _ => false } }
+            fn isContinueCapturer(node: &AstValue) -> bool { match *node { Do(..) | While(..) => true, _ => false } }
+            traversePrePost(block, |node: &AstValue| {
+                match *node {
+                    Continue(None) if continueCaptured.get() == 0 => abort = true,
+                    Continue(Some(ref innerlabel)) if innerlabel == label => abort = true,
+                    Break(None) if breakCaptured.get() == 0 => abort = true,
+                    _ => (),
+                }
+                if isBreakCapturer(node) {
+                    breakCaptured.set(breakCaptured.get() + 1)
+                }
+                if isContinueCapturer(node) {
+                    continueCaptured.set(continueCaptured.get() + 1)
+                }
+            }, |node: &AstValue| {
+                if isBreakCapturer(node) {
+                    breakCaptured.set(breakCaptured.get() - 1)
+                }
+                if isContinueCapturer(node) {
+                    continueCaptured.set(continueCaptured.get() - 1)
+                }
+            });
+            if abort { return }
+            newbody = mem::replace(block, makeEmpty());
+            }
+            *body = newbody
+        }
+    })
+
+    })
+}
 
 // Contrary to the name this does not eliminate actual dead functions, only
 // those marked as such with DEAD_FUNCTIONS

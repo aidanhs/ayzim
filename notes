@@ -25,6 +25,9 @@ DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling 
 
 
 LATER
+ - use vecs rather than astvecs where it doesn't increase the size of the
+   astvalue enum
+ - try and minimise astnode usage - should mostly be &(mut)? AstValue
  - think of some nice way to get rid of mast entirely
  - mem::swaps are interesting because they can either swap the boxes (pointers)
    or the actual AstValues. could this distinction harm locality

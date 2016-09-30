@@ -807,6 +807,11 @@ pub fn traversePre<F>(node: &AstValue, mut visit: F) where F: FnMut(&AstValue) {
     let wrap = |node: &mut AstValue| visit(&*node);
     traversePreMut(unsafe { &mut *(node as *const _ as *mut _) }, wrap)
 }
+pub fn traversePrePost<F1,F2>(node: &AstValue, mut visitPre: F1, mut visitPost: F2) where F1: FnMut(&AstValue), F2: FnMut(&AstValue) {
+    let wrapPre = |node: &mut AstValue| visitPre(&*node);
+    let wrapPost = |node: &mut AstValue| visitPost(&*node);
+    traversePrePostMut(unsafe { &mut *(node as *const _ as *mut _) }, wrapPre, wrapPost)
+}
 
 // Traverse, calling visit before the children
 pub fn traversePreMut<F>(node: &mut AstValue, mut visit: F) where F: FnMut(&mut AstValue) {

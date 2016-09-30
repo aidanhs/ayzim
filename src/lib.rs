@@ -43,7 +43,7 @@ use optimizer::{
     //registerize
     //registerizeHarder
     minifyLocals,
-    //asmLastOpts
+    asmLastOpts,
 };
 
 const DEBUG: bool = false;
@@ -219,7 +219,7 @@ pub fn libmain() {
             //"registerizeHarder" => registerizeHarder(doc),
             "minifyLocals" => minifyLocals(doc, &extraInfo),
             "minifyWhitespace" => worked = false,
-            //"asmLastOpts" => asmLastOpts(doc),
+            "asmLastOpts" => asmLastOpts(doc),
             "last" => worked = false,
             "noop" => worked = false,
             _ => {
