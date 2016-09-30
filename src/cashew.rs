@@ -812,6 +812,15 @@ pub fn traversePrePost<F1,F2>(node: &AstValue, mut visitPre: F1, mut visitPost: 
     let wrapPost = |node: &mut AstValue| visitPost(&*node);
     traversePrePostMut(unsafe { &mut *(node as *const _ as *mut _) }, wrapPre, wrapPost)
 }
+pub fn traversePreConditional<F>(node: &AstValue, mut visit: F) where F: FnMut(&AstValue) -> bool {
+    let wrap = |node: &mut AstValue| visit(&*node);
+    traversePreConditionalMut(unsafe { &mut *(node as *const _ as *mut _) }, wrap)
+}
+pub fn traversePrePostConditional<F1,F2>(node: &AstValue, mut visitPre: F1, mut visitPost: F2) where F1: FnMut(&AstValue) -> bool, F2: FnMut(&AstValue) {
+    let wrapPre = |node: &mut AstValue| visitPre(&*node);
+    let wrapPost = |node: &mut AstValue| visitPost(&*node);
+    traversePrePostConditionalMut(unsafe { &mut *(node as *const _ as *mut _) }, wrapPre, wrapPost)
+}
 
 // Traverse, calling visit before the children
 pub fn traversePreMut<F>(node: &mut AstValue, mut visit: F) where F: FnMut(&mut AstValue) {
@@ -843,6 +852,23 @@ pub fn traversePrePostMut<F1,F2>(node: &mut AstValue, mut visitPre: F1, mut visi
         } else {
             let (node, _) = stack.pop_back();
             visitPost(unsafe { &mut *node });
+            if stack.len() == 0 { break }
+        }
+    }
+}
+
+// Traverse, calling visitPre before the children. If pre returns false, do not traverse children
+pub fn traversePreConditionalMut<F>(node: &mut AstValue, mut visit: F) where F: FnMut(&mut AstValue) -> bool {
+    type It<'a> = Box<Iterator<Item=&'a mut AstNode>>;
+    if !visit(node) { return };
+    let mut stack = StackedStack::new();
+    stack.push_back((node as *mut _, node.children_mut::<It>()));
+    loop {
+        if let Some(&mut box ref mut node) = stack.back().1.next() {
+            if !visit(node) { continue };
+            stack.push_back((node as *mut _, node.children_mut::<It>()));
+        } else {
+            stack.pop_back();
             if stack.len() == 0 { break }
         }
     }

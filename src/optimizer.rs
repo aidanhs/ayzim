@@ -5,6 +5,7 @@ use std::{f64, i32};
 #[cfg(feature = "profiling")]
 use std::io::Write;
 use std::iter;
+use std::iter::FromIterator;
 use std::mem;
 use std::ptr;
 #[cfg(feature = "profiling")]
@@ -21,7 +22,7 @@ use super::IString;
 use super::MoreTime;
 use super::cashew::{AstValue, AstNode, AstVec};
 use super::cashew::AstValue::*;
-use super::cashew::{traversePre, traversePreMut, traversePrePost, traversePrePostMut, traversePrePostConditionalMut, traverseFunctionsMut};
+use super::cashew::{traversePre, traversePreMut, traversePrePost, traversePrePostMut, traversePreConditional, traversePrePostConditionalMut, traverseFunctionsMut};
 use super::cashew::builder;
 use super::num::{jsD2I, f64toi32, f64tou32, isInteger, isInteger32};
 
@@ -40,6 +41,25 @@ enum AsmType {
     Bool16x8,
     Bool32x4,
     Bool64x2,
+}
+impl AsmType {
+    fn as_usize(&self) -> usize {
+        use self::AsmType::*;
+        match *self {
+            Int => 0,
+            Double => 1,
+            Float => 2,
+            Float32x4 => 3,
+            Float64x2 => 4,
+            Int8x16 => 5,
+            Int16x8 => 6,
+            Int32x4 => 7,
+            Bool8x16 => 8,
+            Bool16x8 => 9,
+            Bool32x4 => 10,
+            Bool64x2 => 11,
+        }
+    }
 }
 // RSTODO
 //AsmType intToAsmType(int type) {
@@ -823,20 +843,12 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 fn clearEmptyNodes(arr: &mut AstVec<AstNode>) {
     arr.retain(|an: &AstNode| { !isEmpty(deStat(an)) })
 }
-// RSTODO
-//void clearUselessNodes(Ref arr) {
-//  int skip = 0;
-//  for (size_t i = 0; i < arr->size(); i++) {
-//    Ref curr = arr[i];
-//    if (skip) {
-//      arr[i-skip] = curr;
-//    }
-//    if (isEmpty(deStat(curr)) || (curr[0] == STAT && !hasSideEffects(curr[1]))) {
-//      skip++;
-//    }
-//  }
-//  if (skip) arr->setSize(arr->size() - skip);
-//}
+fn clearUselessNodes(arr: &mut AstVec<AstNode>) {
+    arr.retain(|node: &AstNode| {
+        // RSTODO: why check isStat before hasSideEffects? Why not just destat it?
+        !(isEmpty(deStat(node)) || (node.isStat() && !hasSideEffects(deStat(node))))
+    })
+}
 
 fn removeAllEmptySubNodes(ast: &mut AstValue) {
     traversePreMut(ast, |node: &mut AstValue| {
@@ -863,56 +875,80 @@ fn removeAllEmptySubNodes(ast: &mut AstValue) {
         }
     })
 }
-// RSTODO
-//void removeAllUselessSubNodes(Ref ast) {
-//  traversePrePost(ast, [](Ref node) {
-//    Ref type = node[0];
-//    if (type == DEFUN) {
-//      clearUselessNodes(node[3]);
-//    } else if (type == BLOCK && node->size() > 1 && !!node[1]) {
-//      clearUselessNodes(node[1]);
-//    } else if (type == SEQ && isEmpty(node[1])) {
-//      safeCopy(node, node[2]);
-//    }
-//  }, [](Ref node) {
-//    Ref type = node[0];
-//    if (type == IF) {
-//      bool empty2 = isEmpty(node[2]), has3 = node->size() == 4 && !!node[3], empty3 = !has3 || isEmpty(node[3]);
-//      if (!empty2 && empty3 && has3) { // empty else clauses
-//        node->setSize(3);
-//      } else if (empty2 && !empty3) { // empty if blocks
-//        safeCopy(node, make2(IF, make2(UNARY_PREFIX, L_NOT, node[1]), node[3]));
-//      } else if (empty2 && empty3) {
-//        if (hasSideEffects(node[1])) {
-//          safeCopy(node, make1(STAT, node[1]));
-//        } else {
-//          safeCopy(node, makeEmpty());
-//        }
-//      }
-//    }
-//  });
-//}
-//
-//Ref unVarify(Ref vars) { // transform var x=1, y=2 etc. into (x=1, y=2), i.e., the same assigns, but without a var definition
-//  Ref ret = makeArray(1);
-//  ret->push_back(makeString(STAT));
-//  if (vars->size() == 1) {
-//    ret->push_back(make3(ASSIGN, makeBool(true), makeName(vars[0][0]->getIString()), vars[0][1]));
-//  } else {
-//    ret->push_back(makeArray(vars->size()-1));
-//    Ref curr = ret[1];
-//    for (size_t i = 0; i+1 < vars->size(); i++) {
-//      curr->push_back(makeString(SEQ));
-//      curr->push_back(make3(ASSIGN, makeBool(true), makeName(vars[i][0]->getIString()), vars[i][1]));
-//      if (i != vars->size()-2) {
-//        curr->push_back(makeArray());
-//        curr = curr[2];
-//      }
-//    }
-//    curr->push_back(make3(ASSIGN, makeBool(true), makeName(vars->back()[0]->getIString()), vars->back()[1]));
-//  }
-//  return ret;
-//}
+// RSTODO: lots of lexical lifetimes in this fn
+fn removeAllUselessSubNodes(ast: &mut AstValue) {
+    traversePrePostMut(ast, |node: &mut AstValue| {
+        match *node {
+            Defun(_, _, ref mut stats) => clearUselessNodes(stats),
+            Block(ref mut stats) => clearUselessNodes(stats),
+            Seq(_, _) => {
+                let mut maybenewnode = None;
+                {
+                let (left, right) = node.getMutSeq();
+                if isEmpty(left) {
+                    maybenewnode = Some(mem::replace(right, makeEmpty()))
+                }
+                }
+                if let Some(newnode) = maybenewnode {
+                    *node = *newnode
+                }
+            },
+            _ => (),
+        }
+    }, |node: &mut AstValue| {
+        let (empty2, has3, empty3) = if let If(_, ref mut ift, ref mut miff) = *node {
+            (isEmpty(&ift), miff.is_some(), miff.as_ref().map(|iff| isEmpty(iff)).unwrap_or(true))
+        } else {
+            return
+        };
+        if !empty2 && empty3 && has3 { // empty else clauses
+            let (_, _, maybeiffalse) = node.getMutIf();
+            *maybeiffalse = None
+        } else if empty2 && !empty3 { // empty if blocks
+            let newnode;
+            {
+            let (cond, _, maybeiffalse) = node.getMutIf();
+            let (cond, iffalse) = (mem::replace(cond, makeEmpty()), mem::replace(maybeiffalse.as_mut().unwrap(), makeEmpty()));
+            newnode = an!(If(an!(UnaryPrefix(is!("!"), cond)), iffalse, None))
+            }
+            *node = *newnode
+        } else if empty2 && empty3 {
+            let newnode;
+            {
+            let (cond, _, _) = node.getMutIf();
+            newnode = if hasSideEffects(cond) {
+                an!(Stat(mem::replace(cond, makeEmpty())))
+            } else {
+                makeEmpty()
+            }
+            }
+            *node = *newnode
+        }
+    })
+}
+
+// RSNOTE: does slightly more than the emopt version as logic has been moved
+// from registerize
+fn unVarify(node: &mut AstValue) {  // transform var x=1, y=2 etc. into (x=1, y=2), i.e., the same assigns, but without a var definition
+    let newnode;
+    {
+    let (vars,) = node.getMutVar();
+    let vars = mem::replace(vars, makeArray(0));
+    let mut newassigns: Vec<_> = vars.into_iter().filter_map(|(name, maybeval)| {
+        maybeval.map(|val| an!(Assign(true, makeName(name), val)))
+    }).collect();
+    newnode = if newassigns.is_empty() {
+        makeEmpty()
+    } else {
+        let mut newnode = newassigns.pop().unwrap();
+        while let Some(newassign) = newassigns.pop() {
+            newnode = an!(Seq(newassign, newnode))
+        }
+        an!(Stat(newnode))
+    }
+    }
+    *node = *newnode
+}
 
 // Calculations
 
@@ -1026,8 +1062,6 @@ lazy_static! {
         "&",
         "^",
    ];
-// RSTODO
-//          CONTROL_FLOW("do while for if switch"),
 }
 
 // RSTODO
@@ -2807,271 +2841,289 @@ pub fn optimizeFrounds(ast: &mut AstValue) {
     assert!(inReturn.get() == 0)
 }
 
+// Very simple 'registerization', coalescing of variables into a smaller number.
+
+fn getRegPrefix(ty: AsmType) -> &'static str {
+    use self::AsmType::*;
+    match ty {
+        Int => "i",
+        Double => "d",
+        Float => "f",
+        Float32x4 => "F4",
+        Float64x2 => "F2",
+        Int8x16 => "I16",
+        Int16x8 => "I8",
+        Int32x4 => "I4",
+        Bool8x16 => "B16",
+        Bool16x8 => "B8",
+        Bool32x4 => "B4",
+        Bool64x2 => "B2",
+    }
+}
+
+fn getRegName(ty: AsmType, num: usize) -> IString {
+    IString::from(format!("{}{}", getRegPrefix(ty), num))
+}
+
+pub fn registerize(ast: &mut AstValue) {
+
+    traverseFunctionsMut(ast, |fun: &mut AstValue| {
+
+    let mut asmData = AsmData::new(fun);
+    // Add parameters as a first (fake) var (with assignment), so they get taken into consideration
+    // note: params are special, they can never share a register between them (see later)
+    {
+    let (_, args, body) = asmData.func.getMutDefun();
+    if !args.is_empty() {
+        // TODO: will be an isEmpty here, can reuse it.
+        let mut vars = makeArray(args.len());
+        vars.extend(args.iter().map(|name| (name.clone(), Some(makeNum(0f64)))));
+        body.insert(0, an!(Var(vars)))
+    }
+    }
+    // Replace all var definitions with assignments; we will add var definitions at the top after we registerize
+    let mut allVars = HashSet::<IString>::new();
+    traversePreMut(asmData.func, |node: &mut AstValue| {
+        match *node {
+            // RSNOTE: the logic for vars that was here in emopt has been moved to unvarify
+            Var(_) => unVarify(node),
+            // RSNOTE: may not be a new name
+            Name(ref name) => { allVars.insert(name.clone()); },
+            _ => (),
+        }
+    });
+    removeAllUselessSubNodes(asmData.func); // vacuum?
+    let regTypes = UnsafeCell::new(HashMap::<IString, AsmType>::new()); //reg name -> type
+    let getNewRegName = |num: usize, name: IString, asmDataLocals: &HashMap<IString, Local>| {
+        let ty = AsmData::getTypeFromLocals(asmDataLocals, &name).unwrap();
+        let ret = getRegName(ty, num);
+        let prev = unsafe { &mut *regTypes.get() }.insert(ret.clone(), ty);
+        assert!(!prev.is_some() || AsmData::isLocalInLocals(asmDataLocals, &ret)); // register must not shadow non-local name
+        ret
+    };
+    // Find the # of uses of each variable.
+    // While doing so, check if all a variable's uses are dominated in a simple
+    // way by a simple assign, if so, then we can assign its register to it
+    // just for its definition to its last use, and not to the entire toplevel loop,
+    // we call such variables "optimizable"
+    let mut varUses = HashMap::<IString, usize>::new();
+    let mut level = 1;
+    let mut levelDominations = HashMap::<usize, HashSet<IString>>::new(); // level => set of dominated variables XXX vector?
+    let mut varLevels = HashMap::<IString, usize>::new();
+    let mut possibles = HashSet::<IString>::new();
+    let mut unoptimizables = HashSet::<IString>::new();
+    fn purgeLevel(level: &mut usize, levelDominations: &mut HashMap<usize, HashSet<IString>>, varLevels: &mut HashMap<IString, usize>) {
+        // Invalidate all dominating on this level, further users make it unoptimizable
+        if let Some(names) = levelDominations.get_mut(level) {
+            for name in names.drain() {
+                assert!(varLevels.remove(&name).unwrap() == *level)
+            }
+        }
+        *level -= 1
+    };
+    fn possibilifier(node: &AstValue, asmData: &AsmData, varUses: &mut HashMap<IString, usize>, level: &mut usize, levelDominations: &mut HashMap<usize, HashSet<IString>>, varLevels: &mut HashMap<IString, usize>, possibles: &mut HashSet<IString>, unoptimizables: &mut HashSet<IString>) -> bool {
+        // RSTODO: it feels like it might be slow to generate this closure every time we might need it?
+        macro_rules! possibilifierRecurse {
+            () => { |node: &AstValue| possibilifier(node, asmData, varUses, level, levelDominations, varLevels, possibles, unoptimizables) };
+        };
+        match *node {
+            Name(ref name) if asmData.isLocal(name) => {
+                *varUses.entry(name.clone()).or_insert(0) += 1;
+                if possibles.contains(name) && !varLevels.contains_key(name) {
+                    // RSNOTE: could happen multiple times per name
+                    unoptimizables.insert(name.clone()); // used outside of simple domination
+                }
+                true
+            },
+            // if local and not yet used, this might be optimizable if we dominate
+            // all other uses
+            Assign(b, mast!(Name(ref name)), _) if asmData.isLocal(name) && !varUses.contains_key(name) && !varLevels.contains_key(name) => {
+                assert!(b);
+                // RSNOTE: may have been previously discovered as a possible
+                possibles.insert(name.clone());
+                let prev = varLevels.insert(name.clone(), *level);
+                assert!(prev.is_none());
+                let isnew = levelDominations.entry(*level).or_insert_with(HashSet::default).insert(name.clone());
+                assert!(isnew);
+                true
+            },
+            // recurse children, in the context of a loop
+            Do(ref cond, ref body) |
+            While(ref cond, ref body) => {
+                traversePreConditional(cond, possibilifierRecurse!());
+                *level += 1;
+                traversePreConditional(body, possibilifierRecurse!());
+                purgeLevel(level, levelDominations, varLevels);
+                false
+            },
+            // recurse children, in the context of a loop
+            If(ref cond, ref iftrue, ref maybeiffalse) => {
+                traversePreConditional(cond, possibilifierRecurse!());
+                *level += 1;
+                traversePreConditional(iftrue, possibilifierRecurse!());
+                purgeLevel(level, levelDominations, varLevels);
+                if let Some(ref iffalse) = *maybeiffalse {
+                    *level += 1;
+                    traversePreConditional(iffalse, possibilifierRecurse!());
+                    purgeLevel(level, levelDominations, varLevels)
+                }
+                false
+            },
+            // recurse children, in the context of a loop
+            Switch(ref input, ref cases) => {
+                traversePreConditional(input, possibilifierRecurse!());
+                for &(_, ref block) in cases.iter() {
+                    *level += 1;
+                    for stat in block.iter() {
+                        traversePreConditional(stat, possibilifierRecurse!());
+                    }
+                    purgeLevel(level, levelDominations, varLevels)
+                }
+                false
+            },
+            _ => true,
+        }
+    }
+    traversePreConditional(asmData.func,
+        |node: &AstValue| possibilifier(node, &asmData, &mut varUses, &mut level, &mut levelDominations, &mut varLevels, &mut possibles, &mut unoptimizables)
+    );
+    assert!(level == 1);
+
+    let optimizables = HashSet::<IString>::from_iter(possibles.drain().filter(|possible| !unoptimizables.contains(possible)));
+    // RSTODO: could drop a bunch of vars at this point? Or just scope them out
+
+    // Go through the function's code, assigning 'registers'.
+    // The only tricky bit is to keep variables locked on a register through loops,
+    // since they can potentially be returned to. Optimizable variables lock onto
+    // loops that they enter, unoptimizable variables lock in a conservative way
+    // into the topmost loop.
+    // Note that we cannot lock onto a variable in a loop if it was used and free'd
+    // before! (then they could overwrite us in the early part of the loop). For now
+    // we just use a fresh register to make sure we avoid this, but it could be
+    // optimized to check for safe registers (free, and not used in this loop level).
+    let mut varRegs = HashMap::<IString, IString>::new();
+    let mut freeRegsClasses = Vec::<Vec<IString>>::new();
+    freeRegsClasses.resize(NUM_ASMTYPES, vec![]);
+    let freeRegsClasses = UnsafeCell::new(freeRegsClasses);
+    // RSTODO: could remove this and just use fullNames.len()
+    let mut nextReg = 1;
+    let mut fullNames = vec![is!("")]; // names start at 1
+    let loopRegs = UnsafeCell::new(Vec::<Vec<IString>>::new()); // for each loop nesting level, the list of bound variables
+    let loops = Cell::new(0usize); // // 0 is toplevel, 1 is first loop, etc
+    let mut activeOptimizables = HashSet::<IString>::new();
+    let mut optimizableLoops = HashMap::<IString, usize>::new();
+    let mut paramRegs = HashSet::<IString>::new(); // true if the register is used by a parameter (and so needs no def at start of function; also cannot
+                                                   // be shared with another param, each needs its own)
+    {
+    let asmDataLocals = &asmData.locals;
+    traversePrePostMut(asmData.func, |node: &mut AstValue| { // XXX we rely on traversal order being the same as execution order here
+        match *node {
+            // RSNOTE: most of this is a hand-inlined decUse as a simple fix for borrow checking
+            Name(ref mut name) => {
+                if !varUses.contains_key(name) { return }  // no uses left, or not a relevant variable
+                if optimizables.contains(name) {
+                    // RSNOTE: could already exist if previously encountered
+                    activeOptimizables.insert(name.clone());
+                }
+                // RSTODO: redundant given following line?
+                assert!(AsmData::isLocalInLocals(asmDataLocals, name));
+                let freeRegsClasses = unsafe { &mut *freeRegsClasses.get() };
+                let freeRegs = &mut freeRegsClasses[AsmData::getTypeFromLocals(asmDataLocals, name).unwrap().as_usize()];
+                let reg = varRegs.entry(name.clone()).or_insert_with(|| {
+                    // acquire register
+                    if optimizables.contains(name) && !freeRegs.is_empty() &&
+                            !(AsmData::isParamInLocals(asmDataLocals, name) && paramRegs.contains(freeRegs.last().unwrap())) { // do not share registers between parameters
+                        freeRegs.pop().unwrap()
+                    } else {
+                        assert!(fullNames.len() == nextReg);
+                        let newreg = getNewRegName(nextReg, name.clone(), asmDataLocals);
+                        nextReg += 1;
+                        fullNames.push(newreg.clone());
+                        if AsmData::isParamInLocals(asmDataLocals, name) {
+                            let isnew = paramRegs.insert(newreg.clone());
+                            assert!(isnew)
+                        }
+                        newreg
+                    }
+                });
+                assert!(*reg != is!(""));
+                let curvaruses = varUses.get_mut(name).unwrap();
+                assert!(*curvaruses > 0);
+                *curvaruses -= 1;
+                if *curvaruses == 0 {
+                    if optimizables.contains(name) { assert!(activeOptimizables.remove(name)) }
+                    // If we are not in a loop, or we are optimizable and not bound to a loop
+                    // (we might have been in one but left it), we can free the register now.
+                    if loops.get() == 0 || (optimizables.contains(name) && !optimizableLoops.contains_key(name)) {
+                        // free register
+                        freeRegs.push(reg.clone())
+                    } else {
+                        // when the relevant loop is exited, we will free the register
+                        let relevantLoop = if optimizables.contains(name) { *optimizableLoops.get(name).unwrap_or(&1) } else { 1 };
+                        let loopRegs = unsafe { &mut *loopRegs.get() };
+                        if loopRegs.len() <= relevantLoop + 1 { loopRegs.resize(relevantLoop + 1, vec![]) }
+                        loopRegs[relevantLoop].push(reg.clone())
+                    }
+                }
+                *name = reg.clone()
+            },
+            _ if isLoop(node) => {
+                loops.set(loops.get() + 1);
+                // Active optimizables lock onto this loop, if not locked onto one that encloses this one
+                for name in activeOptimizables.iter() {
+                    let val = optimizableLoops.entry(name.clone()).or_insert(loops.get());
+                    assert!(*val > 0)
+                }
+            }
+            _ => (),
+        }
+    }, |node: &mut AstValue| {
+        if isLoop(node) {
+            // Free registers that were locked to this loop
+            let loopRegs = unsafe { &mut *loopRegs.get() };
+            let freeRegsClasses = unsafe { &mut *freeRegsClasses.get() };
+            if loopRegs.len() > loops.get() {
+                for loopReg in loopRegs[loops.get()].drain(..) {
+                    let regty = unsafe { &mut *regTypes.get() }.get(&loopReg).unwrap();
+                    freeRegsClasses[regty.as_usize()].push(loopReg)
+                }
+            }
+            loops.set(loops.get() - 1)
+        }
+    });
+    }
+    {
+    let (_, args, body) = asmData.func.getMutDefun();
+    if !args.is_empty() {
+        args.clear(); // clear params, we will fill with registers
+        body.remove(0); // remove fake initial var
+    }
+    }
+
+    asmData.locals.clear();
+    asmData.params.clear();
+    asmData.vars.clear();
+    let mut newargs = vec![];
+    let regTypes = unsafe { &mut *regTypes.get() };
+    for i in 1..nextReg {
+        let reg = &fullNames[i];
+        let ty = *regTypes.get(reg).unwrap();
+        if !paramRegs.contains(reg) {
+            asmData.addVar(reg.clone(), ty)
+        } else {
+            asmData.addParam(reg.clone(), ty);
+            newargs.push(reg.clone())
+        }
+    }
+    {
+    let (_, args, _) = asmData.func.getMutDefun();
+    mem::replace(&mut **args, newargs);
+    }
+    asmData.denormalize()
+    })
+}
+
 // RSTODO
-//// Very simple 'registerization', coalescing of variables into a smaller number.
-//
-//const char* getRegPrefix(AsmType type) {
-//  switch (type) {
-//    case ASM_INT:       return "i"; break;
-//    case ASM_DOUBLE:    return "d"; break;
-//    case ASM_FLOAT:     return "f"; break;
-//    case ASM_FLOAT32X4: return "F4"; break;
-//    case ASM_FLOAT64X2: return "F2"; break;
-//    case ASM_INT8X16:   return "I16"; break;
-//    case ASM_INT16X8:   return "I8"; break;
-//    case ASM_INT32X4:   return "I4"; break;
-//    case ASM_BOOL8X16:  return "B16"; break;
-//    case ASM_BOOL16X8:  return "B8"; break;
-//    case ASM_BOOL32X4:  return "B4"; break;
-//    case ASM_BOOL64X2:  return "B2"; break;
-//    case ASM_NONE:      return "Z"; break;
-//    default: assert(0); // type doesn't have a name yet
-//  }
-//  return nullptr;
-//}
-//
-//IString getRegName(AsmType type, int num) {
-//  const char* str = getRegPrefix(type);
-//  const int size = 256;
-//  char temp[size];
-//  int written = sprintf(temp, "%s%d", str, num);
-//  assert(written < size);
-//  temp[written] = 0;
-//  IString ret;
-//  ret.set(temp, false);
-//  return ret;
-//}
-//
-//void registerize(Ref ast) {
-//  traverseFunctions(ast, [](Ref fun) {
-//    AsmData asmData(fun);
-//    // Add parameters as a first (fake) var (with assignment), so they get taken into consideration
-//    // note: params are special, they can never share a register between them (see later)
-//    Ref fake;
-//    if (!!fun[2] && fun[2]->size()) {
-//      Ref assign = makeNum(0);
-//      // TODO: will be an isEmpty here, can reuse it.
-//      fun[3]->insert(0, make1(VAR, fun[2]->map([&assign](Ref param) {
-//        return &(makeArray(2)->push_back(param).push_back(assign));
-//      })));
-//    }
-//    // Replace all var definitions with assignments; we will add var definitions at the top after we registerize
-//    StringSet allVars;
-//    traversePre(fun, [&](Ref node) {
-//      Ref type = node[0];
-//      if (type == VAR) {
-//        Ref vars = node[1]->filter([](Ref varr) { return varr->size() > 1; });
-//        if (vars->size() >= 1) {
-//          safeCopy(node, unVarify(vars));
-//        } else {
-//          safeCopy(node, makeEmpty());
-//        }
-//      } else if (type == NAME) {
-//        allVars.insert(node[1]->getIString());
-//      }
-//    });
-//    removeAllUselessSubNodes(fun); // vacuum?
-//    StringTypeMap regTypes; // reg name -> type
-//    auto getNewRegName = [&](int num, IString name) {
-//      AsmType type = asmData.getType(name);
-//      IString ret = getRegName(type, num);
-//      assert(!allVars.has(ret) || asmData.isLocal(ret)); // register must not shadow non-local name
-//      regTypes[ret] = type;
-//      return ret;
-//    };
-//    // Find the # of uses of each variable.
-//    // While doing so, check if all a variable's uses are dominated in a simple
-//    // way by a simple assign, if so, then we can assign its register to it
-//    // just for its definition to its last use, and not to the entire toplevel loop,
-//    // we call such variables "optimizable"
-//    StringIntMap varUses;
-//    int level = 1;
-//    std::unordered_map<int, StringSet> levelDominations; // level => set of dominated variables XXX vector?
-//    StringIntMap varLevels;
-//    StringSet possibles;
-//    StringSet unoptimizables;
-//    auto purgeLevel = [&]() {
-//      // Invalidate all dominating on this level, further users make it unoptimizable
-//      for (auto name : levelDominations[level]) {
-//        varLevels[name] = 0;
-//      }
-//      levelDominations[level].clear();
-//      level--;
-//    };
-//    std::function<bool (Ref node)> possibilifier = [&](Ref node) {
-//      Ref type = node[0];
-//      if (type == NAME) {
-//        IString name = node[1]->getIString();
-//        if (asmData.isLocal(name)) {
-//          varUses[name]++;
-//          if (possibles.has(name) && !varLevels[name]) unoptimizables.insert(name); // used outside of simple domination
-//        }
-//      } else if (type == ASSIGN && node[1]->isBool(true)) {
-//        if (!!node[2] && node[2][0] == NAME) {
-//          IString name = node[2][1]->getIString();
-//          // if local and not yet used, this might be optimizable if we dominate
-//          // all other uses
-//          if (asmData.isLocal(name) && !varUses[name] && !varLevels[name]) {
-//            possibles.insert(name);
-//            varLevels[name] = level;
-//            levelDominations[level].insert(name);
-//          }
-//        }
-//      } else if (CONTROL_FLOW.has(type)) {
-//        // recurse children, in the context of a loop
-//        if (type == WHILE || type == DO) {
-//          traversePrePostConditional(node[1], possibilifier, [](Ref node){});
-//          level++;
-//          traversePrePostConditional(node[2], possibilifier, [](Ref node){});
-//          purgeLevel();
-//        } else if (type == FOR) {
-//          traversePrePostConditional(node[1], possibilifier, [](Ref node){});
-//          for (int i = 2; i <= 4; i++) {
-//            level++;
-//            traversePrePostConditional(node[i], possibilifier, [](Ref node){});
-//            purgeLevel();
-//          }
-//        } else if (type == IF) {
-//          traversePrePostConditional(node[1], possibilifier, [](Ref node){});
-//          level++;
-//          traversePrePostConditional(node[2], possibilifier, [](Ref node){});
-//          purgeLevel();
-//          if (node->size() > 3 && !!node[3]) {
-//            level++;
-//            traversePrePostConditional(node[3], possibilifier, [](Ref node){});
-//            purgeLevel();
-//          }
-//        } else if (type == SWITCH) {
-//          traversePrePostConditional(node[1], possibilifier, [](Ref node){});
-//          Ref cases = node[2];
-//          for (size_t i = 0; i < cases->size(); i++) {
-//            level++;
-//            traversePrePostConditional(cases[i][1], possibilifier, [](Ref node){});
-//            purgeLevel();
-//          }
-//        } else assert(0);;
-//        return false; // prevent recursion into children, which we already did
-//      }
-//      return true;
-//    };
-//    traversePrePostConditional(fun, possibilifier, [](Ref node){});
-//
-//    StringSet optimizables;
-//    for (auto possible : possibles) {
-//      if (!unoptimizables.has(possible)) optimizables.insert(possible);
-//    }
-//
-//    // Go through the function's code, assigning 'registers'.
-//    // The only tricky bit is to keep variables locked on a register through loops,
-//    // since they can potentially be returned to. Optimizable variables lock onto
-//    // loops that they enter, unoptimizable variables lock in a conservative way
-//    // into the topmost loop.
-//    // Note that we cannot lock onto a variable in a loop if it was used and free'd
-//    // before! (then they could overwrite us in the early part of the loop). For now
-//    // we just use a fresh register to make sure we avoid this, but it could be
-//    // optimized to check for safe registers (free, and not used in this loop level).
-//    StringStringMap varRegs; // maps variables to the register they will use all their life
-//    std::vector<StringVec> freeRegsClasses;
-//    freeRegsClasses.resize(ASM_NONE);
-//    int nextReg = 1;
-//    StringVec fullNames;
-//    fullNames.push_back(EMPTY); // names start at 1
-//    std::vector<StringVec> loopRegs; // for each loop nesting level, the list of bound variables
-//    int loops = 0; // 0 is toplevel, 1 is first loop, etc
-//    StringSet activeOptimizables;
-//    StringIntMap optimizableLoops;
-//    StringSet paramRegs; // true if the register is used by a parameter (and so needs no def at start of function; also cannot
-//                         // be shared with another param, each needs its own)
-//    auto decUse = [&](IString name) {
-//      if (!varUses[name]) return false; // no uses left, or not a relevant variable
-//      if (optimizables.has(name)) activeOptimizables.insert(name);
-//      IString reg = varRegs[name];
-//      assert(asmData.isLocal(name));
-//      StringVec& freeRegs = freeRegsClasses[asmData.getType(name)];
-//      if (!reg) {
-          //assert!(*reg != is!(""))
-//        // acquire register
-//        if (optimizables.has(name) && freeRegs.size() > 0 &&
-//            !(asmData.isParam(name) && paramRegs.has(freeRegs.back()))) { // do not share registers between parameters
-//          reg = freeRegs.back();
-//          freeRegs.pop_back();
-//        } else {
-//          assert(fullNames.size() == nextReg);
-//          reg = getNewRegName(nextReg++, name);
-//          fullNames.push_back(reg);
-//          if (asmData.isParam(name)) paramRegs.insert(reg);
-//        }
-//        varRegs[name] = reg;
-//      }
-//      varUses[name]--;
-//      assert(varUses[name] >= 0);
-//      if (varUses[name] == 0) {
-//        if (optimizables.has(name)) activeOptimizables.erase(name);
-//        // If we are not in a loop, or we are optimizable and not bound to a loop
-//        // (we might have been in one but left it), we can free the register now.
-//        if (loops == 0 || (optimizables.has(name) && !optimizableLoops.has(name))) {
-//          // free register
-//          freeRegs.push_back(reg);
-//        } else {
-//          // when the relevant loop is exited, we will free the register
-//          int relevantLoop = optimizables.has(name) ? (optimizableLoops[name] ? optimizableLoops[name] : 1) : 1;
-//          if ((int)loopRegs.size() <= relevantLoop+1) loopRegs.resize(relevantLoop+1);
-//          loopRegs[relevantLoop].push_back(reg);
-//        }
-//      }
-//      return true;
-//    };
-//    traversePrePost(fun, [&](Ref node) { // XXX we rely on traversal order being the same as execution order here
-//      Ref type = node[0];
-//      if (type == NAME) {
-//        IString name = node[1]->getIString();
-//        if (decUse(name)) {
-//          node[1]->setString(varRegs[name]);
-//        }
-//      } else if (LOOP.has(type)) {
-//        loops++;
-//        // Active optimizables lock onto this loop, if not locked onto one that encloses this one
-//        for (auto name : activeOptimizables) {
-//          if (!optimizableLoops[name]) {
-//            optimizableLoops[name] = loops;
-//          }
-//        }
-//      }
-//    }, [&](Ref node) {
-//      Ref type = node[0];
-//      if (LOOP.has(type)) {
-//        // Free registers that were locked to this loop
-//        if ((int)loopRegs.size() > loops && loopRegs[loops].size() > 0) {
-//          for (auto loopReg : loopRegs[loops]) {
-//            freeRegsClasses[regTypes[loopReg]].push_back(loopReg);
-//          }
-//          loopRegs[loops].clear();
-//        }
-//        loops--;
-//      }
-//    });
-//    if (!!fun[2] && fun[2]->size()) {
-//      fun[2]->setSize(0); // clear params, we will fill with registers
-//      fun[3]->splice(0, 1); // remove fake initial var
-//    }
-//
-//    asmData.locals.clear();
-//    asmData.params.clear();
-//    asmData.vars.clear();
-//    for (int i = 1; i < nextReg; i++) {
-//      IString reg = fullNames[i];
-//      AsmType type = regTypes[reg];
-//      if (!paramRegs.has(reg)) {
-//        asmData.addVar(reg, type);
-//      } else {
-//        asmData.addParam(reg, type);
-//        fun[2]->push_back(makeString(reg));
-//      }
-//    }
-//    asmData.denormalize();
-//  });
-//}
-//
 //// Assign variables to 'registers', coalescing them onto a smaller number of shared
 //// variables.
 ////

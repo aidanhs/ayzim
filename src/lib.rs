@@ -40,7 +40,7 @@ use optimizer::{
     simplifyExpressions,
     optimizeFrounds,
     simplifyIfs,
-    //registerize
+    registerize,
     //registerizeHarder
     minifyLocals,
     asmLastOpts,
@@ -215,7 +215,7 @@ pub fn libmain() {
             "simplifyExpressions" => simplifyExpressions(doc, unsafe { preciseF32 }),
             "optimizeFrounds" => optimizeFrounds(doc),
             "simplifyIfs" => simplifyIfs(doc),
-            //"registerize" => registerize(doc),
+            "registerize" => registerize(doc),
             //"registerizeHarder" => registerizeHarder(doc),
             "minifyLocals" => minifyLocals(doc, &extraInfo),
             "minifyWhitespace" => worked = false,
