@@ -40,7 +40,7 @@ pub fn walk_pat_mut<F>(pat: Pat, it: &mut F) -> Pat where F: FnMut(Pat) -> Pat {
         PatKind::Box(ref mut s) | PatKind::Ref(ref mut s, _) => {
             *s = s.clone().map(|p| walk_pat_mut(p, it));
         }
-        PatKind::Vec(ref mut before, ref mut slice, ref mut after) => {
+        PatKind::Slice(ref mut before, ref mut slice, ref mut after) => {
             before.iter_mut().map(|p| *p = p.clone().map(|p| walk_pat_mut(p, it))).count();
             slice.iter_mut().map(|p| *p = p.clone().map(|p| walk_pat_mut(p, it))).count();
             after.iter_mut().map(|p| *p = p.clone().map(|p| walk_pat_mut(p, it))).count();
