@@ -19,12 +19,16 @@ DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling 
  - if not indenting inside a traverse*, leave a blank line at beginning and end
    of the closure
  - make sure to never use .X tuple indexing when doing .getBlah
- - convert all unwraps to expect
+ - convert all unwraps to expect and add details to panics
  - check for &* - the * isn't needed if rust knows the target type
  - consider mem::replace to be must_use - just use *x = y otherwise (maybe clippy should warn)
 
 
 LATER
+ - not being able to chain conditions onto the beginning or end of if let lines
+   is rubbish, there's an issue fr it somewhere
+ - ensure no semicolons except where necessary
+ - consistently name the enum members of the ast enum
  - use vecs rather than astvecs where it doesn't increase the size of the
    astvalue enum
  - try and minimise astnode usage - should mostly be &(mut)? AstValue
@@ -34,3 +38,4 @@ LATER
  - pattern matches should possibly unbox, so that future accesses only have to
    dereference once
  - is it faster to use functions rather than IStringSets?
+ - type aliases for ordered and unordered maps rather than using hashmap and btreemap directly
