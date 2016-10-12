@@ -108,8 +108,11 @@ pub static ATOMS: &'static [&'static str] = &[
     "SIMD_Bool64x2_check",
 
     // optimizer.cpp
-    "abort", // eliminateDeadFuncs
+    "abort", // eliminateDeadFuncs, isFunctionThatAlwaysThrows
     "in", // RESERVED
     "env", // RESERVED
     "let", // RESERVED
+    "___resumeException", // isFunctionThatAlwaysThrows
+    "___cxa_throw", // isFunctionThatAlwaysThrows
+    "___cxa_rethrow", // isFunctionThatAlwaysThrows
 ];

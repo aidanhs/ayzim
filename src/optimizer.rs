@@ -1,6 +1,6 @@
 use std::cell::{Cell, UnsafeCell};
 use std::cmp;
-use std::collections::{HashMap, HashSet, hash_map};
+use std::collections::{BTreeSet, BTreeMap, HashMap, HashSet, hash_map};
 use std::{f64, i32};
 #[cfg(feature = "profiling")]
 use std::io::Write;
@@ -60,15 +60,25 @@ impl AsmType {
             Bool64x2 => 11,
         }
     }
+    fn from_usize(tynum: usize) -> AsmType {
+        use self::AsmType::*;
+        match tynum {
+            0 => Int,
+            1 => Double,
+            2 => Float,
+            3 => Float32x4,
+            4 => Float64x2,
+            5 => Int8x16,
+            6 => Int16x8,
+            7 => Int32x4,
+            8 => Bool8x16,
+            9 => Bool16x8,
+            10 => Bool32x4,
+            11 => Bool64x2,
+            _ => panic!(),
+        }
+    }
 }
-// RSTODO
-//AsmType intToAsmType(int type) {
-//  if (type >= 0 && type <= ASM_NONE) return (AsmType)type;
-//  else {
-//    assert(0);
-//    return ASM_NONE;
-//  }
-//}
 
 struct Local {
     ty: AsmType,
@@ -1064,8 +1074,21 @@ lazy_static! {
    ];
 }
 
-// RSTODO
-//          FUNCTIONS_THAT_ALWAYS_THROW("abort ___resumeException ___cxa_throw ___cxa_rethrow");
+fn isBreakCapturer(node: &AstValue) -> bool {
+    match *node { Do(..) | While(..) | Switch(..) => true, _ => false }
+}
+fn isContinueCapturer(node: &AstValue) -> bool {
+    match *node { Do(..) | While(..) => true, _ => false }
+}
+fn isFunctionThatAlwaysThrows(name: &IString) -> bool {
+    match *name {
+        is!("abort") |
+        is!("___resumeException") |
+        is!("___cxa_throw") |
+        is!("___cxa_rethrow") => true,
+        _ => false,
+    }
+}
 
 fn isLoop(node: &AstValue) -> bool {
     match *node {
@@ -2035,7 +2058,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
     #[cfg(feature = "profiling")]
     {
     printlnerr!("    EL stages: a:{} fe:{} vc:{} se:{} (ss:{}) cv:{} r:{}",
-      tasmdata.to_us(), tfnexamine.to_us(), tvarcheck.to_us(), tstmtelim.to_us(), tstmtscan.to_us(), tcleanvars.to_us(), treconstruct.to_us());
+        tasmdata.to_us(), tfnexamine.to_us(), tvarcheck.to_us(), tstmtelim.to_us(), tstmtscan.to_us(), tcleanvars.to_us(), treconstruct.to_us());
     }
 }
 
@@ -3123,1211 +3146,1361 @@ pub fn registerize(ast: &mut AstValue) {
     })
 }
 
-// RSTODO
-//// Assign variables to 'registers', coalescing them onto a smaller number of shared
-//// variables.
-////
-//// This does the same job as 'registerize' above, but burns a lot more cycles trying
-//// to reduce the total number of register variables.  Key points about the operation:
-////
-////   * we decompose the AST into a flow graph and perform a full liveness
-////     analysis, to determine which variables are live at each point.
-////
-////   * variables that are live concurrently are assigned to different registers.
-////
-////   * variables that are linked via 'x=y' style statements are assigned the same
-////     register if possible, so that the redundant assignment can be removed.
-////     (e.g. assignments used to pass state around through loops).
-////
-////   * any code that cannot be reached through the flow-graph is removed.
-////     (e.g. redundant break statements like 'break L123; break;').
-////
-////   * any assignments that we can prove are not subsequently used are removed.
-////     (e.g. unnecessary assignments to the 'label' variable).
-////
-//void registerizeHarder(Ref ast) {
-//#ifdef PROFILING
-//  clock_t tasmdata = 0;
-//  clock_t tflowgraph = 0;
-//  clock_t tlabelfix = 0;
-//  clock_t tbackflow = 0;
-//  clock_t tjuncvaruniqassign = 0;
-//  clock_t tjuncvarsort = 0;
-//  clock_t tregassign = 0;
-//  clock_t tblockproc = 0;
-//  clock_t treconstruct = 0;
-//#endif
-//
-//  traverseFunctions(ast, [&](Ref fun) {
-//
-//#ifdef PROFILING
-//    clock_t start = clock();
-//#endif
-//
-//    // Do not try to process non-validating methods, like the heap replacer
-//    bool abort = false;
-//    traversePre(fun, [&abort](Ref node) {
-//      if (node[0] == NEW) abort = true;
-//    });
-//    if (abort) return;
-//
-//    AsmData asmData(fun);
-//
-//#ifdef PROFILING
-//    tasmdata += clock() - start;
-//    start = clock();
-//#endif
-//
-//    // Utilities for allocating register variables.
-//    // We need distinct register pools for each type of variable.
-//
-//    typedef std::map<int, IString> IntStringMap;
-//    std::vector<IntStringMap> allRegsByType;
-//    allRegsByType.resize(ASM_NONE+1);
-//    int nextReg = 1;
-//
-//    auto createReg = [&](IString forName) {
-//      // Create a new register of type suitable for the given variable name.
-//      AsmType type = asmData.getType(forName);
-//      IntStringMap& allRegs = allRegsByType[type];
-//      int reg = nextReg++;
-//      allRegs[reg] = getRegName(type, reg);
-//      return reg;
-//    };
-//
-//    // Traverse the tree in execution order and synthesize a basic flow-graph.
-//    // It's convenient to build a kind of "dual" graph where the nodes identify
-//    // the junctions between blocks at which control-flow may branch, and each
-//    // basic block is an edge connecting two such junctions.
-//    // For each junction we store:
-//    //    * set of blocks that originate at the junction
-//    //    * set of blocks that terminate at the junction
-//    // For each block we store:
-//    //    * a single entry junction
-//    //    * a single exit junction
-//    //    * a 'use' and 'kill' set of names for the block
-//    //    * full sequence of NAME and ASSIGN nodes in the block
-//    //    * whether each such node appears as part of a larger expression
-//    //      (and therefore cannot be safely eliminated)
-//    //    * set of labels that can be used to jump to this block
-//
-//    struct Junction {
-//      int id;
-//      std::set<int> inblocks, outblocks;
-//      IOrderedStringSet live;
-//      Junction(int id_) : id(id_) {}
-//    };
-//    struct Node {
-//    };
-//    struct Block {
-//      int id, entry, exit;
-//      std::set<int> labels;
-//      std::vector<Ref> nodes;
-//      std::vector<bool> isexpr;
-//      StringIntMap use;
-//      StringSet kill;
-//      StringStringMap link;
-//      StringIntMap lastUseLoc;
-//      StringIntMap firstDeadLoc;
-//      StringIntMap firstKillLoc;
-//      StringIntMap lastKillLoc;
-//
-//      Block() : id(-1), entry(-1), exit(-1) {}
-//    };
-//    struct ContinueBreak {
-//      int co, br;
-//      ContinueBreak() : co(-1), br(-1) {}
-//      ContinueBreak(int co_, int br_) : co(co_), br(br_) {}
-//    };
-//    typedef std::unordered_map<IString, ContinueBreak> LabelState;
-//
-//    std::vector<Junction> junctions;
-//    std::vector<Block*> blocks;
-//    int currEntryJunction = -1;
-//    Block* nextBasicBlock = nullptr;
-//    int isInExpr = 0;
-//    std::vector<LabelState> activeLabels;
-//    activeLabels.resize(1);
-//    IString nextLoopLabel;
-//
-//    const int ENTRY_JUNCTION = 0;
-//    const int EXIT_JUNCTION = 1;
-//    const int ENTRY_BLOCK = 0;
-//
-//    auto addJunction = [&]() {
-//      // Create a new junction, without inserting it into the graph.
-//      // This is useful for e.g. pre-allocating an exit node.
-//      int id = junctions.size();
-//      junctions.push_back(Junction(id));
-//      return id;
-//    };
-//
-//    std::function<int (int, bool)> joinJunction;
-//
-//    auto markJunction = [&](int id) {
-//      // Mark current traversal location as a junction.
-//      // This makes a new basic block exiting at this position.
-//      if (id < 0) {
-//        id = addJunction();
-//      }
-//      joinJunction(id, true);
-//      return id;
-//    };
-//
-//    auto setJunction = [&](int id, bool force) {
-//      // Set the next entry junction to the given id.
-//      // This can be used to enter at a previously-declared point.
-//      // You can't return to a junction with no incoming blocks
-//      // unless the 'force' parameter is specified.
-//      assert(nextBasicBlock->nodes.size() == 0); // refusing to abandon an in-progress basic block
-//      if (force || junctions[id].inblocks.size() > 0) {
-//        currEntryJunction = id;
-//      } else {
-//        currEntryJunction = -1;
-//      }
-//    };
-//
-//    joinJunction = [&](int id, bool force) {
-//      // Complete the pending basic block by exiting at this position.
-//      // This can be used to exit at a previously-declared point.
-//      if (currEntryJunction >= 0) {
-//        assert(nextBasicBlock);
-//        nextBasicBlock->id = blocks.size();
-//        nextBasicBlock->entry = currEntryJunction;
-//        nextBasicBlock->exit = id;
-//        junctions[currEntryJunction].outblocks.insert(nextBasicBlock->id);
-//        junctions[id].inblocks.insert(nextBasicBlock->id);
-//        blocks.push_back(nextBasicBlock);
-//      } 
-//      nextBasicBlock = new Block();
-//      setJunction(id, force);
-//      return id;
-//    };
-//
-//    auto pushActiveLabels = [&](int onContinue, int onBreak) {
-//      // Push the target junctions for continuing/breaking a loop.
-//      // This should be called before traversing into a loop.
-//      assert(activeLabels.size() > 0);
-//      LabelState& prevLabels = activeLabels.back();
-//      LabelState newLabels = prevLabels;
-//      newLabels[EMPTY] = ContinueBreak(onContinue, onBreak);
-//      if (!!nextLoopLabel) {
-          //assert!(*reg != is!(""))
-//        newLabels[nextLoopLabel] = ContinueBreak(onContinue, onBreak);
-          //Actually make this an option
-//        nextLoopLabel = EMPTY;
-//      }
-//      // An unlabelled CONTINUE should jump to innermost loop,
-//      // ignoring any nested SWITCH statements.
-//      if (onContinue < 0 && prevLabels.count(EMPTY) > 0) {
-//        newLabels[EMPTY].co = prevLabels[EMPTY].co;
-//      }
-//      activeLabels.push_back(newLabels);
-//    };
-//
-//    auto popActiveLabels = [&]() {
-//      // Pop the target junctions for continuing/breaking a loop.
-//      // This should be called after traversing into a loop.
-//      activeLabels.pop_back();
-//    };
-//
-//    auto markNonLocalJump = [&](IString type, IString label) {
-//      // Complete a block via RETURN, BREAK or CONTINUE.
-//      // This joins the targetted junction and then sets the current junction to null.
-//      // Any code traversed before we get back to an existing junction is dead code.
-//      if (type == RETURN) {
-//        joinJunction(EXIT_JUNCTION, false);
-//      } else {
-//        assert(activeLabels.size() > 0);
-//        assert(activeLabels.back().count(label) > 0); // 'jump to unknown label');
-//        auto targets = activeLabels.back()[label];
-//        if (type == CONTINUE) {
-//          joinJunction(targets.co, false);
-//        } else if (type == BREAK) {
-//          joinJunction(targets.br, false);
-//        } else {
-//          assert(0); // 'unknown jump node type');
-//        }
-//      }
-//      currEntryJunction = -1;
-//    };
-//
-//    auto addUseNode = [&](Ref node) {
-//      // Mark a use of the given name node in the current basic block.
-//      assert(node[0] == NAME); // 'not a use node');
-//      IString name = node[1]->getIString();
-//      if (asmData.isLocal(name)) {
-//        nextBasicBlock->nodes.push_back(node);
-//        nextBasicBlock->isexpr.push_back(isInExpr != 0);
-//        if (nextBasicBlock->kill.count(name) == 0) {
-//          nextBasicBlock->use[name] = 1;
-//        }
-//      }
-//    };
-//
-//    auto addKillNode = [&](Ref node) {
-//      // Mark an assignment to the given name node in the current basic block.
-//      assert(node[0] == ASSIGN); //, 'not a kill node');
-//      assert(node[1]->isBool(true)); // 'not a kill node');
-//      assert(node[2][0] == NAME); //, 'not a kill node');
-//      IString name = node[2][1]->getIString();
-//      if (asmData.isLocal(name)) {
-//        nextBasicBlock->nodes.push_back(node);
-//        nextBasicBlock->isexpr.push_back(isInExpr != 0);
-//        nextBasicBlock->kill.insert(name);
-//      }
-//    };
-//
-//    std::function<Ref (Ref)> lookThroughCasts = [&](Ref node) {
-//      // Look through value-preserving casts, like "x | 0" => "x"
-//      if (node[0] == BINARY && node[1] == OR) {
-//        if (node[3][0] == NUM && node[3][1]->getNumber() == 0) {
-//          return lookThroughCasts(node[2]);
-//        }
-//      }
-//      return node;
-//    };
-//
-//    auto addBlockLabel = [&](Ref node) {
-//      assert(nextBasicBlock->nodes.size() == 0); // 'cant add label to an in-progress basic block')
-//      if (node[0] == NUM) {
-//        nextBasicBlock->labels.insert(node[1]->getInteger());
-//      }
-//    };
-//
-//    auto isTrueNode = [&](Ref node) {
-//      // Check if the given node is statically truthy.
-//      return (node[0] == NUM && node[1]->getNumber() != 0);
-//    };
-//
-//    auto isFalseNode = [&](Ref node) {
-//      // Check if the given node is statically falsy.
-//      return (node[0] == NUM && node[1]->getNumber() == 0);
-//    };
-//
-//    std::function<void (Ref)> buildFlowGraph = [&](Ref node) {
-//      // Recursive function to build up the flow-graph.
-//      // It walks the tree in execution order, calling the above state-management
-//      // functions at appropriate points in the traversal.
-//      Ref type = node[0];
-//  
-//      // Any code traversed without an active entry junction must be dead,
-//      // as the resulting block could never be entered. Let's remove it.
-//      if (currEntryJunction < 0 && junctions.size() > 0) {
-//        safeCopy(node, makeEmpty());
-//        return;
-//      }
-// 
-//      // Traverse each node type according to its particular control-flow semantics.
-//      // TODO: switchify this
-//      if (type == DEFUN) {
-//        int jEntry = markJunction(-1);
-//        assert(jEntry == ENTRY_JUNCTION);
-//        int jExit = addJunction();
-//        assert(jExit == EXIT_JUNCTION);
-//        for (size_t i = 0; i < node[3]->size(); i++) {
-//          buildFlowGraph(node[3][i]);
-//        }
-//        joinJunction(jExit, false);
-//      } else if (type == IF) {
-//        isInExpr++;
-//        buildFlowGraph(node[1]);
-//        isInExpr--;
-//        int jEnter = markJunction(-1);
-//        int jExit = addJunction();
-//        if (!!node[2]) {
-//          // Detect and mark "if (label == N) { <labelled block> }".
-//          if (node[1][0] == BINARY && node[1][1] == EQ) {
-//            Ref lhs = lookThroughCasts(node[1][2]);
-//            if (lhs[0] == NAME && lhs[1] == LABEL) {
-//              addBlockLabel(lookThroughCasts(node[1][3]));
-//            }
-//          }
-//          buildFlowGraph(node[2]);
-//        }
-//        joinJunction(jExit, false);
-//        setJunction(jEnter, false);
-//        if (node->size() > 3 && !!node[3]) {
-//          buildFlowGraph(node[3]);
-//        }
-//        joinJunction(jExit, false);
-//      } else if (type == CONDITIONAL) {
-//        isInExpr++;
-//        // If the conditional has no side-effects, we can treat it as a single
-//        // block, which might open up opportunities to remove it entirely.
-//        if (!hasSideEffects(node)) {
-//          buildFlowGraph(node[1]);
-//          if (!!node[2]) {
-//            buildFlowGraph(node[2]);
-//          }
-//          if (!!node[3]) {
-//            buildFlowGraph(node[3]);
-//          }
-//        } else {
-//          buildFlowGraph(node[1]);
-//          int jEnter = markJunction(-1);
-//          int jExit = addJunction();
-//          if (!!node[2]) {
-//            buildFlowGraph(node[2]);
-//          }
-//          joinJunction(jExit, false);
-//          setJunction(jEnter, false);
-//          if (!!node[3]) {
-//            buildFlowGraph(node[3]);
-//          }
-//          joinJunction(jExit, false);
-//        }
-//        isInExpr--;
-//      } else if (type == WHILE) {
-//        // Special-case "while (1) {}" to use fewer junctions,
-//        // since emscripten generates a lot of these.
-//        if (isTrueNode(node[1])) {
-//          int jLoop = markJunction(-1);
-//          int jExit = addJunction();
-//          pushActiveLabels(jLoop, jExit);
-//          buildFlowGraph(node[2]);
-//          popActiveLabels();
-//          joinJunction(jLoop, false);
-//          setJunction(jExit, false);
-//        } else {
-//          int jCond = markJunction(-1);
-//          int jLoop = addJunction();
-//          int jExit = addJunction();
-//          isInExpr++;
-//          buildFlowGraph(node[1]);
-//          isInExpr--;
-//          joinJunction(jLoop, false);
-//          pushActiveLabels(jCond, jExit);
-//          buildFlowGraph(node[2]);
-//          popActiveLabels();
-//          joinJunction(jCond, false);
-//          // An empty basic-block linking condition exit to loop exit.
-//          setJunction(jLoop, false);
-//          joinJunction(jExit, false);
-//        }
-//      } else if (type == DO) {
-//        // Special-case "do {} while (1)" and "do {} while (0)" to use
-//        // fewer junctions, since emscripten generates a lot of these.
-//        if (isFalseNode(node[1])) {
-//          int jExit = addJunction();
-//          pushActiveLabels(jExit, jExit);
-//          buildFlowGraph(node[2]);
-//          popActiveLabels();
-//          joinJunction(jExit, false);
-//        } else if (isTrueNode(node[1])) {
-//          int jLoop = markJunction(-1);
-//          int jExit = addJunction();
-//          pushActiveLabels(jLoop, jExit);
-//          buildFlowGraph(node[2]);
-//          popActiveLabels();
-//          joinJunction(jLoop, false);
-//          setJunction(jExit, false);
-//        } else {
-//          int jLoop = markJunction(-1);
-//          int jCond = addJunction();
-//          int jCondExit = addJunction();
-//          int jExit = addJunction();
-//          pushActiveLabels(jCond, jExit);
-//          buildFlowGraph(node[2]);
-//          popActiveLabels();
-//          joinJunction(jCond, false);
-//          isInExpr++;
-//          buildFlowGraph(node[1]);
-//          isInExpr--;
-//          joinJunction(jCondExit, false);
-//          joinJunction(jLoop, false);
-//          setJunction(jCondExit, false);
-//          joinJunction(jExit, false);
-//        }
-//      } else if (type == FOR) {
-//        int jTest = addJunction();
-//        int jBody = addJunction();
-//        int jStep = addJunction();
-//        int jExit = addJunction();
-//        buildFlowGraph(node[1]);
-//        joinJunction(jTest, false);
-//        isInExpr++;
-//        buildFlowGraph(node[2]);
-//        isInExpr--;
-//        joinJunction(jBody, false);
-//        pushActiveLabels(jStep, jExit);
-//        buildFlowGraph(node[4]);
-//        popActiveLabels();
-//        joinJunction(jStep, false);
-//        buildFlowGraph(node[3]);
-//        joinJunction(jTest, false);
-//        setJunction(jBody, false);
-//        joinJunction(jExit, false);
-//      } else if (type == LABEL) {
-//        assert(BREAK_CAPTURERS.has(node[2][0])); // 'label on non-loop, non-switch statement')
-//        nextLoopLabel = node[1]->getIString();
-//        buildFlowGraph(node[2]);
-//      } else if (type == SWITCH) {
-//        // Emscripten generates switch statements of a very limited
-//        // form: all case clauses are numeric literals, and all
-//        // case bodies end with a (maybe implicit) break.  So it's
-//        // basically equivalent to a multi-way IF statement.
-//        isInExpr++;
-//        buildFlowGraph(node[1]);
-//        isInExpr--;
-//        Ref condition = lookThroughCasts(node[1]);
-//        int jCheckExit = markJunction(-1);
-//        int jExit = addJunction();
-//        pushActiveLabels(-1, jExit);
-//        bool hasDefault = false;
-//        for (size_t i = 0; i < node[2]->size(); i++) {
-//          setJunction(jCheckExit, false);
-//          // All case clauses are either 'default' or a numeric literal.
-//          if (!node[2][i][0]) {
-//            hasDefault = true;
-//          } else {
-//            // Detect switches dispatching to labelled blocks.
-//            if (condition[0] == NAME && condition[1] == LABEL) {
-//              addBlockLabel(lookThroughCasts(node[2][i][0]));
-//            }
-//          }
-//          for (size_t j = 0; j < node[2][i][1]->size(); j++) {
-//            buildFlowGraph(node[2][i][1][j]);
-//          }
-//          // Control flow will never actually reach the end of the case body.
-//          // If there's live code here, assume it jumps to case exit.
-//          if (currEntryJunction >= 0 && nextBasicBlock->nodes.size() > 0) {
-//            if (!!node[2][i][0]) {
-//              markNonLocalJump(RETURN, EMPTY);
-//            } else {
-//              joinJunction(jExit, false);
-//            }
-//          }
-//        }
-//        // If there was no default case, we also need an empty block
-//        // linking straight from the test evaluation to the exit.
-//        if (!hasDefault) {
-//          setJunction(jCheckExit, false);
-//        }
-//        joinJunction(jExit, false);
-//        popActiveLabels();
-//      } else if (type == RETURN) {
-//        if (!!node[1]) {
-//          isInExpr++;
-//          buildFlowGraph(node[1]);
-//          isInExpr--;
-//        }
-//        markNonLocalJump(type->getIString(), EMPTY);
-//      } else if (type == BREAK || type == CONTINUE) {
-//        markNonLocalJump(type->getIString(), !!node[1] ? node[1]->getIString() : EMPTY);
-//      } else if (type == ASSIGN) {
-//        isInExpr++;
-//        buildFlowGraph(node[3]);
-//        isInExpr--;
-//        if (node[1]->isBool(true) && node[2][0] == NAME) {
-//          addKillNode(node);
-//        } else {
-//          buildFlowGraph(node[2]);
-//        }
-//      } else if (type == NAME) {
-//        addUseNode(node);
-//      } else if (type == BLOCK || type == TOPLEVEL) {
-//        if (!!node[1]) {
-//          for (size_t i = 0; i < node[1]->size(); i++) {
-//            buildFlowGraph(node[1][i]);
-//          }
-//        }
-//      } else if (type == STAT) {
-//        buildFlowGraph(node[1]);
-//      } else if (type == UNARY_PREFIX || type == UNARY_POSTFIX) {
-//        isInExpr++;
-//        buildFlowGraph(node[2]);
-//        isInExpr--;
-//      } else if (type == BINARY) {
-//        isInExpr++;
-//        buildFlowGraph(node[2]);
-//        buildFlowGraph(node[3]);
-//        isInExpr--;
-//      } else if (type == CALL) {
-//        isInExpr++;
-//        buildFlowGraph(node[1]);
-//        if (!!node[2]) {
-//          for (size_t i = 0; i < node[2]->size(); i++) {
-//            buildFlowGraph(node[2][i]);
-//          }
-//        }
-//        isInExpr--;
-//        // If the call is statically known to throw,
-//        // treat it as a jump to function exit.
-//        if (!isInExpr && node[1][0] == NAME) {
-//          if (FUNCTIONS_THAT_ALWAYS_THROW.has(node[1][1])) {
-//            markNonLocalJump(RETURN, EMPTY);
-//          }
-//        }
-//      } else if (type == SEQ || type == SUB) {
-//        isInExpr++;
-//        buildFlowGraph(node[1]);
-//        buildFlowGraph(node[2]);
-//        isInExpr--;
-//      } else if (type == DOT || type == THROW) {
-//        isInExpr++;
-//        buildFlowGraph(node[1]);
-//        isInExpr--;
-//      } else if (type == NUM || type == STRING || type == VAR) {
-//        // nada
-//      } else {
-//        assert(0); // 'unsupported node type: ' + type);
-//      }
-//    };
-//
-//    buildFlowGraph(fun);
-//
-//#ifdef PROFILING
-//    tflowgraph += clock() - start;
-//    start = clock();
-//#endif
-//
-//    assert(junctions[ENTRY_JUNCTION].inblocks.size() == 0); // 'function entry must have no incoming blocks');
-//    assert(junctions[EXIT_JUNCTION].outblocks.size() == 0); // 'function exit must have no outgoing blocks');
-//    assert(blocks[ENTRY_BLOCK]->entry == ENTRY_JUNCTION); //, 'block zero must be the initial block');
-//
-//    // Fix up implicit jumps done by assigning to the LABEL variable.
-//    // If a block ends with an assignment to LABEL and there's another block
-//    // with that value of LABEL as precondition, we tweak the flow graph so
-//    // that the former jumps straight to the later.
-//
-//    std::map<int, Block*> labelledBlocks;
-//    typedef std::pair<Ref, Block*> Jump;
-//    std::vector<Jump> labelledJumps;
-//
-//    for (size_t i = 0; i < blocks.size(); i++) {
-//      Block* block = blocks[i];
-//      // Does it have any labels as preconditions to its entry?
-//      for (auto labelVal : block->labels) {
-//        // If there are multiple blocks with the same label, all bets are off.
-//        // This seems to happen sometimes for short blocks that end with a return.
-//        // TODO: it should be safe to merge the duplicates if they're identical.
-//        if (labelledBlocks.count(labelVal) > 0) {
-//          labelledBlocks.clear();
-//          labelledJumps.clear();
-//          goto AFTER_FINDLABELLEDBLOCKS;
-//        }
-//        labelledBlocks[labelVal] = block;
-//      }
-//      // Does it assign a specific label value at exit?
-//      if (block->kill.has(LABEL)) {
-//        Ref finalNode = block->nodes.back();
-//        if (finalNode[0] == ASSIGN && finalNode[2][1] == LABEL) {
-//          // If labels are computed dynamically then all bets are off.
-//          // This can happen due to indirect branching in llvm output.
-//          if (finalNode[3][0] != NUM) {
-//            labelledBlocks.clear();
-//            labelledJumps.clear();
-//            goto AFTER_FINDLABELLEDBLOCKS;
-//          }
-//          labelledJumps.push_back(Jump(finalNode[3][1], block));
-//        } else { 
-//          // If label is assigned a non-zero value elsewhere in the block
-//          // then all bets are off.  This can happen e.g. due to outlining
-//          // saving/restoring label to the stack.
-//          for (size_t j = 0; j < block->nodes.size() - 1; j++) {
-//            if (block->nodes[j][0] == ASSIGN && block->nodes[j][2][1] == LABEL) {
-//              if (block->nodes[j][3][0] != NUM || block->nodes[j][3][1]->getNumber() != 0) {
-//                labelledBlocks.clear();
-//                labelledJumps.clear();
-//                goto AFTER_FINDLABELLEDBLOCKS;
-//              }
-//            }
-//          }
-//        }
-//      }
-//    }
-//
-//    AFTER_FINDLABELLEDBLOCKS:
-//
-//    for (auto labelVal : labelledBlocks) {
-//      Block* block = labelVal.second;
-//      // Disconnect it from the graph, and create a
-//      // new junction for jumps targetting this label.
-//      junctions[block->entry].outblocks.erase(block->id);
-//      block->entry = addJunction();
-//      junctions[block->entry].outblocks.insert(block->id);
-//      // Add a fake use of LABEL to keep it alive in predecessor.
-//      block->use[LABEL] = 1;
-//      block->nodes.insert(block->nodes.begin(), makeName(LABEL));
-//      block->isexpr.insert(block->isexpr.begin(), 1);
-//    }
-//    for (size_t i = 0; i < labelledJumps.size(); i++) {
-//      auto labelVal = labelledJumps[i].first;
-//      auto block = labelledJumps[i].second;
-//      Block* targetBlock = labelledBlocks[labelVal->getInteger()];
-//      if (targetBlock) {
-//        // Redirect its exit to entry of the target block.
-//        junctions[block->exit].inblocks.erase(block->id);
-//        block->exit = targetBlock->entry;
-//        junctions[block->exit].inblocks.insert(block->id);
-//      }
-//    }
-//
-//#ifdef PROFILING
-//    tlabelfix += clock() - start;
-//    start = clock();
-//#endif
-//
-//    // Do a backwards data-flow analysis to determine the set of live
-//    // variables at each junction, and to use this information to eliminate
-//    // any unused assignments.
-//    // We run two nested phases.  The inner phase builds the live set for each
-//    // junction.  The outer phase uses this to try to eliminate redundant
-//    // stores in each basic block, which might in turn affect liveness info.
-//
-//    auto analyzeJunction = [&](Junction& junc) {
-//      // Update the live set for this junction.
-//      IOrderedStringSet live;
-//      for (auto b : junc.outblocks) {
-//        Block* block = blocks[b];
-//        IOrderedStringSet& liveSucc = junctions[block->exit].live;
-//        for (auto name : liveSucc) {
-//          if (!block->kill.has(name)) {
-//            live.insert(name);
-//          }
-//        }
-//        for (auto name : block->use) {
-//          live.insert(name.first);
-//        }
-//      }
-//      junc.live = live;
-//    };
-//
-//    auto analyzeBlock = [&](Block* block) {
-//      // Update information about the behaviour of the block.
-//      // This includes the standard 'use' and 'kill' information,
-//      // plus a 'link' set naming values that flow through from entry
-//      // to exit, possibly changing names via simple 'x=y' assignments.
-//      // As we go, we eliminate assignments if the variable is not
-//      // subsequently used.
-//      auto live = junctions[block->exit].live;
-//      StringIntMap use;
-//      StringSet kill;
-//      StringStringMap link;
-//      StringIntMap lastUseLoc;
-//      StringIntMap firstDeadLoc;
-//      StringIntMap firstKillLoc;
-//      StringIntMap lastKillLoc;
-//      for (auto name : live) {
-//        link[name] = name;
-//        lastUseLoc[name] = block->nodes.size();
-//        firstDeadLoc[name] = block->nodes.size();
-//      }
-//      for (int j = block->nodes.size() - 1; j >= 0 ; j--) {
-//        Ref node = block->nodes[j];
-//        if (node[0] == NAME) {
-//          IString name = node[1]->getIString();
-//          live.insert(name);
-//          use[name] = j;
-//          if (lastUseLoc.count(name) == 0) {
-//            lastUseLoc[name] = j;
-//            firstDeadLoc[name] = j;
-//          }
-//        } else {
-//          IString name = node[2][1]->getIString();
-//          // We only keep assignments if they will be subsequently used.
-//          if (live.has(name)) {
-//            kill.insert(name);
-//            use.erase(name);
-//            live.erase(name);
-//            firstDeadLoc[name] = j;
-//            firstKillLoc[name] = j;
-//            if (lastUseLoc.count(name) == 0) {
-//              lastUseLoc[name] = j;
-//            }
-//            if (lastKillLoc.count(name) == 0) {
-//              lastKillLoc[name] = j;
-//            }
-//            // If it's an "x=y" and "y" is not live, then we can create a
-//            // flow-through link from "y" to "x".  If not then there's no
-//            // flow-through link for "x".
-//            if (link.has(name)) {
-//              IString oldLink = link[name];
-//              link.erase(name);
-//              if (node[3][0] == NAME) {
-//                if (asmData.isLocal(node[3][1]->getIString())) {
-//                  link[node[3][1]->getIString()] = oldLink;
-//                }
-//              }
-//            }
-//          } else {
-//            // The result of this assignment is never used, so delete it.
-//            // We may need to keep the RHS for its value or its side-effects.
-//            auto removeUnusedNodes = [&](int j, int n) {
-//              for (auto pair : lastUseLoc) {
-//                pair.second -= n;
-//              }
-//              for (auto pair : firstKillLoc) {
-//                pair.second -= n;
-//              }
-//              for (auto pair : lastKillLoc) {
-//                pair.second -= n;
-//              }
-//              for (auto pair : firstDeadLoc) {
-//                pair.second -= n;
-//              }
-//              block->nodes.erase(block->nodes.begin() + j, block->nodes.begin() + j + n);
-//              block->isexpr.erase(block->isexpr.begin() + j, block->isexpr.begin() + j + n);
-//            };
-//            if (block->isexpr[j] || hasSideEffects(node[3])) {
-//              safeCopy(node, node[3]);
-//              removeUnusedNodes(j, 1);
-//            } else {
-//              int numUsesInExpr = 0;
-//              traversePre(node[3], [&](Ref node) {
-//                if (node[0] == NAME && asmData.isLocal(node[1]->getIString())) {
-//                  numUsesInExpr++;
-//                }
-//              });
-//              safeCopy(node, makeEmpty());
-//              j = j - numUsesInExpr;
-//              removeUnusedNodes(j, 1 + numUsesInExpr);
-//            }
-//          }
-//        }
-//      }
-//      // XXX efficiency
-//      block->use = use;
-//      block->kill = kill;
-//      block->link = link;
-//      block->lastUseLoc = lastUseLoc;
-//      block->firstDeadLoc = firstDeadLoc;
-//      block->firstKillLoc = firstKillLoc;
-//      block->lastKillLoc = lastKillLoc;
-//    };
-//
-//    // Ordered map to work in approximate reverse order of junction appearance
-//    std::set<int> jWorkSet;
-//    std::set<int> bWorkSet;
-//
-//    // Be sure to visit every junction at least once.
-//    // This avoids missing some vars because we disconnected them
-//    // when processing the labelled jumps.
-//    for (size_t i = EXIT_JUNCTION; i < junctions.size(); i++) {
-//      jWorkSet.insert(i);
-//      for (auto b : junctions[i].inblocks) {
-//        bWorkSet.insert(b);
-//      }
-//    }
-//    // Exit junction never has any live variable changes to propagate
-//    jWorkSet.erase(EXIT_JUNCTION);
-//
-//    do {
-//      // Iterate on just the junctions until we get stable live sets.
-//      // The first run of this loop will grow the live sets to their maximal size.
-//      // Subsequent runs will shrink them based on eliminated in-block uses.
-//      while (jWorkSet.size() > 0) {
-//        auto last = jWorkSet.end();
-//        --last;
-//        Junction& junc = junctions[*last];
-//        jWorkSet.erase(last);
-//        IOrderedStringSet oldLive = junc.live; // copy it here, to check for changes later
-//        analyzeJunction(junc);
-//        if (oldLive != junc.live) {
-//          // Live set changed, updated predecessor blocks and junctions.
-//          for (auto b : junc.inblocks) {
-//            bWorkSet.insert(b);
-//            jWorkSet.insert(blocks[b]->entry);
-//          }
-//        }
-//      }
-//      // Now update the blocks based on the calculated live sets.
-//      while (bWorkSet.size() > 0) {
-//        auto last = bWorkSet.end();
-//        --last;
-//        Block* block = blocks[*last];
-//        bWorkSet.erase(last);
-//        auto oldUse = block->use;
-//        analyzeBlock(block);
-//        if (oldUse != block->use) {
-//          // The use set changed, re-process the entry junction.
-//          jWorkSet.insert(block->entry);
-//        }
-//      }
-//    } while (jWorkSet.size() > 0);
-//
-//#ifdef PROFILING
-//    tbackflow += clock() - start;
-//    start = clock();
-//#endif
-//
-//    // Insist that all function parameters are alive at function entry.
-//    // This ensures they will be assigned independent registers, even
-//    // if they happen to be unused.
-//
-//    for (auto name : asmData.params) {
-//      junctions[ENTRY_JUNCTION].live.insert(name);
-//    }
-//
-//    // For variables that are live at one or more junctions, we assign them
-//    // a consistent register for the entire scope of the function.  Find pairs
-//    // of variable that cannot use the same register (the "conflicts") as well
-//    // as pairs of variables that we'd like to have share the same register
-//    // (the "links").
-//
-//    struct JuncVar {
-//      std::vector<bool> conf;
-//      IOrderedStringSet link;
-//      std::unordered_set<int> excl;
-//      int reg;
-//      bool used;
-//      JuncVar() : reg(-1), used(false) {}
-//    };
-//    size_t numLocals = asmData.locals.size();
-//    std::unordered_map<IString, size_t> nameToNum;
-//    std::vector<IString> numToName;
-//    nameToNum.reserve(numLocals);
-//    numToName.reserve(numLocals);
-//    for (auto kv : asmData.locals) {
-//      nameToNum[kv.first] = numToName.size();
-//      numToName.push_back(kv.first);
-//    }
-//
-//    std::vector<JuncVar> juncVars(numLocals);
-//    for (Junction& junc : junctions) {
-//      for (IString name : junc.live) {
-//        JuncVar& jVar = juncVars[nameToNum[name]];
-//        jVar.used = true;
-//        jVar.conf.assign(numLocals, false);
-//      }
-//    }
-//    std::map<IString, std::vector<Block*>> possibleBlockConflictsMap;
-//    std::vector<std::pair<size_t, std::vector<Block*>>> possibleBlockConflicts;
-//    std::unordered_map<IString, std::vector<Block*>> possibleBlockLinks;
-//    possibleBlockConflicts.reserve(numLocals);
-//    possibleBlockLinks.reserve(numLocals);
-//
-//    for (Junction& junc : junctions) {
-//      // Pre-compute the possible conflicts and links for each block rather
-//      // than checking potentially impossible options for each var
-//      possibleBlockConflictsMap.clear();
-//      possibleBlockConflicts.clear();
-//      possibleBlockLinks.clear();
-//      for (auto b : junc.outblocks) {
-//        Block* block = blocks[b];
-//        Junction& jSucc = junctions[block->exit];
-//        for (auto name : jSucc.live) {
-//          possibleBlockConflictsMap[name].push_back(block);
-//        }
-//        for (auto name_linkname : block->link) {
-//          if (name_linkname.first != name_linkname.second) {
-//            possibleBlockLinks[name_linkname.first].push_back(block);
-//          }
-//        }
-//      }
-//      // Find the live variables in this block, mark them as unnecessary to
-//      // check for conflicts (we mark all live vars as conflicting later)
-//      std::vector<size_t> liveJVarNums;
-//      liveJVarNums.reserve(junc.live.size());
-//      for (auto name : junc.live) {
-//        size_t jVarNum = nameToNum[name];
-//        liveJVarNums.push_back(jVarNum);
-//        possibleBlockConflictsMap.erase(name);
-//      }
-//      // Extract just the variables we might want to check for conflicts
-//      for (auto kv : possibleBlockConflictsMap) {
-//        possibleBlockConflicts.push_back(std::make_pair(nameToNum[kv.first], kv.second));
-//      }
-//
-//      for (size_t jVarNum : liveJVarNums) {
-//        JuncVar& jvar = juncVars[jVarNum];
-//        IString name = numToName[jVarNum];
-//        // It conflicts with all other names live at this junction.
-//        for (size_t liveJVarNum : liveJVarNums) {
-//          jvar.conf[liveJVarNum] = true;
-//        }
-//        jvar.conf[jVarNum] = false; // except for itself, of course
-//
-//        // It conflicts with any output vars of successor blocks,
-//        // if they're assigned before it goes dead in that block.
-//        for (auto jvarnum_blocks : possibleBlockConflicts) {
-//          size_t otherJVarNum = jvarnum_blocks.first;
-//          IString otherName = numToName[otherJVarNum];
-//          for (auto block : jvarnum_blocks.second) {
-//            if (block->lastKillLoc[otherName] < block->firstDeadLoc[name]) {
-//              jvar.conf[otherJVarNum] = true;
-//              juncVars[otherJVarNum].conf[jVarNum] = true;
-//              break;
-//            }
-//          }
-//        }
-//
-//        // It links with any linkages in the outgoing blocks.
-//        for (auto block: possibleBlockLinks[name]) {
-//          IString linkName = block->link[name];
-//          jvar.link.insert(linkName);
-//          juncVars[nameToNum[linkName]].link.insert(name);
-//        }
-//      }
-//    }
-//
-//#ifdef PROFILING
-//    tjuncvaruniqassign += clock() - start;
-//    start = clock();
-//#endif
-//
-//    // Attempt to sort the junction variables to heuristically reduce conflicts.
-//    // Simple starting point: handle the most-conflicted variables first.
-//    // This seems to work pretty well.
-//
-//    std::vector<size_t> sortedJVarNums;
-//    sortedJVarNums.reserve(juncVars.size());
-//    std::vector<size_t> jVarConfCounts(numLocals);
-//    for (size_t jVarNum = 0; jVarNum < juncVars.size(); jVarNum++) {
-//      JuncVar& jVar = juncVars[jVarNum];
-//      if (!jVar.used) continue;
-//      jVarConfCounts[jVarNum] = std::count(jVar.conf.begin(), jVar.conf.end(), true);
-//      sortedJVarNums.push_back(jVarNum);
-//    }
-//    std::sort(sortedJVarNums.begin(), sortedJVarNums.end(), [&](const size_t vi1, const size_t vi2) {
-//      // sort by # of conflicts
-//      if (jVarConfCounts[vi1] < jVarConfCounts[vi2]) return true;
-//      if (jVarConfCounts[vi1] == jVarConfCounts[vi2]) return numToName[vi1] < numToName[vi2];
-//      return false;
-//    });
-//
-//#ifdef PROFILING
-//    tjuncvarsort += clock() - start;
-//    start = clock();
-//#endif
-//
-//    // We can now assign a register to each junction variable.
-//    // Process them in order, trying available registers until we find
-//    // one that works, and propagating the choice to linked/conflicted
-//    // variables as we go.
-//
-//    std::function<bool (IString, int)> tryAssignRegister = [&](IString name, int reg) {
-//      // Try to assign the given register to the given variable,
-//      // and propagate that choice throughout the graph.
-//      // Returns true if successful, false if there was a conflict.
-//      JuncVar& jv = juncVars[nameToNum[name]];
-//      if (jv.reg > 0) {
-//        return jv.reg == reg;
-//      }
-//      if (jv.excl.count(reg) > 0) {
-//        return false;
-//      }
-//      jv.reg = reg;
-//      // Exclude use of this register at all conflicting variables.
-//      for (size_t confNameNum = 0; confNameNum < jv.conf.size(); confNameNum++) {
-//        if (jv.conf[confNameNum]) {
-//          juncVars[confNameNum].excl.insert(reg);
-//        }
-//      }
-//      // Try to propagate it into linked variables.
-//      // It's not an error if we can't.
-//      for (auto linkName : jv.link) {
-//        tryAssignRegister(linkName, reg);
-//      }
-//      return true;
-//    };
-//    for (size_t jVarNum : sortedJVarNums) {
-//      // It may already be assigned due to linked-variable propagation.
-//      if (juncVars[jVarNum].reg > 0) {
-//        continue;
-//      }
-//      IString name = numToName[jVarNum];
-//      // Try to use existing registers first.
-//      auto& allRegs = allRegsByType[asmData.getType(name)];
-//      bool moar = false;
-//      for (auto reg : allRegs) {
-//        if (tryAssignRegister(name, reg.first)) {
-//          moar = true;
-//          break;
-//        }
-//      }
-//      if (moar) continue;
-//      // They're all taken, create a new one.
-//      tryAssignRegister(name, createReg(name));
-//    }
-//
-//#ifdef PROFILING
-//    tregassign += clock() - start;
-//    start = clock();
-//#endif
-//
-//    // Each basic block can now be processed in turn.
-//    // There may be internal-use-only variables that still need a register
-//    // assigned, but they can be treated just for this block.  We know
-//    // that all inter-block variables are in a good state thanks to
-//    // junction variable consistency.
-//
-//    for (size_t i = 0; i < blocks.size(); i++) {
-//      Block* block = blocks[i];
-//      if (block->nodes.size() == 0) continue;
-//      Junction& jEnter = junctions[block->entry];
-//      Junction& jExit = junctions[block->exit];
-//      // Mark the point at which each input reg becomes dead.
-//      // Variables alive before this point must not be assigned
-//      // to that register.
-//      StringSet inputVars;
-//      std::unordered_map<int, int> inputDeadLoc;
-//      std::unordered_map<int, IString> inputVarsByReg;
-//      for (auto name : jExit.live) {
-//        if (!block->kill.has(name)) {
-//          inputVars.insert(name);
-//          int reg = juncVars[nameToNum[name]].reg;
-//          assert(reg > 0); // 'input variable doesnt have a register');
-//          inputDeadLoc[reg] = block->firstDeadLoc[name];
-//          inputVarsByReg[reg] = name;
-//        }
-//      }
-//      for (auto pair : block->use) {
-//        IString name = pair.first;
-//        if (!inputVars.has(name)) {
-//          inputVars.insert(name);
-//          int reg = juncVars[nameToNum[name]].reg;
-//          assert(reg > 0); // 'input variable doesnt have a register');
-//          inputDeadLoc[reg] = block->firstDeadLoc[name];
-//          inputVarsByReg[reg] = name;
-//        }
-//      }
-//      // TODO assert(setSize(setSub(inputVars, jEnter.live)) == 0);
-//      // Scan through backwards, allocating registers on demand.
-//      // Be careful to avoid conflicts with the input registers.
-//      // We consume free registers in last-used order, which helps to
-//      // eliminate "x=y" assignments that are the last use of "y".
-//      StringIntMap assignedRegs;
-//      auto freeRegsByTypePre = allRegsByType; // XXX copy
-//      // Begin with all live vars assigned per the exit junction.
-//      for (auto name : jExit.live) {
-//        int reg = juncVars[nameToNum[name]].reg;
-//        assert(reg > 0); // 'output variable doesnt have a register');
-//        assignedRegs[name] = reg;
-//        freeRegsByTypePre[asmData.getType(name)].erase(reg); // XXX assert?
-//      }
-//      std::vector<std::vector<int>> freeRegsByType;
-//      freeRegsByType.resize(freeRegsByTypePre.size());
-//      for (size_t j = 0; j < freeRegsByTypePre.size(); j++) {
-//        for (auto pair : freeRegsByTypePre[j]) {
-//          freeRegsByType[j].push_back(pair.first);
-//        }
-//      }
-//      // Scan through the nodes in sequence, modifying each node in-place
-//      // and grabbing/freeing registers as needed.
-//      std::vector<std::pair<int, Ref>> maybeRemoveNodes;
-//      for (int j = block->nodes.size() - 1; j >= 0; j--) {
-//        Ref node = block->nodes[j];
-//        IString name = (node[0] == ASSIGN ? node[2][1] : node[1])->getIString();
-//        IntStringMap& allRegs = allRegsByType[asmData.getType(name)];
-//        std::vector<int>& freeRegs = freeRegsByType[asmData.getType(name)];
-//        int reg = assignedRegs[name]; // XXX may insert a zero
-//        if (node[0] == NAME) {
-//          // A use.  Grab a register if it doesn't have one.
-//          if (reg <= 0) {
-//            if (inputVars.has(name) && j <= block->firstDeadLoc[name]) {
-//              // Assignment to an input variable, must use pre-assigned reg.
-//              reg = juncVars[nameToNum[name]].reg;
-//              assignedRegs[name] = reg;
-//              for (int k = freeRegs.size() - 1; k >= 0; k--) {
-//                if (freeRegs[k] == reg) {
-//                  freeRegs.erase(freeRegs.begin() + k);
-//                  break;
-//                }
-//              }
-//            } else {
-//              // Try to use one of the existing free registers.
-//              // It must not conflict with an input register.
-//              for (int k = freeRegs.size() - 1; k >= 0; k--) {
-//                reg = freeRegs[k];
-//                // Check for conflict with input registers.
-//                if (inputDeadLoc.count(reg) > 0) {
-//                  if (block->firstKillLoc[name] <= inputDeadLoc[reg]) {
-//                    if (name != inputVarsByReg[reg]) {
-//                      continue;
-//                    }
-//                  }
-//                }
-//                // Found one!
-//                assignedRegs[name] = reg;
-//                assert(reg > 0);
-//                freeRegs.erase(freeRegs.begin() + k);
-//                break;
-//              }
-//              // If we didn't find a suitable register, create a new one.
-//              if (assignedRegs[name] <= 0) {
-//                reg = createReg(name);
-//                assignedRegs[name] = reg;
-//              }
-//            }
-//          }
-//          node[1]->setString(allRegs[reg]);
-//        } else {
-//          // A kill. This frees the assigned register.
-//          assert(reg > 0); //, 'live variable doesnt have a reg?')
-//          node[2][1]->setString(allRegs[reg]);
-//          freeRegs.push_back(reg);
-//          assignedRegs.erase(name);
-//          if (node[3][0] == NAME && asmData.isLocal(node[3][1]->getIString())) {
-//            maybeRemoveNodes.push_back(std::pair<int, Ref>(j, node));
-//          }
-//        }
-//      }
-//      // If we managed to create any "x=x" assignments, remove them.
-//      for (size_t j = 0; j < maybeRemoveNodes.size(); j++) {
-//        Ref node = maybeRemoveNodes[j].second;
-//        if (node[2][1] == node[3][1]) {
-//          if (block->isexpr[maybeRemoveNodes[j].first]) {
-//            safeCopy(node, node[2]);
-//          } else {
-//            safeCopy(node, makeEmpty());
-//          }
-//        }
-//      }
-//    }
-//
-//#ifdef PROFILING
-//    tblockproc += clock() - start;
-//    start = clock();
-//#endif
-//
-//    // Assign registers to function params based on entry junction
-//
-//    StringSet paramRegs;
-//    if (!!fun[2]) {
-//      for (size_t i = 0; i < fun[2]->size(); i++) {
-//        auto& allRegs = allRegsByType[asmData.getType(fun[2][i]->getIString())];
-//        fun[2][i]->setString(allRegs[juncVars[nameToNum[fun[2][i]->getIString()]].reg]);
-//        paramRegs.insert(fun[2][i]->getIString());
-//      }
-//    }
-//
-//    // That's it!
-//    // Re-construct the function with appropriate variable definitions.
-//
-//    asmData.locals.clear();
-//    asmData.params.clear();
-//    asmData.vars.clear();
-//    for (int i = 1; i < nextReg; i++) {
-//      for (size_t type = 0; type < allRegsByType.size(); type++) {
-//        if (allRegsByType[type].count(i) > 0) {
-//          IString reg = allRegsByType[type][i];
-//          if (!paramRegs.has(reg)) {
-//            asmData.addVar(reg, intToAsmType(type));
-//          } else {
-//            asmData.addParam(reg, intToAsmType(type));
-//          }
-//          break;
-//        }
-//      }
-//    }
-//    asmData.denormalize();
-//
-//    removeAllUselessSubNodes(fun); // XXX vacuum?    vacuum(fun);
-//
-//#ifdef PROFILING
-//    treconstruct += clock() - start;
-//    start = clock();
-//#endif
-//
-//  });
-//#ifdef PROFILING
-//  errv("    RH stages: a:%li fl:%li lf:%li bf:%li jvua:%li jvs:%li jra:%li bp:%li r:%li",
-//    tasmdata, tflowgraph, tlabelfix, tbackflow, tjuncvaruniqassign, tjuncvarsort, tregassign, tblockproc, treconstruct);
-//#endif
-//}
-//// end registerizeHarder
+// Assign variables to 'registers', coalescing them onto a smaller number of shared
+// variables.
+//
+// This does the same job as 'registerize' above, but burns a lot more cycles trying
+// to reduce the total number of register variables.  Key points about the operation:
+//
+//   * we decompose the AST into a flow graph and perform a full liveness
+//     analysis, to determine which variables are live at each point.
+//
+//   * variables that are live concurrently are assigned to different registers.
+//
+//   * variables that are linked via 'x=y' style statements are assigned the same
+//     register if possible, so that the redundant assignment can be removed.
+//     (e.g. assignments used to pass state around through loops).
+//
+//   * any code that cannot be reached through the flow-graph is removed.
+//     (e.g. redundant break statements like 'break L123; break;').
+//
+//   * any assignments that we can prove are not subsequently used are removed.
+//     (e.g. unnecessary assignments to the 'label' variable).
+//
+pub fn registerizeHarder(ast: &mut AstValue) {
+    #[cfg(feature = "profiling")]
+    let (mut tasmdata, mut tflowgraph, mut tlabelfix, mut tbackflow, mut tjuncvaruniqassign, mut tjuncvarsort, mut tregassign, mut tblockproc, mut treconstruct) = (Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0), Duration::new(0, 0));
+
+    traverseFunctionsMut(ast, |fun: &mut AstValue| {
+
+    #[cfg(feature = "profiling")]
+    let mut start = SystemTime::now();
+
+    // Do not try to process non-validating methods, like the heap replacer
+    let mut abort = false;
+    traversePre(fun, |node: &AstValue| {
+        if node.isNew() { abort = true }
+    });
+    if abort { return }
+
+    let mut asmData = AsmData::new(fun);
+
+    let mut nextReg;
+    let mut allRegsByType;
+    let mut paramRegs;
+
+    {
+    let asmDataLocals = &asmData.locals;
+
+    #[cfg(feature = "profiling")]
+    {
+    tasmdata += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    // Utilities for allocating register variables.
+    // We need distinct register pools for each type of variable.
+
+    // RSTODO: faster to have vecs, even though they'd waste space?
+    allRegsByType = Vec::<BTreeMap<usize, IString>>::new();
+    allRegsByType.resize(NUM_ASMTYPES, BTreeMap::new());
+    nextReg = 1;
+
+    let mut createReg = |forName: &IString, asmData: &AsmData, allRegsByType: &mut Vec<BTreeMap<usize, IString>>| -> usize {
+        // Create a new register of type suitable for the given variable name.
+        let ty = asmData.getType(forName).unwrap();
+        let allRegs = allRegsByType.get_mut(ty.as_usize()).unwrap();
+        let reg = nextReg;
+        nextReg += 1;
+        let prev = allRegs.insert(reg, getRegName(ty, reg));
+        assert!(prev.is_none());
+        reg
+    };
+
+    // Traverse the tree in execution order and synthesize a basic flow-graph.
+    // It's convenient to build a kind of "dual" graph where the nodes identify
+    // the junctions between blocks at which control-flow may branch, and each
+    // basic block is an edge connecting two such junctions.
+    // For each junction we store:
+    //    * set of blocks that originate at the junction
+    //    * set of blocks that terminate at the junction
+    // For each block we store:
+    //    * a single entry junction
+    //    * a single exit junction
+    //    * a 'use' and 'kill' set of names for the block
+    //    * full sequence of NAME and ASSIGN nodes in the block
+    //    * whether each such node appears as part of a larger expression
+    //      (and therefore cannot be safely eliminated)
+    //    * set of labels that can be used to jump to this block
+
+    // RSNOTE: btrees are used here because they're ordered
+    #[derive(Debug)]
+    struct Junction {
+        id: usize,
+        inblocks: BTreeSet<usize>,
+        outblocks: BTreeSet<usize>,
+        live: BTreeSet<IString>,
+    }
+    impl Junction {
+        fn new(id: usize) -> Junction {
+            Junction { id: id, inblocks: BTreeSet::new(), outblocks: BTreeSet::new(), live: BTreeSet::new() }
+        }
+    }
+    #[derive(Debug)]
+    struct Block {
+        id: usize,
+        entry: usize,
+        exit: usize,
+        labels: BTreeSet<u32>,
+        // RSNOTE: this holds only assign and name nodes. They must be mutable because we use this array to
+        // replace names and eliminate assigns, and therefore must be pointers because names may be subnodes
+        // of an assign expression (i.e. mutable referencing). We must be really careful when eliminating
+        // assigns because the name pointers could then become invalid. The way buildFlowGraph works means
+        // the names of an assign expression should immediately follow the assign which makes it reasonably
+        // easy to remove them at the same time (as long as there are no assigns or other things with side
+        // effects inside) - see TAG:carefulnoderemove.
+        nodes: Vec<*mut AstValue>,
+        isexpr: Vec<bool>,
+        use_: HashMap<IString, Option<usize>>,
+        kill: HashSet<IString>,
+        link: HashMap<IString, IString>,
+        lastUseLoc: HashMap<IString, usize>,
+        firstDeadLoc: HashMap<IString, usize>,
+        firstKillLoc: HashMap<IString, usize>,
+        lastKillLoc: HashMap<IString, usize>,
+    }
+    impl Block {
+        fn new() -> Block {
+            Block {
+                id: 0, entry: 0, exit: 0,
+                labels: BTreeSet::new(), nodes: vec![], isexpr: vec![],
+                use_: HashMap::new(), kill: HashSet::new(), link: HashMap::new(),
+                lastUseLoc: HashMap::new(), firstDeadLoc: HashMap::new(), firstKillLoc: HashMap::new(), lastKillLoc: HashMap::new(),
+            }
+        }
+    }
+    #[derive(Copy, Clone)]
+    struct ContinueBreak {
+        co: Option<usize>,
+        br: usize,
+    }
+    impl ContinueBreak {
+        fn new(co: Option<usize>, br: usize) -> ContinueBreak {
+            ContinueBreak { co: co, br: br }
+        }
+    }
+
+    let mut junctions = Vec::<Junction>::new();
+    let mut blocks = Vec::<Block>::new();
+    let mut currEntryJunction: Option<usize> = None;
+    let mut nextBasicBlock: Option<Block> = None;
+    let mut isInExpr = 0;
+    let mut activeLabels = Vec::<HashMap<Option<IString>, ContinueBreak>>::new();
+    activeLabels.push(HashMap::new());
+    let mut nextLoopLabel: Option<IString> = None;
+
+    const ENTRY_JUNCTION: usize = 0;
+    const EXIT_JUNCTION: usize = 1;
+    const ENTRY_BLOCK: usize = 0;
+
+    fn addJunction(junctions: &mut Vec<Junction>) -> usize {
+        // Create a new junction, without inserting it into the graph.
+        // This is useful for e.g. pre-allocating an exit node.
+        let id = junctions.len();
+        junctions.push(Junction::new(id));
+        id
+    }
+
+    fn markJunction(junctions: &mut Vec<Junction>, blocks: &mut Vec<Block>, currEntryJunction: &mut Option<usize>, nextBasicBlock: &mut Option<Block>) -> usize {
+        // Mark current traversal location as a junction.
+        // This makes a new basic block exiting at this position.
+        let id = addJunction(junctions);
+        joinJunction(id, true, junctions, blocks, currEntryJunction, nextBasicBlock);
+        id
+    }
+
+    fn setJunction(id: usize, force: bool, junctions: &Vec<Junction>, currEntryJunction: &mut Option<usize>, nextBasicBlock: &Option<Block>) {
+        // Set the next entry junction to the given id.
+        // This can be used to enter at a previously-declared point.
+        // You can't return to a junction with no incoming blocks
+        // unless the 'force' parameter is specified.
+        assert!(nextBasicBlock.as_ref().unwrap().nodes.is_empty()); // refusing to abandon an in-progress basic block
+        *currEntryJunction = if force || !junctions[id].inblocks.is_empty() { Some(id) } else { None }
+    }
+
+    fn joinJunction(id: usize, force: bool, junctions: &mut Vec<Junction>, blocks: &mut Vec<Block>, currEntryJunction: &mut Option<usize>, nextBasicBlock: &mut Option<Block>) {
+        // Complete the pending basic block by exiting at this position.
+        // This can be used to exit at a previously-declared point.
+        if let Some(currEntryJunction) = *currEntryJunction {
+            let mut nextBasicBlock = nextBasicBlock.take().unwrap();
+            nextBasicBlock.id = blocks.len();
+            nextBasicBlock.entry = currEntryJunction;
+            nextBasicBlock.exit = id;
+            let isnew = junctions[currEntryJunction].outblocks.insert(nextBasicBlock.id);
+            assert!(isnew);
+            let isnew = junctions[id].inblocks.insert(nextBasicBlock.id);
+            assert!(isnew);
+            blocks.push(nextBasicBlock)
+        }
+        *nextBasicBlock = Some(Block::new());
+        setJunction(id, force, junctions, currEntryJunction, nextBasicBlock)
+    }
+
+    fn pushActiveLabels(onContinue: Option<usize>, onBreak: usize, activeLabels: &mut Vec<HashMap<Option<IString>, ContinueBreak>>, nextLoopLabel: &mut Option<IString>) {
+        // Push the target junctions for continuing/breaking a loop.
+        // This should be called before traversing into a loop.
+        assert!(!activeLabels.is_empty());
+        let mut newLabels;
+        // RSTODO: lexical borrow
+        {
+        let prevLabels = activeLabels.last().unwrap();
+        newLabels = prevLabels.clone();
+        // RSNOTE: won't exist for loop labels at top level of function
+        newLabels.insert(None, ContinueBreak::new(onContinue, onBreak));
+        if let Some(nextLoopLabel) = nextLoopLabel.take() {
+            let prev = newLabels.insert(Some(nextLoopLabel), ContinueBreak::new(onContinue, onBreak));
+            assert!(prev.is_none())
+        }
+        // An unlabelled CONTINUE should jump to innermost loop,
+        // ignoring any nested SWITCH statements.
+        if onContinue.is_none() {
+            if let Some(prevContinueBreak) = prevLabels.get(&None) {
+                newLabels.get_mut(&None).unwrap().co = prevContinueBreak.co
+            }
+        }
+        }
+        activeLabels.push(newLabels)
+    }
+
+    fn popActiveLabels(activeLabels: &mut Vec<HashMap<Option<IString>, ContinueBreak>>) {
+        // Pop the target junctions for continuing/breaking a loop.
+        // This should be called after traversing into a loop.
+        activeLabels.pop();
+    }
+
+    // RSTODO: review passing these as references when istring being clone is resolved
+    enum NonLocalJumpType<'a> {
+        Return,
+        Continue(&'a Option<IString>),
+        Break(&'a Option<IString>),
+    }
+    fn markNonLocalJump(ty: NonLocalJumpType, junctions: &mut Vec<Junction>, blocks: &mut Vec<Block>, currEntryJunction: &mut Option<usize>, nextBasicBlock: &mut Option<Block>, activeLabels: &Vec<HashMap<Option<IString>, ContinueBreak>>) {
+        // Complete a block via RETURN, BREAK or CONTINUE.
+        // This joins the targetted junction and then sets the current junction to null.
+        // Any code traversed before we get back to an existing junction is dead code.
+        match ty {
+            NonLocalJumpType::Return => {
+                joinJunction(EXIT_JUNCTION, false, junctions, blocks, currEntryJunction, nextBasicBlock)
+            },
+            NonLocalJumpType::Continue(label) => {
+                assert!(!activeLabels.is_empty());
+                let targets = activeLabels.last().unwrap().get(label).unwrap(); // 'jump to unknown label');
+                joinJunction(targets.co.unwrap(), false, junctions, blocks, currEntryJunction, nextBasicBlock)
+            },
+            NonLocalJumpType::Break(label) => {
+                assert!(!activeLabels.is_empty());
+                let targets = activeLabels.last().unwrap().get(label).unwrap(); // 'jump to unknown label');
+                joinJunction(targets.br, false, junctions, blocks, currEntryJunction, nextBasicBlock)
+            },
+        }
+        *currEntryJunction = None
+    }
+
+    fn addUseNode(node: *mut AstValue, asmDataLocals: &HashMap<IString, Local>, nextBasicBlock: &mut Option<Block>, isInExpr: usize) {
+        // Mark a use of the given name node in the current basic block.
+        let (name,) = unsafe { (*node).getName() }; // 'not a use node');
+        if AsmData::isLocalInLocals(asmDataLocals, name) {
+            let mut nextBasicBlock = nextBasicBlock.as_mut().unwrap();
+            nextBasicBlock.nodes.push(node);
+            nextBasicBlock.isexpr.push(isInExpr != 0);
+            if !nextBasicBlock.kill.contains(name) {
+                // RSNOTE: may already be used in this BB
+                nextBasicBlock.use_.insert(name.clone(), None);
+            }
+        }
+    }
+
+    fn addKillNode(node: *mut AstValue, asmDataLocals: &HashMap<IString, Local>, nextBasicBlock: &mut Option<Block>, isInExpr: usize) {
+        // Mark an assignment to the given name node in the current basic block.
+        let (b, namenode, _) = unsafe { (*node).getAssign() }; // 'not a kill node');
+        assert!(b); // 'not a kill node');
+        let (name,) = namenode.getName(); // 'not a kill node');
+        if AsmData::isLocalInLocals(asmDataLocals, name) {
+            let nextBasicBlock = nextBasicBlock.as_mut().unwrap();
+            nextBasicBlock.nodes.push(node);
+            nextBasicBlock.isexpr.push(isInExpr != 0);
+            // RSNOTE: could already be killing with an earlier assign
+            nextBasicBlock.kill.insert(name.clone());
+        }
+    }
+
+    fn lookThroughCasts(node: &AstValue) -> &AstValue {
+        // Look through value-preserving casts, like "x | 0" => "x"
+        if let Binary(is!("|"), ref nextnode, mast!(Num(0f64))) = *node {
+            lookThroughCasts(nextnode)
+        } else {
+            node
+        }
+    }
+
+    fn addBlockLabel(node: &AstValue, nextBasicBlock: &mut Option<Block>) {
+        let nextBasicBlock = nextBasicBlock.as_mut().unwrap();
+        assert!(nextBasicBlock.nodes.is_empty()); // 'cant add label to an in-progress basic block')
+        if let Num(n) = *node {
+            let isnew = nextBasicBlock.labels.insert(f64tou32(n));
+            // RSTODO: valid assertion?
+            assert!(isnew)
+        }
+    }
+
+    // Check if the given node is statically truthy.
+    fn isTrueNode(node: &AstValue) -> bool { if let Num(n) = *node { n != 0f64 } else { false } }
+    // Check if the given node is statically falsy.
+    fn isFalseNode(node: &AstValue) -> bool { *node == Num(0f64) }
+
+    // RSTODO: in a couple of places some code has been moved around to work around being unable to
+    // downgrade borrows from &mut to & in a function call
+    // https://internals.rust-lang.org/t/relaxing-the-borrow-checker-for-fn-mut-self-t/3256/1
+    // This following post doesn't work because we borrow parts of structs
+    // http://stackoverflow.com/questions/38078936/borrowing-reference-in-structure/38080934#38080934
+    fn buildFlowGraph(node: &mut AstValue, asmDataLocals: &HashMap<IString, Local>, junctions: &mut Vec<Junction>, blocks: &mut Vec<Block>, currEntryJunction: &mut Option<usize>, nextBasicBlock: &mut Option<Block>, isInExpr: &mut usize, activeLabels: &mut Vec<HashMap<Option<IString>, ContinueBreak>>, nextLoopLabel: &mut Option<IString>) {
+        macro_rules! buildFlowGraph { ($node:expr) => { buildFlowGraph($node, asmDataLocals, junctions, blocks, currEntryJunction, nextBasicBlock, isInExpr, activeLabels, nextLoopLabel) }; }
+        macro_rules! addJunction { () => { addJunction(junctions) }; }
+        macro_rules! markJunction { () => { markJunction(junctions, blocks, currEntryJunction, nextBasicBlock) }; }
+        macro_rules! setJunction { ($id:expr, $force:expr) => { setJunction($id, $force, junctions, currEntryJunction, nextBasicBlock) }; }
+        macro_rules! joinJunction { ($id:expr, $force:expr) => { joinJunction($id, $force, junctions, blocks, currEntryJunction, nextBasicBlock) }; }
+        macro_rules! pushActiveLabels { ($onContinue:expr, $onBreak:expr) => { pushActiveLabels($onContinue, $onBreak, activeLabels, nextLoopLabel) }; }
+        macro_rules! popActiveLabels { () => { popActiveLabels(activeLabels) }; }
+        macro_rules! markNonLocalJump { ($ty:expr) => { markNonLocalJump($ty, junctions, blocks, currEntryJunction, nextBasicBlock, activeLabels) }; }
+        macro_rules! addUseNode { ($node:expr) => { addUseNode($node, asmDataLocals, nextBasicBlock, *isInExpr) }; }
+        macro_rules! addKillNode { ($node:expr) => { addKillNode($node, asmDataLocals, nextBasicBlock, *isInExpr) }; }
+        macro_rules! addBlockLabel { ($node:expr) => { addBlockLabel($node, nextBasicBlock) }; }
+        // Recursive function to build up the flow-graph.
+        // It walks the tree in execution order, calling the above state-management
+        // functions at appropriate points in the traversal.
+
+        // Any code traversed without an active entry junction must be dead,
+        // as the resulting block could never be entered. Let's remove it.
+        if currEntryJunction.is_none() && !junctions.is_empty() {
+            *node = *makeEmpty();
+            return
+        }
+
+        // Traverse each node type according to its particular control-flow semantics.
+        // TODO: switchify this
+        match *node {
+            Defun(_, _, ref mut stats) => {
+                let jEntry = markJunction!();
+                assert!(jEntry == ENTRY_JUNCTION);
+                let jExit = addJunction!();
+                assert!(jExit == EXIT_JUNCTION);
+                for stat in stats.iter_mut() {
+                    buildFlowGraph!(stat)
+                }
+                joinJunction!(jExit, false);
+            },
+            If(ref mut cond, ref mut iftrue, ref mut maybeiffalse) => {
+                *isInExpr += 1;
+                // RSTODO: see comment above buildFlowGraph
+                let condPtr = &**cond as *const _;
+                buildFlowGraph!(cond);
+                *isInExpr -= 1;
+                let jEnter = markJunction!();
+                let jExit = addJunction!();
+                // Detect and mark "if (label == N) { <labelled block> }".
+                if let Binary(is!("=="), ref left, ref right) = *unsafe { &*condPtr } {
+                    let left = lookThroughCasts(left);
+                    if *left == Name(is!("label")) {
+                        addBlockLabel!(lookThroughCasts(right))
+                    }
+                }
+                buildFlowGraph!(iftrue);
+                joinJunction!(jExit, false);
+                setJunction!(jEnter, false);
+                if let Some(ref mut iffalse) = *maybeiffalse {
+                    buildFlowGraph!(iffalse)
+                }
+                joinJunction!(jExit, false)
+            },
+            Conditional(_, _, _) => {
+                *isInExpr += 1;
+                // If the conditional has no side-effects, we can treat it as a single
+                // block, which might open up opportunities to remove it entirely.
+                let sideEffects = hasSideEffects(node);
+                let (cond, iftrue, iffalse) = node.getMutConditional();
+                if !sideEffects {
+                    buildFlowGraph!(cond);
+                    buildFlowGraph!(iftrue);
+                    buildFlowGraph!(iffalse)
+                } else {
+                    buildFlowGraph!(cond);
+                    let jEnter = markJunction!();
+                    let jExit = addJunction!();
+                    buildFlowGraph!(iftrue);
+                    joinJunction!(jExit, false);
+                    setJunction!(jEnter, false);
+                    buildFlowGraph!(iffalse);
+                    joinJunction!(jExit, false)
+                }
+                *isInExpr -= 1;
+            },
+            While(ref mut cond, ref mut body) => {
+                // Special-case "while (1) {}" to use fewer junctions,
+                // since emscripten generates a lot of these.
+                if isTrueNode(cond) {
+                    let jLoop = markJunction!();
+                    let jExit = addJunction!();
+                    pushActiveLabels!(Some(jLoop), jExit);
+                    buildFlowGraph!(body);
+                    popActiveLabels!();
+                    joinJunction!(jLoop, false);
+                    setJunction!(jExit, false)
+                } else {
+                    let jCond = markJunction!();
+                    let jLoop = addJunction!();
+                    let jExit = addJunction!();
+                    *isInExpr += 1;
+                    buildFlowGraph!(cond);
+                    *isInExpr += 1;
+                    joinJunction!(jLoop, false);
+                    pushActiveLabels!(Some(jCond), jExit);
+                    buildFlowGraph!(body);
+                    popActiveLabels!();
+                    joinJunction!(jCond, false);
+                    // An empty basic-block linking condition exit to loop exit.
+                    setJunction!(jLoop, false);
+                    joinJunction!(jExit, false)
+                }
+            },
+            Do(ref mut cond, ref mut body) => {
+                // Special-case "do {} while (1)" and "do {} while (0)" to use
+                // fewer junctions, since emscripten generates a lot of these.
+                if isFalseNode(cond) {
+                    let jExit = addJunction!();
+                    pushActiveLabels!(Some(jExit), jExit);
+                    buildFlowGraph!(body);
+                    popActiveLabels!();
+                    joinJunction!(jExit, false)
+                } else if isTrueNode(cond) {
+                    let jLoop = markJunction!();
+                    let jExit = addJunction!();
+                    pushActiveLabels!(Some(jLoop), jExit);
+                    buildFlowGraph!(body);
+                    popActiveLabels!();
+                    joinJunction!(jLoop, false);
+                    setJunction!(jExit, false)
+                } else {
+                    let jLoop = markJunction!();
+                    let jCond = addJunction!();
+                    let jCondExit = addJunction!();
+                    let jExit = addJunction!();
+                    pushActiveLabels!(Some(jCond), jExit);
+                    buildFlowGraph!(body);
+                    popActiveLabels!();
+                    joinJunction!(jCond, false);
+                    *isInExpr += 1;
+                    buildFlowGraph!(cond);
+                    *isInExpr -= 1;
+                    joinJunction!(jCondExit, false);
+                    joinJunction!(jLoop, false);
+                    setJunction!(jCondExit, false);
+                    joinJunction!(jExit, false)
+                }
+            },
+            Label(ref mut label, ref mut body) => {
+                assert!(isBreakCapturer(body)); // 'label on non-loop, non-switch statement')
+                *nextLoopLabel = Some(label.clone());
+                buildFlowGraph!(body)
+            },
+            Switch(ref mut input, ref mut cases) => {
+                // Emscripten generates switch statements of a very limited
+                // form: all case clauses are numeric literals, and all
+                // case bodies end with a (maybe implicit) break.  So it's
+                // basically equivalent to a multi-way IF statement.
+                *isInExpr += 1;
+                // RSTODO: see comment above buildFlowGraph
+                let conditionIsLabel = if let Name(is!("label")) = *lookThroughCasts(input) { true } else { false };
+                buildFlowGraph!(input);
+                *isInExpr -= 1;
+                let jCheckExit = markJunction!();
+                let jExit = addJunction!();
+                pushActiveLabels!(None, jExit);
+                let mut hasDefault = false;
+                for &mut (ref mut caseordefault, ref mut code) in cases.iter_mut() {
+                    setJunction!(jCheckExit, false);
+                    // All case clauses are either 'default' or a numeric literal.
+                    if let Some(ref case) = *caseordefault {
+                        // Detect switches dispatching to labelled blocks.
+                        if conditionIsLabel {
+                            addBlockLabel!(lookThroughCasts(case))
+                        }
+                    } else {
+                        hasDefault = true
+                    }
+                    for codepart in code.iter_mut() {
+                        buildFlowGraph!(codepart)
+                    }
+                    // Control flow will never actually reach the end of the case body.
+                    // If there's live code here, assume it jumps to case exit.
+                    if currEntryJunction.is_some() && !nextBasicBlock.as_ref().unwrap().nodes.is_empty() {
+                        if caseordefault.is_some() {
+                            markNonLocalJump!(NonLocalJumpType::Return)
+                        } else {
+                            joinJunction!(jExit, false)
+                        }
+                    }
+                }
+                // If there was no default case, we also need an empty block
+                // linking straight from the test evaluation to the exit.
+                if !hasDefault {
+                    setJunction!(jCheckExit, false)
+                }
+                joinJunction!(jExit, false);
+                popActiveLabels!()
+            },
+            Return(ref mut mayberetval) => {
+                if let Some(ref mut retval) = *mayberetval {
+                    *isInExpr += 1;
+                    buildFlowGraph!(retval);
+                    *isInExpr -= 1
+                }
+                markNonLocalJump!(NonLocalJumpType::Return)
+            },
+            Break(ref maybelabel) => {
+                markNonLocalJump!(NonLocalJumpType::Break(maybelabel))
+            },
+            Continue(ref maybelabel) => {
+                markNonLocalJump!(NonLocalJumpType::Continue(maybelabel))
+            },
+            Assign(b, _, _) => {
+                // RSTODO: lexical lifetimes - this is safe because we're
+                // just collecting a bunch of pointers in this function. See
+                // also comment above buildFlowGraph
+                assert!(b);
+                let nodePtr = node as *mut _;
+                let (_, left, right) = node.getMutAssign();
+                *isInExpr += 1;
+                buildFlowGraph!(right);
+                *isInExpr -= 1;
+                if left.isName() {
+                    addKillNode!(nodePtr)
+                } else {
+                    buildFlowGraph!(left)
+                }
+            },
+            Name(_) => {
+                addUseNode!(node as *mut _)
+            },
+            Block(ref mut stats) |
+            Toplevel(ref mut stats) => {
+                for stat in stats.iter_mut() {
+                    buildFlowGraph!(stat)
+                }
+            },
+            Stat(ref mut stat) => {
+                buildFlowGraph!(stat)
+            },
+            UnaryPrefix(_, ref mut right) => {
+                *isInExpr += 1;
+                buildFlowGraph!(right);
+                *isInExpr -= 1
+            },
+            Binary(_, ref mut left, ref mut right) => {
+                *isInExpr += 1;
+                buildFlowGraph!(left);
+                buildFlowGraph!(right);
+                *isInExpr -= 1
+            },
+            Call(ref mut fnexpr, ref mut params) => {
+                // RSTODO: see comment above buildFlowGraph
+                let mut isNonLocalJump = false;
+                if *isInExpr == 0 {
+                    if let Name(ref name) = **fnexpr {
+                        isNonLocalJump = isFunctionThatAlwaysThrows(name)
+                    }
+                }
+                *isInExpr += 1;
+                buildFlowGraph!(fnexpr);
+                for param in params.iter_mut() {
+                    buildFlowGraph!(param)
+                }
+                *isInExpr -= 1;
+                // If the call is statically known to throw,
+                // treat it as a jump to function exit.
+                if isNonLocalJump {
+                    markNonLocalJump!(NonLocalJumpType::Return)
+                }
+            },
+            Seq(ref mut left, ref mut right) |
+            Sub(ref mut left, ref mut right) => {
+                *isInExpr += 1;
+                buildFlowGraph!(left);
+                buildFlowGraph!(right);
+                *isInExpr -= 1
+            },
+            Dot(ref mut obj, _) => {
+                *isInExpr += 1;
+                buildFlowGraph!(obj);
+                *isInExpr -= 1
+            },
+            Num(_) | Str(_) | Var(_) => (), // nada
+            _ => panic!(), // 'unsupported node type: ' + type);
+        }
+    }
+
+    buildFlowGraph(asmData.func, asmDataLocals, &mut junctions, &mut blocks, &mut currEntryJunction, &mut nextBasicBlock, &mut isInExpr, &mut activeLabels, &mut nextLoopLabel);
+
+    #[cfg(feature = "profiling")]
+    {
+    tflowgraph += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    assert!(junctions[ENTRY_JUNCTION].inblocks.is_empty()); // 'function entry must have no incoming blocks');
+    assert!(junctions[EXIT_JUNCTION].outblocks.is_empty()); // 'function exit must have no outgoing blocks');
+    assert!(blocks[ENTRY_BLOCK].entry == ENTRY_JUNCTION); //, 'block zero must be the initial block');
+
+    // Fix up implicit jumps done by assigning to the LABEL variable.
+    // If a block ends with an assignment to LABEL and there's another block
+    // with that value of LABEL as precondition, we tweak the flow graph so
+    // that the former jumps straight to the later.
+
+    // RSNOTE: because these may be mutably referenced they need to be pointers
+    let mut labelledBlocks = BTreeMap::<u32, *mut Block>::new();
+    let mut labelledJumps = Vec::<(u32, *mut Block)>::new();
+
+    'findlabelledblocks: for block in blocks.iter_mut() {
+        let blockPtr = &mut *block as *mut _;
+        // Does it have any labels as preconditions to its entry?
+        for &labelVal in block.labels.iter() {
+            // If there are multiple blocks with the same label, all bets are off.
+            // This seems to happen sometimes for short blocks that end with a return.
+            // TODO: it should be safe to merge the duplicates if they're identical.
+            // RSTODO: ideally entry api, but lexical lifetimes
+            if labelledBlocks.contains_key(&labelVal) {
+                labelledBlocks.clear();
+                labelledJumps.clear();
+                break 'findlabelledblocks
+            }
+            let prev = labelledBlocks.insert(labelVal, blockPtr);
+            assert!(prev.is_none())
+        }
+        // Does it assign a specific label value at exit?
+        if block.kill.contains(&is!("label")) {
+            let finalNode = block.nodes.last().unwrap();
+            if let Assign(b, mast!(Name(is!("label"))), ref right) = *unsafe { &**finalNode } {
+                assert!(b);
+                if let Num(n) = **right {
+                    labelledJumps.push((f64tou32(n), blockPtr))
+                } else {
+                    // If labels are computed dynamically then all bets are off.
+                    // This can happen due to indirect branching in llvm output.
+                    labelledBlocks.clear();
+                    labelledJumps.clear();
+                    break 'findlabelledblocks
+                }
+            } else {
+                // If label is assigned a non-zero value elsewhere in the block
+                // then all bets are off.  This can happen e.g. due to outlining
+                // saving/restoring label to the stack.
+                for node in block.nodes[..block.nodes.len()-1].iter() {
+                    if let Assign(b, mast!(Name(is!("label"))), ref right) = *unsafe { &**node } {
+                        assert!(b);
+                        if **right != Num(0f64) {
+                            labelledBlocks.clear();
+                            labelledJumps.clear();
+                            break 'findlabelledblocks
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // RSNOTE: each block must have a different label node because the name
+    // gets replaced. Also note this is a vec of pointers so we can point
+    // to the actual values and not have them move when the vec changes size
+    let mut fakelabels = vec![];
+    for (_, &blockPtr) in labelledBlocks.iter() {
+        // Disconnect it from the graph, and create a
+        // new junction for jumps targetting this label.
+        let block = unsafe { &mut *blockPtr };
+        let didremove = junctions[block.entry].outblocks.remove(&block.id);
+        assert!(didremove);
+        block.entry = addJunction(&mut junctions);
+        junctions[block.entry].outblocks.insert(block.id);
+        // Add a fake use of LABEL to keep it alive in predecessor.
+        let prev = block.use_.insert(is!("label"), None);
+        assert!(prev.is_none());
+        fakelabels.push(makeName(is!("label")));
+        block.nodes.insert(0, (&mut **fakelabels.last_mut().unwrap()) as *mut _);
+        block.isexpr.insert(0, true)
+    }
+    for &(labelVal, blockPtr) in labelledJumps.iter() {
+        let block = unsafe { &mut *blockPtr };
+        if let Some(&targetBlockPtr) = labelledBlocks.get(&labelVal) {
+            let targetBlock = unsafe { &mut *targetBlockPtr };
+            // Redirect its exit to entry of the target block.
+            let didremove = junctions[block.exit].inblocks.remove(&block.id);
+            assert!(didremove);
+            block.exit = targetBlock.entry;
+            let isnew = junctions[block.exit].inblocks.insert(block.id);
+            assert!(isnew)
+        }
+    }
+
+    #[cfg(feature = "profiling")]
+    {
+    tlabelfix += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    // Do a backwards data-flow analysis to determine the set of live
+    // variables at each junction, and to use this information to eliminate
+    // any unused assignments.
+    // We run two nested phases.  The inner phase builds the live set for each
+    // junction.  The outer phase uses this to try to eliminate redundant
+    // stores in each basic block, which might in turn affect liveness info.
+
+    fn analyzeJunction(j: usize, junctions: &mut Vec<Junction>, blocks: &Vec<Block>) {
+        // Update the live set for this junction.
+        let mut live = BTreeSet::new();
+        for &b in junctions[j].outblocks.iter() {
+            let block = &blocks[b];
+            for name in junctions[block.exit].live.iter() {
+                if !block.kill.contains(name) {
+                    // RSNOTE: outgoing blocks can have overlapping live var sets
+                    live.insert(name.clone());
+                }
+            }
+            for name in block.use_.keys() {
+                // RSNOTE: block can use outgoing vars
+                live.insert(name.clone());
+            }
+        }
+        junctions[j].live = live
+    }
+
+    fn analyzeBlock(block: &mut Block, asmData: &AsmData, junctions: &mut Vec<Junction>) {
+        // Update information about the behaviour of the block.
+        // This includes the standard 'use' and 'kill' information,
+        // plus a 'link' set naming values that flow through from entry
+        // to exit, possibly changing names via simple 'x=y' assignments.
+        // As we go, we eliminate assignments if the variable is not
+        // subsequently used.
+        let mut live = junctions[block.exit].live.clone();
+        let use_ = &mut block.use_;
+        let kill = &mut block.kill;
+        let link = &mut block.link;
+        let lastUseLoc = &mut block.lastUseLoc;
+        let firstDeadLoc = &mut block.firstDeadLoc;
+        let firstKillLoc = &mut block.firstKillLoc;
+        let lastKillLoc = &mut block.lastKillLoc;
+        // XXX efficiency
+        use_.clear();
+        kill.clear();
+        link.clear();
+        lastUseLoc.clear();
+        firstDeadLoc.clear();
+        firstKillLoc.clear();
+        lastKillLoc.clear();
+        for name in live.iter() {
+            let prev1 = link.insert(name.clone(), name.clone());
+            let prev2 = lastUseLoc.insert(name.clone(), block.nodes.len());
+            let prev3 = firstDeadLoc.insert(name.clone(), block.nodes.len());
+            assert!(prev1.is_none() && prev2.is_none() && prev3.is_none())
+        }
+        // RSNOTE: an iterator won't work because we remove nodes
+        let mut j = block.nodes.len();
+        loop {
+            if j == 0 { break }
+            j -= 1;
+            let node = unsafe { &mut *block.nodes[j] };
+            match *node {
+                Name(ref name) => {
+                    // RSNOTE: may already be live or used
+                    live.insert(name.clone());
+                    use_.insert(name.clone(), Some(j));
+                    if !lastUseLoc.contains_key(name) {
+                        let prev1 = lastUseLoc.insert(name.clone(), j);
+                        let prev2 = firstDeadLoc.insert(name.clone(), j);
+                        assert!(prev1.is_none() && prev2.is_none())
+                    }
+                },
+                // We only keep assignments if they will be subsequently used.
+                Assign(b, mast!(Name(ref name)), ref right) if live.contains(name) => {
+                    assert!(b);
+                    // RSNOTE: may be killed by a previous assign somewhere in this block
+                    kill.insert(name.clone());
+                    // RSNOTE: may be used in the next block, but perhaps not this one
+                    use_.remove(name);
+                    let didremove = live.remove(name);
+                    assert!(didremove);
+                    // RSNOTE: previous assign+use could have inserted these two
+                    firstDeadLoc.insert(name.clone(), j);
+                    firstKillLoc.insert(name.clone(), j);
+                    lastUseLoc.entry(name.clone()).or_insert(j);
+                    lastKillLoc.entry(name.clone()).or_insert(j);
+                    // If it's an "x=y" and "y" is not live, then we can create a
+                    // flow-through link from "y" to "x".  If not then there's no
+                    // flow-through link for "x".
+                    if let Some(oldLink) = link.remove(name) {
+                        if let Name(ref newname) = **right {
+                            if asmData.isLocal(newname) {
+                                // RSTODO: not sure why we only consider the first
+                                // link? Previous inserts could also be interesting?
+                                // Also where's the check for newname not being live?
+                                link.insert(newname.clone(), oldLink);
+                            }
+                        }
+                    }
+                },
+                Assign(b, mast!(Name(_)), _) => {
+                    assert!(b);
+                    // The result of this assignment is never used, so delete it.
+                    // We may need to keep the RHS for its value or its side-effects.
+                    let mut removeUnusedNodes = |nodes: &mut Vec<*mut AstValue>, isexpr: &mut Vec<bool>, j: usize, n: usize| {
+                        for loc in lastUseLoc.values_mut() {
+                            *loc -= n
+                        }
+                        for loc in firstDeadLoc.values_mut() {
+                            *loc -= n
+                        }
+                        for loc in firstKillLoc.values_mut() {
+                            *loc -= n
+                        }
+                        for loc in lastKillLoc.values_mut() {
+                            *loc -= n
+                        }
+                        // RSNOTE: TAG:carefulnoderemove
+                        nodes.drain(j..j+n).count();
+                        isexpr.drain(j..j+n).count();
+                    };
+                    // RSTODO: lexical lifetimes
+                    let maybenewnode = {
+                        let (_, _, right) = node.getMutAssign();
+                        if block.isexpr[j] || hasSideEffects(right) { Some(mem::replace(right, makeEmpty())) } else { None }
+                    };
+                    if let Some(newnode) = maybenewnode {
+                        *node = *newnode;
+                        removeUnusedNodes(&mut block.nodes, &mut block.isexpr, j, 1)
+                    } else {
+                        let mut numUsesInExpr = 0;
+                        let mut node = mem::replace(node, *makeEmpty());
+                        let (_, _, right) = node.getMutAssign();
+                        traversePre(right, |node: &AstValue| {
+                            if let Name(ref name) = *node {
+                                if asmData.isLocal(name) {
+                                    numUsesInExpr += 1
+                                }
+                            }
+                        });
+                        j -= numUsesInExpr;
+                        removeUnusedNodes(&mut block.nodes, &mut block.isexpr, j, 1 + numUsesInExpr)
+                    }
+                },
+                _ => panic!(),
+            }
+        }
+    }
+
+    // Ordered map to work in approximate reverse order of junction appearance
+    let mut jWorkSet = BTreeSet::<usize>::new();
+    let mut bWorkSet = BTreeSet::<usize>::new();
+
+    // Be sure to visit every junction at least once.
+    // This avoids missing some vars because we disconnected them
+    // when processing the labelled jumps.
+    for i in EXIT_JUNCTION..junctions.len() {
+        let isnew = jWorkSet.insert(i);
+        assert!(isnew);
+        for &b in junctions[i].inblocks.iter() {
+            let isnew = bWorkSet.insert(b);
+            assert!(isnew)
+        }
+    }
+    // Exit junction never has any live variable changes to propagate
+    let didremove = jWorkSet.remove(&EXIT_JUNCTION);
+    assert!(didremove);
+
+    loop {
+        // Iterate on just the junctions until we get stable live sets.
+        // The first run of this loop will grow the live sets to their maximal size.
+        // Subsequent runs will shrink them based on eliminated in-block uses.
+        while let Some(&last) = jWorkSet.iter().next_back() {
+            // RSTODO: in C++ we were able to call remove directly on the iterator. This
+            // way seems like it'd be slower. pop would be nice
+            let didremove = jWorkSet.remove(&last);
+            assert!(didremove);
+            let oldLive = junctions[last].live.clone(); // copy it here to check for changes later
+            analyzeJunction(last, &mut junctions, &mut blocks);
+            if oldLive != junctions[last].live {
+                // Live set changed, updated predecessor blocks and junctions.
+                for &b in junctions[last].inblocks.iter() {
+                    // RSNOTE: both may already be in the work set
+                    bWorkSet.insert(b);
+                    jWorkSet.insert(blocks[b].entry);
+                }
+            }
+        }
+        // Now update the blocks based on the calculated live sets.
+        while let Some(&last) = bWorkSet.iter().next_back() {
+            // RSTODO: in C++ we were able to call remove directly on the iterator. This
+            // way seems like it'd be slower. pop would be nice
+            let didremove = bWorkSet.remove(&last);
+            assert!(didremove);
+            let block = &mut blocks[last];
+            let oldUse = block.use_.clone();
+            analyzeBlock(block, &asmData, &mut junctions);
+            if oldUse != block.use_ {
+                // The use set changed, re-process the entry junction.
+                // RSNOTE: may already be intended for processing
+                jWorkSet.insert(block.entry);
+            }
+        }
+        if jWorkSet.is_empty() { break }
+    }
+
+    #[cfg(feature = "profiling")]
+    {
+    tbackflow += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    // Insist that all function parameters are alive at function entry.
+    // This ensures they will be assigned independent registers, even
+    // if they happen to be unused.
+
+    for name in asmData.params.iter() {
+        // RSNOTE: if used they'll already be there
+        junctions[ENTRY_JUNCTION].live.insert(name.clone());
+    }
+
+    // For variables that are live at one or more junctions, we assign them
+    // a consistent register for the entire scope of the function.  Find pairs
+    // of variable that cannot use the same register (the "conflicts") as well
+    // as pairs of variables that we'd like to have share the same register
+    // (the "links").
+
+    #[derive(Clone)]
+    struct JuncVar {
+        conf: Vec<bool>,
+        link: BTreeSet<IString>,
+        excl: HashSet<usize>,
+        reg: Option<usize>,
+        used: bool,
+    }
+    impl JuncVar {
+        fn new() -> JuncVar {
+            JuncVar { conf: vec![], link: BTreeSet::new(), excl: HashSet::new(), reg: None, used: false }
+        }
+    }
+    let numLocals = asmData.locals.len();
+    let mut nameToNum = HashMap::<IString, usize>::with_capacity(numLocals);
+    let mut numToName = Vec::<IString>::with_capacity(numLocals);
+    for local in asmData.locals.keys() {
+        let prev = nameToNum.insert(local.clone(), numToName.len());
+        assert!(prev.is_none());
+        numToName.push(local.clone())
+    }
+
+    let mut juncVars = Vec::<JuncVar>::with_capacity(numLocals);
+    juncVars.resize(numLocals, JuncVar::new());
+    for junc in junctions.iter() {
+        for name in junc.live.iter() {
+            let jVar = &mut juncVars[*nameToNum.get(name).unwrap()];
+            jVar.used = true;
+            jVar.conf.resize(numLocals, false)
+        }
+    }
+    let mut possibleBlockConflictsMap = BTreeMap::<&IString, Vec<&Block>>::new();
+    let mut possibleBlockConflicts = Vec::<(usize, Vec<&Block>)>::with_capacity(numLocals);
+    let mut possibleBlockLinks = HashMap::<&IString, Vec<&Block>>::with_capacity(numLocals);
+
+    for junc in junctions.iter() {
+        // Pre-compute the possible conflicts and links for each block rather
+        // than checking potentially impossible options for each var
+        assert!(possibleBlockConflictsMap.is_empty());
+        possibleBlockConflicts.clear();
+        possibleBlockLinks.clear();
+        for &b in junc.outblocks.iter() {
+            let block = &blocks[b];
+            let jSucc = &junctions[block.exit];
+            for name in jSucc.live.iter() {
+                possibleBlockConflictsMap.entry(name)
+                    .or_insert_with(|| Vec::with_capacity(1)).push(block)
+            }
+            for (name, linkname) in block.link.iter() {
+                if name != linkname {
+                    possibleBlockLinks.entry(name)
+                        .or_insert_with(|| Vec::with_capacity(1)).push(block)
+                }
+            }
+        }
+        // Find the live variables in this block, mark them as unnecessary to
+        // check for conflicts (we mark all live vars as conflicting later)
+        let mut liveJVarNums = Vec::<usize>::with_capacity(junc.live.len());
+        for name in junc.live.iter() {
+            let jVarNum = *nameToNum.get(name).unwrap();
+            liveJVarNums.push(jVarNum);
+            // RSNOTE: if all outblocks end at the exit junction, there are no
+            // possible block conflicts
+            possibleBlockConflictsMap.remove(name);
+        }
+        // Extract just the variables we might want to check for conflicts
+        // RSTODO: why does drain not exist? https://github.com/rust-lang/rfcs/pull/1254
+        for (name, blocks) in mem::replace(&mut possibleBlockConflictsMap, BTreeMap::new()).into_iter() {
+            possibleBlockConflicts.push((*nameToNum.get(&name).unwrap(), blocks))
+        }
+
+        for &jVarNum in liveJVarNums.iter() {
+            let name = &numToName[jVarNum];
+            {
+            let jvar = &mut juncVars[jVarNum];
+            // It conflicts with all other names live at this junction.
+            for &liveJVarNum in liveJVarNums.iter() {
+                jvar.conf[liveJVarNum] = true
+            }
+            jvar.conf[jVarNum] = false; // except for itself, of course
+            }
+
+            // It conflicts with any output vars of successor blocks,
+            // if they're assigned before it goes dead in that block.
+            for &(otherJVarNum, ref blocks) in possibleBlockConflicts.iter() {
+                let otherName = &numToName[otherJVarNum];
+                for &block in blocks.iter() {
+                    // RSNOTE: firstDeadLoc isn't set when a block doesn't do anything
+                    // with a var but happens to be connected to a junction where one
+                    // of the other entry blocks does
+                    if block.lastKillLoc.get(otherName).unwrap() < block.firstDeadLoc.get(name).unwrap_or(&0) {
+                        juncVars[jVarNum].conf[otherJVarNum] = true;
+                        juncVars[otherJVarNum].conf[jVarNum] = true;
+                        break
+                    }
+                }
+            }
+
+            // It links with any linkages in the outgoing blocks.
+            for block in possibleBlockLinks.get(name).map(|v| v.as_slice()).unwrap_or(&[]).iter() {
+                let linkName = block.link.get(name).unwrap();
+                // RSNOTE: possible links may have already been added by previous blocks
+                juncVars[jVarNum].link.insert(linkName.clone());
+                juncVars[*nameToNum.get(linkName).unwrap()].link.insert(name.clone());
+            }
+        }
+    }
+
+    #[cfg(feature = "profiling")]
+    {
+    tjuncvaruniqassign += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    // Attempt to sort the junction variables to heuristically reduce conflicts.
+    // Simple starting point: handle the most-conflicted variables first.
+    // This seems to work pretty well.
+
+    let mut sortedJVarNums = Vec::<usize>::with_capacity(juncVars.len());
+    let mut jVarConfCounts = Vec::<usize>::with_capacity(numLocals);
+    jVarConfCounts.resize(numLocals, 0);
+    for (jVarNum, jVar) in juncVars.iter().enumerate() {
+        if !jVar.used { continue }
+        jVarConfCounts[jVarNum] = jVar.conf.iter().filter(|&&conf| conf).count();
+        sortedJVarNums.push(jVarNum);
+    }
+    sortedJVarNums.sort_by(|&vi1: &usize, &vi2: &usize| {
+        // sort by # of conflicts
+        use std::cmp::Ordering::{Less, Greater};
+        if jVarConfCounts[vi1] < jVarConfCounts[vi2] { return Less }
+        if jVarConfCounts[vi1] == jVarConfCounts[vi2] {
+            return if numToName[vi1] < numToName[vi2] { Less } else { Greater }
+        }
+        Greater
+    });
+
+    #[cfg(feature = "profiling")]
+    {
+    tjuncvarsort += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    // We can now assign a register to each junction variable.
+    // Process them in order, trying available registers until we find
+    // one that works, and propagating the choice to linked/conflicted
+    // variables as we go.
+
+    fn tryAssignRegister(name: &IString, reg: usize, juncVars: &mut Vec<JuncVar>, nameToNum: &HashMap<IString, usize>) -> bool {
+        // RSNOTE: pass juncVars in as a pointer as we do some aliasing which can't be expressed in the rust type system as safe
+        fn tryAssignRegisterInner(name: &IString, reg: usize, juncVars: *mut Vec<JuncVar>, nameToNum: &HashMap<IString, usize>) -> bool {
+            // Try to assign the given register to the given variable,
+            // and propagate that choice throughout the graph.
+            // Returns true if successful, false if there was a conflict.
+            let jvnum = *nameToNum.get(name).unwrap();
+            let jv = unsafe { &mut (*juncVars)[jvnum] };
+            if let Some(jvreg) = jv.reg {
+                return jvreg == reg
+            }
+            if jv.excl.contains(&reg) {
+                return false
+            }
+            jv.reg = Some(reg);
+            // Exclude use of this register at all conflicting variables.
+            // RSTODO: in theory rust should know that iterating over conf of a juncVars element
+            // is disjoint from mutable access of excl
+            for (confNameNum, _) in jv.conf.iter().enumerate().filter(|&(_, &conf)| conf) {
+                // RSNOTE: other conflicting variables may have already been inserted
+                unsafe { (*juncVars)[confNameNum].excl.insert(reg) };
+            }
+            // Try to propagate it into linked variables.
+            // It's not an error if we can't.
+            // RSTODO: tryAssignRegister only mutates reg and conf (not link, nor does it remove
+            // elements from juncvars) so this is safe to do
+            for linkName in unsafe { (*juncVars)[jvnum].link.iter() } {
+                tryAssignRegisterInner(&linkName, reg, juncVars, nameToNum);
+            }
+            true
+        }
+        tryAssignRegisterInner(name, reg, juncVars as *mut _, nameToNum)
+    }
+    for jVarNum in sortedJVarNums.into_iter() {
+        // It may already be assigned due to linked-variable propagation.
+        if juncVars[jVarNum].reg.is_some() {
+            continue
+        }
+        let name = &numToName[jVarNum];
+        // Try to use existing registers first.
+        let mut moar = false;
+        {
+        let allRegs = &allRegsByType[asmData.getType(name).unwrap().as_usize()];
+        for &reg in allRegs.keys() {
+            if tryAssignRegister(name, reg, &mut juncVars, &nameToNum) {
+                moar = true;
+                break
+            }
+        }
+        }
+        if moar { continue }
+        // They're all taken, create a new one.
+        assert!(tryAssignRegister(name, createReg(name, &asmData, &mut allRegsByType), &mut juncVars, &nameToNum))
+    }
+
+    #[cfg(feature = "profiling")]
+    {
+    tregassign += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    // Each basic block can now be processed in turn.
+    // There may be internal-use-only variables that still need a register
+    // assigned, but they can be treated just for this block.  We know
+    // that all inter-block variables are in a good state thanks to
+    // junction variable consistency.
+
+    for block in blocks.iter() {
+        if block.nodes.is_empty() { continue }
+        //let jEnter = &junctions[block.entry];
+        let jExit = &junctions[block.exit];
+        // Mark the point at which each input reg becomes dead.
+        // Variables alive before this point must not be assigned
+        // to that register.
+        let mut inputVars = HashSet::<&IString>::new();
+        let mut inputDeadLoc = HashMap::<usize, usize>::new();
+        let mut inputVarsByReg = HashMap::<usize, &IString>::new();
+        for name in jExit.live.iter() {
+            if !block.kill.contains(name) {
+                let isnew = inputVars.insert(name);
+                assert!(isnew);
+                let reg = juncVars[*nameToNum.get(name).unwrap()].reg.unwrap(); // 'input variable doesnt have a register');
+                let prev1 = inputDeadLoc.insert(reg, *block.firstDeadLoc.get(name).unwrap());
+                let prev2 = inputVarsByReg.insert(reg, name);
+                assert!(prev1.is_none() && prev2.is_none());
+            }
+        }
+        for name in block.use_.keys() {
+            if !inputVars.contains(name) {
+                let isnew = inputVars.insert(name);
+                assert!(isnew);
+                let reg = juncVars[*nameToNum.get(name).unwrap()].reg.unwrap(); // 'input variable doesnt have a register');
+                let prev1 = inputDeadLoc.insert(reg, *block.firstDeadLoc.get(name).unwrap());
+                let prev2 = inputVarsByReg.insert(reg, name);
+                assert!(prev1.is_none() && prev2.is_none());
+            }
+        }
+        // TODO assert(setSize(setSub(inputVars, jEnter.live)) == 0);
+        // Scan through backwards, allocating registers on demand.
+        // Be careful to avoid conflicts with the input registers.
+        // We consume free registers in last-used order, which helps to
+        // eliminate "x=y" assignments that are the last use of "y".
+        let mut assignedRegs = HashMap::<IString, usize>::new();
+        let mut freeRegsByTypePre = allRegsByType.clone(); // XXX copy
+        // Begin with all live vars assigned per the exit junction.
+        for name in jExit.live.iter() {
+            let reg = juncVars[*nameToNum.get(name).unwrap()].reg.unwrap(); // 'output variable doesnt have a register');
+            let prev = assignedRegs.insert(name.clone(), reg);
+            assert!(prev.is_none());
+            freeRegsByTypePre[asmData.getType(name).unwrap().as_usize()].remove(&reg); // XXX assert?
+        }
+        let mut freeRegsByType = Vec::<Vec<usize>>::with_capacity(freeRegsByTypePre.len());
+        freeRegsByType.resize(freeRegsByTypePre.len(), vec![]);
+        for (tynum, freeRegs) in freeRegsByTypePre.iter().enumerate() {
+            for &reg in freeRegs.keys() {
+                freeRegsByType[tynum].push(reg)
+            }
+        }
+        // Scan through the nodes in sequence, modifying each node in-place
+        // and grabbing/freeing registers as needed.
+        // RSTODO: no reason for this not to be &mut except laziness
+        let mut maybeRemoveNodes = Vec::<(usize, *mut AstValue)>::new();
+        for (nodeidx, &nodePtr) in block.nodes.iter().enumerate().rev() {
+            let node = unsafe { &mut *nodePtr };
+            match *node {
+                Name(ref mut name) => {
+                    let tynum = asmData.getType(name).unwrap().as_usize();
+                    let freeRegs: &mut Vec<usize> = &mut freeRegsByType[tynum];
+                    let maybereg = assignedRegs.get(name).cloned();
+                    // A use.  Grab a register if it doesn't have one.
+                    let reg = if let Some(reg) = maybereg {
+                        reg
+                    } else {
+                        if inputVars.contains(name) && nodeidx <= *block.firstDeadLoc.get(name).unwrap() {
+                            // Assignment to an input variable, must use pre-assigned reg.
+                            let reg = juncVars[*nameToNum.get(name).unwrap()].reg.unwrap();
+                            let prev = assignedRegs.insert(name.clone(), reg);
+                            assert!(prev.is_none());
+                            for k in (0..freeRegs.len()).rev() {
+                                if freeRegs[k] == reg {
+                                    freeRegs.remove(k);
+                                    break
+                                }
+                            }
+                            reg
+                        } else {
+                            // Try to use one of the existing free registers.
+                            // It must not conflict with an input register.
+                            // RSTODO: there must be a better way to express the unconditional insertion
+                            // if a freereg wasn't found
+                            let mut reg = 0;
+                            for k in (0..freeRegs.len()).rev() {
+                                reg = freeRegs[k];
+                                // Check for conflict with input registers.
+                                if let Some(&loc) = inputDeadLoc.get(&reg) {
+                                    if *block.firstKillLoc.get(name).unwrap() <= loc {
+                                        if name != *inputVarsByReg.get(&reg).unwrap() {
+                                            continue
+                                        }
+                                    }
+                                }
+                                // Found one!
+                                let prev = assignedRegs.insert(name.clone(), reg);
+                                assert!(prev.is_none());
+                                freeRegs.remove(k);
+                                break
+                            }
+                            // If we didn't find a suitable register, create a new one.
+                            if !assignedRegs.contains_key(name){
+                                reg = createReg(name, &asmData, &mut allRegsByType);
+                                let prev = assignedRegs.insert(name.clone(), reg);
+                                assert!(prev.is_none());
+                            }
+                            assert!(reg > 0);
+                            reg
+                        }
+                    };
+                    *name = allRegsByType[tynum].get(&reg).unwrap().clone();
+                },
+                Assign(b, mast!(Name(_)), _) => {
+                    assert!(b);
+                    // A kill. This frees the assigned register.
+                    // RSTODO: lexical lifetimes
+                    let (_, left, right) = node.getMutAssign();
+                    let (name,) = left.getMutName();
+                    let tynum = asmData.getType(name).unwrap().as_usize();
+                    let freeRegs = &mut freeRegsByType[tynum];
+                    let reg = assignedRegs.remove(name).unwrap(); //, 'live variable doesnt have a reg?')
+                    *name = allRegsByType[tynum].get(&reg).unwrap().clone();
+                    freeRegs.push(reg);
+                    if let Name(ref rightname) = **right {
+                        if asmData.isLocal(rightname) {
+                            // RSNOTE: must be a separate loop because names on
+                            // the rhs of the assign haven't been replaced yet
+                            maybeRemoveNodes.push((nodeidx, nodePtr))
+                        }
+                    }
+                },
+                _ => panic!(),
+            }
+        }
+        // If we managed to create any "x=x" assignments, remove them.
+        for (nodeidx, nodePtr) in maybeRemoveNodes.into_iter() {
+            let node = unsafe { &mut *nodePtr };
+            let mut maybenewnode = None;
+            {
+            let (_, left, right) = node.getMutAssign();
+            if left == right {
+                maybenewnode = Some(if block.isexpr[nodeidx] { mem::replace(left, makeEmpty()) } else { makeEmpty() })
+            }
+            }
+            if let Some(newnode) = maybenewnode {
+                *node = *newnode
+            }
+        }
+    }
+
+    #[cfg(feature = "profiling")]
+    {
+    tblockproc += start.elapsed().unwrap();
+    start = SystemTime::now();
+    }
+
+    // Assign registers to function params based on entry junction
+
+    paramRegs = HashSet::<IString>::new();
+    let (_, params, _) = asmData.func.getMutDefun();
+    for param in params.iter_mut() {
+        let allRegs = &allRegsByType[AsmData::getTypeFromLocals(&asmData.locals, param).unwrap().as_usize()];
+        *param = allRegs.get(&juncVars[*nameToNum.get(param).unwrap()].reg.unwrap()).unwrap().clone();
+        let isnew = paramRegs.insert(param.clone());
+        assert!(isnew)
+    }
+    }
+
+    // That's it!
+    // Re-construct the function with appropriate variable definitions.
+
+    asmData.locals.clear();
+    asmData.params.clear();
+    asmData.vars.clear();
+    for i in 1..nextReg {
+        for tynum in 0..allRegsByType.len() {
+            if let Some(reg) = allRegsByType[tynum].get(&i) {
+                if !paramRegs.contains(reg) {
+                    asmData.addVar(reg.clone(), AsmType::from_usize(tynum));
+                } else {
+                    asmData.addParam(reg.clone(), AsmType::from_usize(tynum));
+                }
+                break
+            }
+        }
+    }
+    asmData.denormalize();
+
+    removeAllUselessSubNodes(asmData.func); // XXX vacuum?    vacuum(fun);
+
+    #[cfg(feature = "profiling")]
+    {
+    treconstruct += start.elapsed().unwrap();
+    //start = SystemTime::now();
+    }
+
+    });
+
+    #[cfg(feature = "profiling")]
+    {
+    printlnerr!("    RH stages: a:{} fl:{} lf:{} bf:{} jvua:{} jvs:{} jra:{} bp:{}, r:{}",
+        tasmdata.to_us(), tflowgraph.to_us(), tlabelfix.to_us(), tbackflow.to_us(), tjuncvaruniqassign.to_us(), tjuncvarsort.to_us(), tregassign.to_us(), tblockproc.to_us(), treconstruct.to_us());
+    }
+}
+// end registerizeHarder
 
 // minified names generation
 lazy_static! {
@@ -4655,8 +4828,6 @@ pub fn asmLastOpts(ast: &mut AstValue) {
             let newbody;
             {
             let (_, block) = body.getMutDo();
-            fn isBreakCapturer(node: &AstValue) -> bool { match *node { Do(..) | While(..) | Switch(..) => true, _ => false } }
-            fn isContinueCapturer(node: &AstValue) -> bool { match *node { Do(..) | While(..) => true, _ => false } }
             traversePrePost(block, |node: &AstValue| {
                 match *node {
                     Continue(None) if continueCaptured.get() == 0 => abort = true,
