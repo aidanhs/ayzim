@@ -535,20 +535,6 @@ fn makeArray<T>(size_hint: usize) -> AstVec<T> {
     builder::makeTArray(size_hint)
 }
 
-// RSTODO: remove?
-//fn makeBool(b: bool) -> Ref {
-//    let mut r = ARENA.alloc();
-//    r.setBool(b);
-//    r
-//}
-
-// RSTODO: remove?
-//fn makeString(s: IString) -> Ref {
-//    let mut r = ARENA.alloc();
-//    r.setIString(s);
-//    r
-//}
-
 fn makeEmpty() -> AstNode {
     builder::makeToplevel()
 }
@@ -564,55 +550,6 @@ fn makeName(str: IString) -> AstNode {
 fn makeBlock() -> AstNode {
     builder::makeBlock()
 }
-
-// RSTODO: remove?
-//fn make1(s1: IString, a: Ref) -> Ref {
-//    let mut r = makeArray(2);
-//    r
-//        .push_back(makeString(s1))
-//        .push_back(a);
-//    r
-//}
-
-// RSTODO: remove?
-//fn make2IString(s1: IString, s2: IString, a: Ref) -> Ref {
-//    let mut r = makeArray(3);
-//    r
-//        .push_back(makeString(s1))
-//        .push_back(makeString(s2))
-//        .push_back(a);
-//    r
-//}
-//
-//fn make2Ref(s1: IString, a: Ref, b: Ref) -> Ref {
-//    let mut r = makeArray(3);
-//    r
-//        .push_back(makeString(s1))
-//        .push_back(a)
-//        .push_back(b);
-//    r
-//}
-
-// RSTODO: remove?
-//fn make3IString(ty: IString, a: IString, b: Ref, c: Ref) -> Ref {
-//    let mut r = makeArray(4);
-//    r
-//        .push_back(makeString(ty))
-//        .push_back(makeString(a))
-//        .push_back(b)
-//        .push_back(c);
-//    r
-//}
-//
-//fn make3Ref(ty: IString, a: Ref, b: Ref, c: Ref) -> Ref {
-//    let mut r = makeArray(4);
-//    r
-//        .push_back(makeString(ty))
-//        .push_back(a)
-//        .push_back(b)
-//        .push_back(c);
-//    r
-//}
 
 // RSTODO: could be massively shortened by keeping a mapping from type to
 // istring method+number of zeros, and just using that? Would also benefit
@@ -781,21 +718,6 @@ fn triviallySafeToMove(node: &AstValue, asmDataLocals: &HashMap<IString, Local>)
     });
     ok
 }
-//bool triviallySafeToMove(Ref node, AsmData& asmData) {
-//  bool ok = true;
-//  traversePre(node, [&](Ref node) {
-//    Ref type = node[0];
-//    if (type == STAT || type == BINARY || type == UNARY_PREFIX || type == ASSIGN || type == NUM) return;
-//    else if (type == NAME) {
-//      if (!asmData.isLocal(node[1]->getIString())) ok = false;
-//    } else if (type == CALL) {
-//      if (callHasSideEffects(node)) ok = false;
-//    } else {
-//      ok = false;
-//    }  
-//  });
-//  return ok;
-//}
 
 // Transforms
 
@@ -841,14 +763,6 @@ fn flipCondition(cond: &mut AstValue, asmFloatZero: &mut Option<IString>) {
     mem::swap(cond, &mut newcond);
     simplifyNotCompsDirect(cond, asmFloatZero);
 }
-
-// RSTODO
-// RSNOTE: probably don't want to implement this as it causes deliberate
-// memory leaks
-//void safeCopy(Ref target, Ref source) { // safely copy source onto target, even if source is a subnode of target
-//  Ref temp = source; // hold on to source
-//  *target = *temp;
-//}
 
 fn clearEmptyNodes(arr: &mut AstVec<AstNode>) {
     arr.retain(|an: &AstNode| { !isEmpty(deStat(an)) })
@@ -1000,31 +914,6 @@ fn measureCost(ast: &AstValue) -> isize {
 //=====================
 // Optimization passes
 //=====================
-
-// RSTODO
-//#define HASES \
-//  bool has(const IString& str) { \
-//    return count(str) > 0; \
-//  } \
-//  bool has(Ref node) { \
-//    return node->isString() && count(node->getIString()) > 0; \
-//  }
-//
-//class StringSet : public cashew::IStringSet {
-//public:
-//  StringSet() {}
-//  StringSet(const char *str) : IStringSet(str) {}
-//
-//  HASES
-//
-//  void dump() {
-//    err("===");
-//    for (auto str : *this) {
-//      errv("%s", str.c_str());
-//    }
-//    err("===");
-//  }
-//};
 
 lazy_static! {
     static ref USEFUL_BINARY_OPS: phf::Set<IString> = iss![
@@ -1215,27 +1104,6 @@ fn isTempDoublePtrAccess(node: &AstValue) -> bool { // these are used in bitcast
     if let Sub(_, mast!(Binary(_, _, Name(is!("tempDoublePtr"))))) = *node { return true }
     false
 }
-
-// RSTODO
-//class StringIntMap : public std::unordered_map<IString, int> {
-//public:
-//  HASES
-//};
-//
-//class StringStringMap : public std::unordered_map<IString, IString> {
-//public:
-//  HASES
-//};
-//
-//class StringRefMap : public std::unordered_map<IString, Ref> {
-//public:
-//  HASES
-//};
-//
-//class StringTypeMap : public std::unordered_map<IString, AsmType> {
-//public:
-//  HASES
-//};
 
 pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
     #[cfg(feature = "profiling")]

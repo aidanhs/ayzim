@@ -1446,12 +1446,6 @@ impl<'a> JSPrinter<'a> {
 
     // Parens optimizing
 
-// RSTODO: remove?
-//  bool capturesOperators(Ref node) {
-//    Ref type = node[0];
-//    return type == CALL || type == ARRAY || type == OBJECT || type == SEQ;
-//  }
-
     fn getPrecedence(node: &AstValue, parent: bool) -> isize {
         let ret = match *node {
             Binary(ref op, _, _) |

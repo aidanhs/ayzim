@@ -313,19 +313,6 @@ enum ExprElt {
     Op(IString),
 }
 
-// RSTODO: may not be needed?
-//  ExprElt(NodeRef n) : isNode(true), node(n) {}
-//  ExprElt(IString o) : isNode(false), op(o) {}
-//
-//  NodeRef getNode() {
-//    assert(isNode);
-//    return node;
-//  }
-//  IString getOp() {
-//    assert(!isNode);
-//    return op;
-//  }
-
 // parser
 
 pub struct Parser {
