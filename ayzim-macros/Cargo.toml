@@ -1,6 +1,6 @@
 [package]
 name = "ayzim-macros"
-version = "0.1.0"
+version = "0.1.1-pre"
 authors = ["Aidan Hobson Sayers <aidanhs@cantab.net>"]
 description = "Syntax extensions for use in ayzim"
 license = "MIT/NCSA"
