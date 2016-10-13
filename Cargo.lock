@@ -2,7 +2,7 @@
 name = "ayzim"
 version = "0.1.0"
 dependencies = [
- "ayzim-macros 0.1.0",
+ "ayzim-macros 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cfor 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "conv 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "interpolate_idents 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -14,14 +14,15 @@ dependencies = [
  "serde 0.8.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 0.8.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "smallvec 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "string_cache 0.2.27",
- "string_cache_codegen 0.2.27",
+ "string_cache 0.2.27 (git+https://github.com/aidanhs/string-cache.git?branch=aphs-ayzim-0.1)",
+ "string_cache_codegen 0.2.27 (git+https://github.com/aidanhs/string-cache.git?branch=aphs-ayzim-0.1)",
  "typed-arena 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "ayzim-macros"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "cfor"
@@ -161,18 +162,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "string_cache"
 version = "0.2.27"
+source = "git+https://github.com/aidanhs/string-cache.git?branch=aphs-ayzim-0.1#f6f9d5b2256b8169ab341f8f479b2d2fb5e1707d"
 dependencies = [
  "debug_unreachable 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "phf 0.7.17 (registry+https://github.com/rust-lang/crates.io-index)",
  "phf_shared 0.7.17 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 0.8.12 (registry+https://github.com/rust-lang/crates.io-index)",
- "string_cache_codegen 0.2.27",
+ "string_cache_codegen 0.2.27 (git+https://github.com/aidanhs/string-cache.git?branch=aphs-ayzim-0.1)",
 ]
 
 [[package]]
 name = "string_cache_codegen"
 version = "0.2.27"
+source = "git+https://github.com/aidanhs/string-cache.git?branch=aphs-ayzim-0.1#f6f9d5b2256b8169ab341f8f479b2d2fb5e1707d"
 dependencies = [
  "phf_codegen 0.7.17 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -196,6 +199,7 @@ version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [metadata]
+"checksum ayzim-macros 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "f1e0a588a08b32ebe91ca3803c2dd83d868a6deb1cf6ff37cad9e2faf7b60c75"
 "checksum cfor 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "e035019ccf76253261e8ba408182d2d4de6acc4dac78c41b2e5d645df2301205"
 "checksum conv 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)" = "78ff10625fd0ac447827aa30ea8b861fead473bb60aeb73af6c1c58caf0d1299"
 "checksum custom_derive 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "ea1262be99f6e841c8ff80887a156a35fadec70b94011900364eaee73d5f8c26"
@@ -217,6 +221,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum serde 0.8.12 (registry+https://github.com/rust-lang/crates.io-index)" = "f6b2f52afebb4708a21b9d721dbac942daa010f8478c6486daa48d62d5c70508"
 "checksum serde_json 0.8.2 (registry+https://github.com/rust-lang/crates.io-index)" = "e5b3bb42fa42265df8a1822b3db2090bc8f9e17e8142599c76a5b854bc4e7b5b"
 "checksum smallvec 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)" = "fcc8d19212aacecf95e4a7a2179b26f7aeb9732a915cf01f05b0d3e044865410"
+"checksum string_cache 0.2.27 (git+https://github.com/aidanhs/string-cache.git?branch=aphs-ayzim-0.1)" = "<none>"
+"checksum string_cache_codegen 0.2.27 (git+https://github.com/aidanhs/string-cache.git?branch=aphs-ayzim-0.1)" = "<none>"
 "checksum typed-arena 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "8e2f9dc90da4f9d66ffc9ad3ead2c7d57582a26f4a3292d2ce7011bd29965100"
 "checksum unreachable 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "1f2ae5ddb18e1c92664717616dd9549dde73f539f01bd7b77c2edb2446bdff91"
 "checksum void 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)" = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
