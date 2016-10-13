@@ -119,7 +119,7 @@ impl<'a> AsmData<'a> {
         // process initial params
         for stat in stats[stati..].iter_mut() {
             {
-            let (name, val) = if let mast!(Stat(Assign(_, Name(ref name), ref val))) = *stat { (name, val) } else { break };
+            let (name, val) = if let mast!(Stat(Assign(Name(ref name), ref val))) = *stat { (name, val) } else { break };
             let index = fnparams.iter().position(|p| p == name);
             // not an assign into a parameter, but a global?
             if index.is_none() { break }
@@ -234,7 +234,7 @@ impl<'a> AsmData<'a> {
         for param in params.iter() {
             let localty = self.locals.get(param).unwrap().ty;
             let coercion = makeAsmCoercion(makeName(param.clone()), localty);
-            let stat = an!(Assign(true, makeName(param.clone()), coercion));
+            let stat = an!(Assign(makeName(param.clone()), coercion));
             stats[next] = an!(Stat(stat));
             next += 1;
         }
@@ -859,7 +859,7 @@ fn unVarify(node: &mut AstValue) {  // transform var x=1, y=2 etc. into (x=1, y=
     let (vars,) = node.getMutVar();
     let vars = mem::replace(vars, makeArray(0));
     let mut newassigns: Vec<_> = vars.into_iter().filter_map(|(name, maybeval)| {
-        maybeval.map(|val| an!(Assign(true, makeName(name), val)))
+        maybeval.map(|val| an!(Assign(makeName(name), val)))
     }).collect();
     newnode = if newassigns.is_empty() {
         makeEmpty()
@@ -1153,7 +1153,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                 *uses.entry(name.clone()).or_insert(0) += 1;
                 *namings.entry(name.clone()).or_insert(0) += 1;
             },
-            Assign(_, mast!(Name(ref name)), ref mut value) => {
+            Assign(mast!(Name(ref name)), ref mut value) => {
                 // values is only used if definitions is 1
                 let entry = definitions.entry(name.clone()).or_insert(0);
                 *entry += 1;
@@ -1200,7 +1200,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                 //  (HEAP32[((tempDoublePtr)>>2)]=((HEAP32[(($_sroa_0_0__idx1)>>2)])|0),HEAP32[(((tempDoublePtr)+(4))>>2)]=((HEAP32[((($_sroa_0_0__idx1)+(4))>>2)])|0),(+(HEAPF64[(tempDoublePtr)>>3])))
                 // which has no side effects and is the special form of converting double to i64.
                 // RSTODO: how does this differ to the check for isTempDoublePtrAccess below? Duplicate?
-                Some(&mut Seq(mast!(Assign(_, Sub(_, Binary(is!(">>"), Name(is!("tempDoublePtr")), _)), _)), _)) => false,
+                Some(&mut Seq(mast!(Assign(Sub(_, Binary(is!(">>"), Name(is!("tempDoublePtr")), _)), _)), _)) => false,
                 // If not that, then traverse and scan normally.
                 Some(ref value) => hasSideEffects(value),
                 None => false,
@@ -1369,7 +1369,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
             if *abort { return }
             let nodeptr = node as *mut _;
             match *node {
-                Assign(_, ref mut target, ref mut value) => {
+                Assign(ref mut target, ref mut value) => {
                     // If this is an assign to a name, handle it below rather than
                     // traversing and treating as a read
                     if !target.isName() {
@@ -1590,7 +1590,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
         let defNode = info.defNode;
         if !sideEffectFree.contains(name) {
             // assign
-            let value = unsafe { if let Assign(_, _, ref mut val) = *defNode { mem::replace(val, makeEmpty()) } else { panic!() } };
+            let value = unsafe { if let Assign(_, ref mut val) = *defNode { mem::replace(val, makeEmpty()) } else { panic!() } };
             // wipe out the assign
             unsafe { ptr::replace(defNode, *makeEmpty()) };
             // replace this node in-place
@@ -1683,7 +1683,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
           }
         } else */
         // RSTODO: match two things as being the same?
-        let elim = if let Assign(true, mast!(Name(ref x)), mast!(Name(ref y))) = *node { x == y } else { false };
+        let elim = if let Assign(mast!(Name(ref x)), mast!(Name(ref y))) = *node { x == y } else { false };
         if elim {
             // elimination led to X = X, which we can just remove
             *node = *makeEmpty()
@@ -1724,7 +1724,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                 // RSTODO: uhhh...we just did this?
                 clearEmptyNodes(assigns);
                 for stat in assigns.iter() {
-                    if let Stat(mast!(Assign(true, Name(ref looper), Name(ref helper)))) = **stat {
+                    if let Stat(mast!(Assign(Name(ref looper), Name(ref helper)))) = **stat {
                         // RSTODO: all these unwraps valid?
                         if *definitions.get(helper).unwrap_or(&0) == 1 &&
                                 *seenUses.get(looper).unwrap() as isize ==
@@ -1738,9 +1738,9 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                 }
                 // remove loop vars that are used in the rest of the else
                 for stat in assigns.iter() {
-                    let assign = if let Stat(mast!(ref assign @ Assign(_, _, _))) = **stat { assign } else { continue };
-                    let (&boo, name1, name2) = assign.getAssign();
-                    let isloopassign = if boo && name1.isName() && name2.isName() {
+                    let assign = if let Stat(mast!(ref assign @ Assign(_, _))) = **stat { assign } else { continue };
+                    let (name1, name2) = assign.getAssign();
+                    let isloopassign = if name1.isName() && name2.isName() {
                         let (name1,) = name1.getName();
                         loopers.iter().any(|l| l == name1)
                     } else {
@@ -1774,7 +1774,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                     // the remaining issue is whether loopers are used after the assignment to helper and before the last line (where we assign to it)
                     let mut found = None;
                     for (i, stat) in stats[..stats.len()-1].iter().enumerate().rev() {
-                        if let Stat(mast!(Assign(true, Name(ref to), _))) = **stat {
+                        if let Stat(mast!(Assign(Name(ref to), _))) = **stat {
                             if to == helper {
                                 found = Some(i);
                                 break
@@ -1835,7 +1835,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                                                 *name = temp.clone()
                                             }
                                         },
-                                        Assign(_, mast!(Name(_)), ref mut right) => {
+                                        Assign(mast!(Name(_)), ref mut right) => {
                                             // do not traverse the assignment target, phi assignments to the loop variable must remain
                                             traversePrePostConditionalMut(right, |node: &mut AstValue| looperToLooptemp(node, looper, temp), |_| ());
                                             return false
@@ -1848,7 +1848,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                             }
                             let tempty = AsmData::getTypeFromLocals(asmDataLocals, looper).unwrap();
                             AsmData::addVarToLocalsAndVars(asmDataLocals, asmDataVars, temp.clone(), tempty);
-                            stats.insert(found, an!(Stat(an!(Assign(true, makeName(temp), makeName(looper.clone()))))));
+                            stats.insert(found, an!(Stat(an!(Assign(makeName(temp), makeName(looper.clone()))))));
                         }
                     }
                 }
@@ -1887,7 +1887,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
                 } else {
                     let iffalse = maybeiffalse.as_mut().unwrap();
                     for stat in getStatements(iffalse).unwrap().iter_mut() {
-                        let shouldempty = if let Assign(_, mast!(Name(ref name)), _) = *deStat(stat) {
+                        let shouldempty = if let Assign(mast!(Name(ref name)), _) = *deStat(stat) {
                             loopers.iter().any(|l| l == name)
                         } else {
                             false
@@ -2161,9 +2161,8 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                         *inner = newinner
                     }
                 },
-                Assign(b, ref mut target, ref mut value) => {
+                Assign(ref mut target, ref mut value) => {
                     // optimizations for assigning into HEAP32 specifically
-                    assert!(b);
                     if let Sub(mast!(Name(ref name)), _) = **target {
                         match *name {
                             is!("HEAP32") => {
@@ -2245,13 +2244,12 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
         let asmDataLocals = &asmData.locals;
         traversePreMut(asmData.func, |node: &mut AstValue| {
             match *node {
-                Assign(b, mast!(Sub(Name(ref mut heapname @ is!("HEAP32")), _)), ref mut value) => {
-                    assert!(b);
+                Assign(mast!(Sub(Name(ref mut heapname @ is!("HEAP32")), _)), ref mut value) => {
                     // remove bitcasts that are now obviously pointless, e.g.
                     // HEAP32[$45 >> 2] = HEAPF32[tempDoublePtr >> 2] = ($14 < $28 ? $14 : $28) - $42, HEAP32[tempDoublePtr >> 2] | 0;
                     // RSTODO: lexical lifetimes
                     let mut maybenewvalue = None;
-                    if let Seq(mast!(Assign(_, Sub(Name(is!("HEAPF32")), Binary(_, Name(is!("tempDoublePtr")), _)), ref mut newvalue)), _) = **value {
+                    if let Seq(mast!(Assign(Sub(Name(is!("HEAPF32")), Binary(_, Name(is!("tempDoublePtr")), _)), ref mut newvalue)), _) = **value {
                         // transform to HEAPF32[$45 >> 2] = ($14 < $28 ? $14 : $28) - $42;
                         *heapname = is!("HEAPF32");
                         maybenewvalue = Some(mem::replace(newvalue, makeEmpty()))
@@ -2271,7 +2269,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                     // RSTODO: https://github.com/rust-lang/rust/issues/30104
                     let mut node = &mut *node;
                     maybenewpart = match *node.deref_mut() {
-                        Seq(mast!(Assign(b, Sub(Name(ref mut n1), Binary(_, Name(is!("tempDoublePtr")), _)), ref mut newpart @ Sub(Name(_), _))), ref mut nextseq) if
+                        Seq(mast!(Assign(Sub(Name(ref mut n1), Binary(_, Name(is!("tempDoublePtr")), _)), ref mut newpart @ Sub(Name(_), _))), ref mut nextseq) if
                                 (*n1 == is!("HEAP32") || *n1 == is!("HEAPF32")) &&
                                 !nextseq.isSeq() => { // avoid (x, y, z) which can be used for tempDoublePtr on doubles for alignment fixes
                             // RSTODO: lexical lifetimes strike again - this condition should be part of the match above (so we'd never return
@@ -2282,7 +2280,6 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                                 name.clone()
                             };
                             if n2 == is!("HEAP32") || n2 == is!("HEAPF32") {
-                                assert!(b);
                                 // RSTODO: valid assertion?
                                 assert!(*n1 == n2);
                                 Some((n1.clone(), mem::replace(newpart, makeEmpty())))
@@ -2340,9 +2337,8 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
         traversePreMut(asmData.func, |node: &mut AstValue| {
             let nodeptr = node as *mut _;
             match *node {
-                Assign(b1, mast!(Name(ref name)), mast!(Seq(Assign(b2, Sub(Name(ref heap), Binary(_, Name(is!("tempDoublePtr")), _)), _), _))) if
+                Assign(mast!(Name(ref name)), mast!(Seq(Assign(Sub(Name(ref heap), Binary(_, Name(is!("tempDoublePtr")), _)), _), _))) if
                         *heap == is!("HEAP32") || *heap == is!("HEAPF32") => {
-                    assert!(b1 && b2);
                     let entry = bitcastVars.entry(name.clone()).or_insert(BitcastData {
                         define_HEAP32: 0,
                         define_HEAPF32: 0,
@@ -2369,9 +2365,8 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                 Name(ref name) => {
                     if let Some(val) = bitcastVars.get_mut(name) { val.namings += 1 }
                 },
-                Assign(b, mast!(Sub(Name(ref heap), _)), mast!(Name(ref name))) if
+                Assign(mast!(Sub(Name(ref heap), _)), mast!(Name(ref name))) if
                         *heap == is!("HEAP32") || *heap == is!("HEAPF32") => {
-                    assert!(b);
                     if let Some(val) = bitcastVars.get_mut(name) {
                         match *heap {
                             is!("HEAP32") => val.use_HEAP32 += 1,
@@ -2398,10 +2393,10 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                 // memory model and see also doEliminate where there are similar issues. Additionally, malicious input could nest assigns
                 // and cause invalid memory access like that (this code assumes no nesting)
                 let define = unsafe { &mut *define };
-                let (_, _, defineval) = define.getMutAssign();
+                let (_, defineval) = define.getMutAssign();
                 let definepart = {
                     let (left, _) = defineval.getMutSeq();
-                    let (_, _, definepart) = left.getMutAssign();
+                    let (_, definepart) = left.getMutAssign();
                     mem::replace(definepart, makeEmpty())
                 };
                 let newdefineval = match correct {
@@ -2415,7 +2410,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
             for use_ in info.uses.into_iter() {
                 // RSTODO: also potentially UB, see above
                 let use_ = unsafe { &mut *use_ };
-                let (_, left, _) = use_.getMutAssign();
+                let (left, _) = use_.getMutAssign();
                 let (left, _) = left.getMutSub();
                 let (name,) = left.getMutName();
                 *name = correct.clone()
@@ -2623,7 +2618,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
         let mut labelAssigns = HashMap::new();
 
         traversePreMut(func, |node: &mut AstValue| {
-            if let Assign(_, mast!(Name(is!("label"))), ref right) = *node {
+            if let Assign(mast!(Name(is!("label"))), ref right) = *node {
                 if let Num(fvalue) = **right {
                     let value = f64toi32(fvalue);
                     *labelAssigns.entry(value).or_insert(0) += 1
@@ -2669,7 +2664,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
                 if *labelAssigns.get(&postvalue).unwrap() != 1 || *labelChecks.get(&postvalue).unwrap() != 1 { continue }
                 let prestats = if let Block(ref mut s) = **preiffalse { s } else { continue };
                 let prestat = if prestats.len() == 1 { &mut prestats[0] } else { continue };
-                let prefvalue = if let mast!(Stat(Assign(true, Name(is!("label")), Num(n)))) = *prestat { n } else { continue };
+                let prefvalue = if let mast!(Stat(Assign(Name(is!("label")), Num(n)))) = *prestat { n } else { continue };
                 // RSTODO: curiously, c++ doesn't do the conversion to int before comparing
                 let prevalue = f64toi32(prefvalue);
                 if prevalue != postvalue { continue }
@@ -2677,7 +2672,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
                 // RSTODO: the following two lines could be one if rust supported vec destructuring
                 // RSTODO: note that this does not continue if poststats.len() == 0 (unlike C++), as I believe it's a valid joining - check with azakai
                 let poststats = if let Block(ref mut s) = **postiftrue { s } else { continue };
-                let haveclear = if let mast!(&[Stat(Assign(true, Name(is!("label")), Num(0f64))), ..]) = poststats.as_slice() { true } else { false };
+                let haveclear = if let mast!(&[Stat(Assign(Name(is!("label")), Num(0f64))), ..]) = poststats.as_slice() { true } else { false };
                 if inLoop.get() > 0 && !haveclear { continue }
                 // Everything lines up, do it
                 if haveclear { poststats.remove(0); } // remove the label clearing
@@ -2828,8 +2823,7 @@ pub fn registerize(ast: &mut AstValue) {
             },
             // if local and not yet used, this might be optimizable if we dominate
             // all other uses
-            Assign(b, mast!(Name(ref name)), _) if asmData.isLocal(name) && !varUses.contains_key(name) && !varLevels.contains_key(name) => {
-                assert!(b);
+            Assign(mast!(Name(ref name)), _) if asmData.isLocal(name) && !varUses.contains_key(name) && !varLevels.contains_key(name) => {
                 // RSNOTE: may have been previously discovered as a possible
                 possibles.insert(name.clone());
                 let prev = varLevels.insert(name.clone(), *level);
@@ -3290,8 +3284,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
 
     fn addKillNode(node: *mut AstValue, asmDataLocals: &HashMap<IString, Local>, nextBasicBlock: &mut Option<Block>, isInExpr: usize) {
         // Mark an assignment to the given name node in the current basic block.
-        let (b, namenode, _) = unsafe { (*node).getAssign() }; // 'not a kill node');
-        assert!(b); // 'not a kill node');
+        let (namenode, _) = unsafe { (*node).getAssign() }; // 'not a kill node');
         let (name,) = namenode.getName(); // 'not a kill node');
         if AsmData::isLocalInLocals(asmDataLocals, name) {
             let nextBasicBlock = nextBasicBlock.as_mut().unwrap();
@@ -3540,13 +3533,12 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             Continue(ref maybelabel) => {
                 markNonLocalJump!(NonLocalJumpType::Continue(maybelabel))
             },
-            Assign(b, _, _) => {
+            Assign(_, _) => {
                 // RSTODO: lexical lifetimes - this is safe because we're
                 // just collecting a bunch of pointers in this function. See
                 // also comment above buildFlowGraph
-                assert!(b);
                 let nodePtr = node as *mut _;
-                let (_, left, right) = node.getMutAssign();
+                let (left, right) = node.getMutAssign();
                 *isInExpr += 1;
                 buildFlowGraph!(right);
                 *isInExpr -= 1;
@@ -3656,8 +3648,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         // Does it assign a specific label value at exit?
         if block.kill.contains(&is!("label")) {
             let finalNode = block.nodes.last().unwrap();
-            if let Assign(b, mast!(Name(is!("label"))), ref right) = *unsafe { &**finalNode } {
-                assert!(b);
+            if let Assign(mast!(Name(is!("label"))), ref right) = *unsafe { &**finalNode } {
                 if let Num(n) = **right {
                     labelledJumps.push((f64tou32(n), blockPtr))
                 } else {
@@ -3672,8 +3663,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                 // then all bets are off.  This can happen e.g. due to outlining
                 // saving/restoring label to the stack.
                 for node in block.nodes[..block.nodes.len()-1].iter() {
-                    if let Assign(b, mast!(Name(is!("label"))), ref right) = *unsafe { &**node } {
-                        assert!(b);
+                    if let Assign(mast!(Name(is!("label"))), ref right) = *unsafe { &**node } {
                         if **right != Num(0f64) {
                             labelledBlocks.clear();
                             labelledJumps.clear();
@@ -3796,8 +3786,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                     }
                 },
                 // We only keep assignments if they will be subsequently used.
-                Assign(b, mast!(Name(ref name)), ref right) if live.contains(name) => {
-                    assert!(b);
+                Assign(mast!(Name(ref name)), ref right) if live.contains(name) => {
                     // RSNOTE: may be killed by a previous assign somewhere in this block
                     kill.insert(name.clone());
                     // RSNOTE: may be used in the next block, but perhaps not this one
@@ -3823,8 +3812,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                         }
                     }
                 },
-                Assign(b, mast!(Name(_)), _) => {
-                    assert!(b);
+                Assign(mast!(Name(_)), _) => {
                     // The result of this assignment is never used, so delete it.
                     // We may need to keep the RHS for its value or its side-effects.
                     let mut removeUnusedNodes = |nodes: &mut Vec<*mut AstValue>, isexpr: &mut Vec<bool>, j: usize, n: usize| {
@@ -3846,7 +3834,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                     };
                     // RSTODO: lexical lifetimes
                     let maybenewnode = {
-                        let (_, _, right) = node.getMutAssign();
+                        let (_, right) = node.getMutAssign();
                         if block.isexpr[j] || hasSideEffects(right) { Some(mem::replace(right, makeEmpty())) } else { None }
                     };
                     if let Some(newnode) = maybenewnode {
@@ -3855,7 +3843,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                     } else {
                         let mut numUsesInExpr = 0;
                         let mut node = mem::replace(node, *makeEmpty());
-                        let (_, _, right) = node.getMutAssign();
+                        let (_, right) = node.getMutAssign();
                         traversePre(right, |node: &AstValue| {
                             if let Name(ref name) = *node {
                                 if asmData.isLocal(name) {
@@ -4276,11 +4264,10 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                     };
                     *name = allRegsByType[tynum].get(&reg).unwrap().clone();
                 },
-                Assign(b, mast!(Name(_)), _) => {
-                    assert!(b);
+                Assign(mast!(Name(_)), _) => {
                     // A kill. This frees the assigned register.
                     // RSTODO: lexical lifetimes
-                    let (_, left, right) = node.getMutAssign();
+                    let (left, right) = node.getMutAssign();
                     let (name,) = left.getMutName();
                     let tynum = asmData.getType(name).unwrap().as_usize();
                     let freeRegs = &mut freeRegsByType[tynum];
@@ -4303,7 +4290,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             let node = unsafe { &mut *nodePtr };
             let mut maybenewnode = None;
             {
-            let (_, left, right) = node.getMutAssign();
+            let (left, right) = node.getMutAssign();
             if left == right {
                 maybenewnode = Some(if block.isexpr[nodeidx] { mem::replace(left, makeEmpty()) } else { makeEmpty() })
             }

@@ -133,8 +133,9 @@ pub type AstNode = Box<AstValue>;
 pub type AstVec<T> = Box<Vec<T>>;
 AstValue!{
     Array(AstVec<AstNode>),            // [item]
-    // RSTODO: https://github.com/kripken/emscripten/issues/4367
-    Assign(bool, AstNode, AstNode),    // boo(true), left, right
+    // RSNOTE: when doing (de)serialisation, remember the bool
+    // https://github.com/kripken/emscripten/issues/4367
+    Assign(AstNode, AstNode),          // left, right
     Binary(IString, AstNode, AstNode), // op, left, right
     Block(AstVec<AstNode>),            // [stat]
     Break(Option<IString>),            // Option<label>
@@ -185,7 +186,7 @@ impl AstValue {
         let arr = value.as_array().unwrap();
         Box::new(match (arr[0].as_str().unwrap(), &arr[1..]) {
             ("array", &[ref arr]) => Array(b(mkarr(arr))),
-            ("assign", &[ref b, ref left, ref right]) => { assert!(b.as_bool().unwrap()); Assign(b.as_bool().unwrap(), p(left), p(right)) },
+            ("assign", &[ref b, ref left, ref right]) => { assert!(b.as_bool().unwrap()); Assign(p(left), p(right)) },
             ("binary", &[ref op, ref left, ref right]) => Binary(mkstr(op), p(left), p(right)),
             ("block", &[ref stats]) => Block(b(mkarr(stats))),
             ("break", &[ref label]) => Break(mklabel(label)),
@@ -221,7 +222,7 @@ impl AstValue {
         };
         match *self {
             Array(ref mut nodes) => b!(nodes.iter_mut()),
-            Assign(_, ref mut left, ref mut right) => b!(vec![left, right].into_iter()),
+            Assign(ref mut left, ref mut right) => b!(vec![left, right].into_iter()),
             Binary(_, ref mut left, ref mut right) => b!(vec![left, right].into_iter()),
             Block(ref mut stats) => b!(stats.iter_mut()),
             Break(_) => b!(iter::empty()),
@@ -277,7 +278,7 @@ impl serde::Serialize for AstValue {
         };
         match *self {
             Array(ref nodes) => s!("array", nodes),
-            Assign(ref b, ref left, ref right) => { assert!(b); s!("assign", b, left, right) },
+            Assign(ref left, ref right) => s!("assign", true, left, right),
             Binary(ref op, ref left, ref right) => s!("binary", op, left, right),
             Block(ref stats) => s!("block", stats),
             Break(ref label) => s!("break", label),
@@ -539,7 +540,7 @@ impl<'a> JSPrinter<'a> {
                 }
                 self.emit(b']')
             },
-            Assign(_, ref left, ref right) => {
+            Assign(ref left, ref right) => {
                 self.printChild(left, node, -1);
                 self.space();
                 self.emit(b'=');
@@ -1128,7 +1129,7 @@ pub mod builder {
 
     pub fn makeBinary(left: AstNode, op: IString, right: AstNode) -> AstNode {
         match op {
-            is!("=") => an!(Assign(true, left, right)),
+            is!("=") => an!(Assign(left, right)),
             is!(",") => an!(Seq(left, right)),
             _ => an!(Binary(op, left, right)),
         }
