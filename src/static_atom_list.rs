@@ -95,6 +95,10 @@ pub static ATOMS: &'static [&'static str] = &[
     "true",
     "false",
     "null",
+    "enum",
+    "this",
+    "void",
+    "with",
 
     // optimizer-shared.cpp
     "SIMD_Int8x16_check",
