@@ -2,6 +2,9 @@
 name = "ayzim-macros"
 version = "0.1.0"
 authors = ["Aidan Hobson Sayers <aidanhs@cantab.net>"]
+description = "Syntax extensions for use in ayzim"
+license = "MIT/NCSA"
+repository = "https://github.com/aidanhs/ayzim/tree/master/ayzim-macros"
 
 [lib]
 plugin = true
