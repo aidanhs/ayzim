@@ -85,8 +85,7 @@ const SEPARATORS: &'static [u8] = b"([;{}\0";
 pub enum OpClassTy {
     Binary = 0,
     Prefix = 1,
-    Postfix = 2,
-    Tertiary = 3,
+    Tertiary = 2,
 }
 pub struct OpClass {
     ops: phf::Set<IString>,
@@ -991,9 +990,9 @@ impl Parser {
     // Debugging
 
     // RSTODO
-    unsafe fn dump(&mut self, _msg: &str, _curr: *const u8) {
-        panic!()
-    }
+    //unsafe fn dump(&mut self, _msg: &str, _curr: *const u8) {
+    //    panic!()
+    //}
 //  static void dump(const char *where, char* curr) {
 //    /*
 //    printf("%s:\n=============\n", where);
@@ -1018,9 +1017,9 @@ impl Parser {
 //  }
 
     // RSTODO
-    unsafe fn dumpParts(_parts: Vec<Vec<ExprElt>>, _i: usize) {
-        panic!()
-    }
+    //unsafe fn dumpParts(_parts: Vec<Vec<ExprElt>>, _i: usize) {
+    //    panic!()
+    //}
 //  void dumpParts(ExpressionParts& parts, int i) {
 //    printf("expressionparts: %d (at %d)\n", parts.size(), i);
 //    printf("| ");

@@ -1,5 +1,7 @@
 #![feature(stmt_expr_attributes, const_fn, box_patterns, slice_patterns)]
 #![allow(non_snake_case, non_camel_case_types)]
+// Clippy
+//#![allow(explicit_iter_loop, explicit_into_iter_loop, float_cmp, cyclomatic_complexity, too_many_arguments)]
 
 // RSTODO: https://github.com/rust-lang/rust/issues/29599
 #![feature(plugin)]
@@ -9,9 +11,6 @@
 
 // RSTODO: review all numeric casts
 // https://github.com/rust-lang/rfcs/pull/1218
-
-// RSTODO: remove
-#![allow(dead_code)]
 
 #[macro_use] extern crate cfor;
 #[macro_use] extern crate lazy_static;
@@ -79,9 +78,9 @@ impl MoreTime for std::time::Duration {
 }
 
 #[macro_use]
-mod cashew;
-mod optimizer;
-mod parser;
+pub mod cashew;
+pub mod optimizer;
+pub mod parser;
 
 mod num {
     use conv::*;
@@ -202,10 +201,13 @@ pub fn libmain() {
         let mut worked = true;
         let doc = &mut *doc;
         match arg.as_str() {
-            "asm" => worked = false,
-            "asmPreciseF32" => worked = false,
-            "receiveJSON" |
-            "emitJSON" => worked = false,
+            "asm" |
+            "asmPreciseF32" |
+            "minifyWhitespace" |
+            "last" |
+            "noop" |
+            "emitJSON" |
+            "receiveJSON" => worked = false,
             "eliminateDeadFuncs" => eliminateDeadFuncs(doc, &extraInfo),
             "eliminate" => eliminate(doc, false),
             "eliminateMemSafe" => eliminate(doc, true),
@@ -215,10 +217,7 @@ pub fn libmain() {
             "registerize" => registerize(doc),
             "registerizeHarder" => registerizeHarder(doc),
             "minifyLocals" => minifyLocals(doc, &extraInfo),
-            "minifyWhitespace" => worked = false,
             "asmLastOpts" => asmLastOpts(doc),
-            "last" => worked = false,
-            "noop" => worked = false,
             _ => {
                 printlnerr!("Unrecognised argument: {}", arg);
                 panic!()

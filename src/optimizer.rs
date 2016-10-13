@@ -275,21 +275,27 @@ impl<'a> AsmData<'a> {
         self.locals.get_mut(&name).unwrap().ty = ty;
     }
 
+    #[allow(dead_code)]
     fn isLocal(&self, name: &IString) -> bool {
         self.locals.contains_key(name)
     }
+    #[allow(dead_code)]
     fn isParam(&self, name: &IString) -> bool {
         self.locals.get(name).map_or(false, |l| l.param)
     }
+    #[allow(dead_code)]
     fn isVar(&self, name: &IString) -> bool {
         self.locals.get(name).map_or(false, |l| !l.param)
     }
+    #[allow(dead_code)]
     fn isLocalInLocals(locals: &HashMap<IString, Local>, name: &IString) -> bool {
         locals.contains_key(name)
     }
+    #[allow(dead_code)]
     fn isParamInLocals(locals: &HashMap<IString, Local>, name: &IString) -> bool {
         locals.get(name).map_or(false, |l| l.param)
     }
+    #[allow(dead_code)]
     fn isVarInLocals(locals: &HashMap<IString, Local>, name: &IString) -> bool {
         locals.get(name).map_or(false, |l| !l.param)
     }
@@ -322,14 +328,6 @@ struct HeapInfo {
     unsign: bool,
     floaty: bool,
     bits: u32,
-    ty: AsmType,
-}
-
-enum AsmSign {
-  Flexible, // small constants can be signed or unsigned, variables are also flexible
-  Signed,
-  Unsigned,
-  Nonsigned,
 }
 
 fn parseHeap(name_str: &str) -> Option<HeapInfo> {
@@ -338,14 +336,7 @@ fn parseHeap(name_str: &str) -> Option<HeapInfo> {
     let (unsign, floaty) = (name[4] == b'U', name[4] == b'F');
     let bit_ofs = if unsign || floaty { 5 } else { 4 };
     let bits = name_str[bit_ofs..].parse().unwrap();
-    let ty = if !floaty {
-        AsmType::Int
-    } else if bits == 64 {
-        AsmType::Double
-    } else {
-        AsmType::Float
-    };
-    Some(HeapInfo { unsign: unsign, floaty: floaty, bits: bits, ty: ty })
+    Some(HeapInfo { unsign: unsign, floaty: floaty, bits: bits })
 }
 
 fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, asmFloatZero: &mut Option<IString>, inVarDef: bool) -> Option<AsmType> {
@@ -450,50 +441,6 @@ fn detectType(node: &AstValue, asmDataLocals: Option<&HashMap<IString, Local>>, 
     }
     //dump("horrible", node);
     //assert(0);
-}
-
-// RSTODO: is this used?
-fn detectSign(node: &AstValue) -> AsmSign {
-    match *node {
-        Binary(ref op, _, _) => {
-            let opch = op.as_bytes()[0];
-            if opch == b'>' && *op == is!(">>>") {
-                return AsmSign::Unsigned
-            }
-            match opch {
-                b'|' | b'&' | b'^' |
-                b'<' | b'>' |
-                b'=' | b'!' => AsmSign::Signed,
-                b'+' | b'-' => AsmSign::Flexible,
-                b'*' | b'/' => AsmSign::Nonsigned,
-                _ => panic!(),
-            }
-        },
-        UnaryPrefix(ref op, _) => {
-            // RSTODO: istring match? Are there any 2 char unary prefixes?
-            match op.as_bytes()[0] {
-                b'-' => AsmSign::Flexible,
-                b'+' => AsmSign::Nonsigned,
-                b'~' => AsmSign::Signed,
-                _ => panic!(),
-            }
-        },
-        Num(value) => {
-            if value < 0f64 {
-                AsmSign::Signed
-            } else if !isInteger32(value) {
-                AsmSign::Nonsigned
-            } else if value <= i32::MAX as f64 {
-                AsmSign::Flexible
-            } else {
-                AsmSign::Unsigned
-            }
-        },
-        Name(_) => AsmSign::Flexible,
-        Conditional(_, ref iftrue, _) => detectSign(iftrue),
-        Call(mast!(Name(is!("Math_fround"))), _) => AsmSign::Nonsigned,
-        _ => panic!(),
-    }
 }
 
 //==================
@@ -803,7 +750,7 @@ fn removeAllEmptySubNodes(ast: &mut AstValue) {
 fn removeAllUselessSubNodes(ast: &mut AstValue) {
     traversePrePostMut(ast, |node: &mut AstValue| {
         match *node {
-            Defun(_, _, ref mut stats) => clearUselessNodes(stats),
+            Defun(_, _, ref mut stats) |
             Block(ref mut stats) => clearUselessNodes(stats),
             Seq(_, _) => {
                 let mut maybenewnode = None;
@@ -821,7 +768,7 @@ fn removeAllUselessSubNodes(ast: &mut AstValue) {
         }
     }, |node: &mut AstValue| {
         let (empty2, has3, empty3) = if let If(_, ref mut ift, ref mut miff) = *node {
-            (isEmpty(&ift), miff.is_some(), miff.as_ref().map(|iff| isEmpty(iff)).unwrap_or(true))
+            (isEmpty(ift), miff.is_some(), miff.as_ref().map(|iff| isEmpty(iff)).unwrap_or(true))
         } else {
             return
         };
@@ -881,7 +828,7 @@ fn measureCost(ast: &AstValue) -> isize {
     traversePre(ast, |node: &AstValue| {
         size += match *node {
             Num(_) |
-            UnaryPrefix(_, _) => -1,
+            UnaryPrefix(_, _) |
             Binary(_, _, mast!(Num(0f64))) => -1,
             Binary(is!("/"), _, _) |
             Binary(is!("%"), _, _) => 2,
@@ -2990,8 +2937,7 @@ pub fn registerize(ast: &mut AstValue) {
     asmData.vars.clear();
     let mut newargs = vec![];
     let regTypes = unsafe { &mut *regTypes.get() };
-    for i in 1..nextReg {
-        let reg = &fullNames[i];
+    for reg in fullNames[1..nextReg].iter() {
         let ty = *regTypes.get(reg).unwrap();
         if !paramRegs.contains(reg) {
             asmData.addVar(reg.clone(), ty)
@@ -3181,7 +3127,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         id
     }
 
-    fn setJunction(id: usize, force: bool, junctions: &Vec<Junction>, currEntryJunction: &mut Option<usize>, nextBasicBlock: &Option<Block>) {
+    fn setJunction(id: usize, force: bool, junctions: &[Junction], currEntryJunction: &mut Option<usize>, nextBasicBlock: &Option<Block>) {
         // Set the next entry junction to the given id.
         // This can be used to enter at a previously-declared point.
         // You can't return to a junction with no incoming blocks
@@ -3246,7 +3192,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         Continue(&'a Option<IString>),
         Break(&'a Option<IString>),
     }
-    fn markNonLocalJump(ty: NonLocalJumpType, junctions: &mut Vec<Junction>, blocks: &mut Vec<Block>, currEntryJunction: &mut Option<usize>, nextBasicBlock: &mut Option<Block>, activeLabels: &Vec<HashMap<Option<IString>, ContinueBreak>>) {
+    fn markNonLocalJump(ty: NonLocalJumpType, junctions: &mut Vec<Junction>, blocks: &mut Vec<Block>, currEntryJunction: &mut Option<usize>, nextBasicBlock: &mut Option<Block>, activeLabels: &[HashMap<Option<IString>, ContinueBreak>]) {
         // Complete a block via RETURN, BREAK or CONTINUE.
         // This joins the targetted junction and then sets the current junction to null.
         // Any code traversed before we get back to an existing junction is dead code.
@@ -3720,7 +3666,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     // junction.  The outer phase uses this to try to eliminate redundant
     // stores in each basic block, which might in turn affect liveness info.
 
-    fn analyzeJunction(j: usize, junctions: &mut Vec<Junction>, blocks: &Vec<Block>) {
+    fn analyzeJunction(j: usize, junctions: &mut Vec<Junction>, blocks: &[Block]) {
         // Update the live set for this junction.
         let mut live = BTreeSet::new();
         for &b in junctions[j].outblocks.iter() {
@@ -3889,7 +3835,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             let didremove = jWorkSet.remove(&last);
             assert!(didremove);
             let oldLive = junctions[last].live.clone(); // copy it here to check for changes later
-            analyzeJunction(last, &mut junctions, &mut blocks);
+            analyzeJunction(last, &mut junctions, &blocks);
             if oldLive != junctions[last].live {
                 // Live set changed, updated predecessor blocks and junctions.
                 for &b in junctions[last].inblocks.iter() {
@@ -4006,7 +3952,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         // Extract just the variables we might want to check for conflicts
         // RSTODO: why does drain not exist? https://github.com/rust-lang/rfcs/pull/1254
         for (name, blocks) in mem::replace(&mut possibleBlockConflictsMap, BTreeMap::new()).into_iter() {
-            possibleBlockConflicts.push((*nameToNum.get(&name).unwrap(), blocks))
+            possibleBlockConflicts.push((*nameToNum.get(name).unwrap(), blocks))
         }
 
         for &jVarNum in liveJVarNums.iter() {
@@ -4112,7 +4058,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             // RSTODO: tryAssignRegister only mutates reg and conf (not link, nor does it remove
             // elements from juncvars) so this is safe to do
             for linkName in unsafe { (*juncVars)[jvnum].link.iter() } {
-                tryAssignRegisterInner(&linkName, reg, juncVars, nameToNum);
+                tryAssignRegisterInner(linkName, reg, juncVars, nameToNum);
             }
             true
         }
@@ -4217,50 +4163,46 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                     // A use.  Grab a register if it doesn't have one.
                     let reg = if let Some(reg) = maybereg {
                         reg
-                    } else {
-                        if inputVars.contains(name) && nodeidx <= *block.firstDeadLoc.get(name).unwrap() {
-                            // Assignment to an input variable, must use pre-assigned reg.
-                            let reg = juncVars[*nameToNum.get(name).unwrap()].reg.unwrap();
-                            let prev = assignedRegs.insert(name.clone(), reg);
-                            assert!(prev.is_none());
-                            for k in (0..freeRegs.len()).rev() {
-                                if freeRegs[k] == reg {
-                                    freeRegs.remove(k);
-                                    break
-                                }
-                            }
-                            reg
-                        } else {
-                            // Try to use one of the existing free registers.
-                            // It must not conflict with an input register.
-                            // RSTODO: there must be a better way to express the unconditional insertion
-                            // if a freereg wasn't found
-                            let mut reg = 0;
-                            for k in (0..freeRegs.len()).rev() {
-                                reg = freeRegs[k];
-                                // Check for conflict with input registers.
-                                if let Some(&loc) = inputDeadLoc.get(&reg) {
-                                    if *block.firstKillLoc.get(name).unwrap() <= loc {
-                                        if name != *inputVarsByReg.get(&reg).unwrap() {
-                                            continue
-                                        }
-                                    }
-                                }
-                                // Found one!
-                                let prev = assignedRegs.insert(name.clone(), reg);
-                                assert!(prev.is_none());
+                    } else if inputVars.contains(name) && nodeidx <= *block.firstDeadLoc.get(name).unwrap() {
+                        // Assignment to an input variable, must use pre-assigned reg.
+                        let reg = juncVars[*nameToNum.get(name).unwrap()].reg.unwrap();
+                        let prev = assignedRegs.insert(name.clone(), reg);
+                        assert!(prev.is_none());
+                        for k in (0..freeRegs.len()).rev() {
+                            if freeRegs[k] == reg {
                                 freeRegs.remove(k);
                                 break
                             }
-                            // If we didn't find a suitable register, create a new one.
-                            if !assignedRegs.contains_key(name){
-                                reg = createReg(name, &asmData, &mut allRegsByType);
-                                let prev = assignedRegs.insert(name.clone(), reg);
-                                assert!(prev.is_none());
-                            }
-                            assert!(reg > 0);
-                            reg
                         }
+                        reg
+                    } else {
+                        // Try to use one of the existing free registers.
+                        // It must not conflict with an input register.
+                        // RSTODO: there must be a better way to express the unconditional insertion
+                        // if a freereg wasn't found
+                        let mut reg = 0;
+                        for k in (0..freeRegs.len()).rev() {
+                            reg = freeRegs[k];
+                            // Check for conflict with input registers.
+                            if let Some(&loc) = inputDeadLoc.get(&reg) {
+                                if *block.firstKillLoc.get(name).unwrap() <= loc && name != *inputVarsByReg.get(&reg).unwrap() {
+                                    continue
+                                }
+                            }
+                            // Found one!
+                            let prev = assignedRegs.insert(name.clone(), reg);
+                            assert!(prev.is_none());
+                            freeRegs.remove(k);
+                            break
+                        }
+                        // If we didn't find a suitable register, create a new one.
+                        if !assignedRegs.contains_key(name){
+                            reg = createReg(name, &asmData, &mut allRegsByType);
+                            let prev = assignedRegs.insert(name.clone(), reg);
+                            assert!(prev.is_none());
+                        }
+                        assert!(reg > 0);
+                        reg
                     };
                     *name = allRegsByType[tynum].get(&reg).unwrap().clone();
                 },
@@ -4369,6 +4311,12 @@ lazy_static! {
         "var",
         "env",
         "let",
+        "case",
+        "else",
+        "enum",
+        "this",
+        "void",
+        "with",
    ];
 }
 const VALID_MIN_INITS: &'static [u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";

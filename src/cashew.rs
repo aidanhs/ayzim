@@ -21,41 +21,42 @@ use super::parser::isIdentPart;
 // http://contain-rs.github.io/raw-vec/raw_vec/struct.RawVec.html
 // RSTODO: is the value arena actually better than jemalloc?
 // RSTODO: Would an array arena be good? It would add extra indirection
-const ARENA_CHUNK_SIZE: usize = 1000;
-pub struct Arena {
-    //arena: typed_arena::Arena<Value>,
-    //arr_arena: typed_arena::Arena<ArrayStorage>,
-    //chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
-    //index: usize, // in last chunk
-    //arr_chunks: Vec<Box<[ArrayStorage; ARENA_CHUNK_SIZE]>>,
-    //arr_index: usize,
-}
-
-impl Arena {
-    fn new() -> Arena {
-        //Arena { chunks: vec![], index: 0, arr_chunks: vec![], arr_index: 0 }
-        Arena {
-            //arena: typed_arena::Arena::with_capacity(1000),
-            //arr_arena: typed_arena::Arena::with_capacity(1000),
-        }
-    }
-    //// RSTODO: placeholder
-    //fn allocArray(&self) -> ArrayStorage {
-    //    //self.arr_arena.alloc(ArrayStorage::new())
-    //    vec![]
-    //}
-    //pub fn alloc(&self) -> Ref {
-    //    Ref::new(self.arena.alloc(Value::new()))
-    //}
-}
-
-// RSTODO: remove
-// this allows the lazy_static
-unsafe impl Sync for Arena {}
-
-lazy_static! {
-    pub static ref ARENA: Arena = Arena::new();
-}
+// RSTODO: decide what to do with this
+//const ARENA_CHUNK_SIZE: usize = 1000;
+//struct Arena {
+//    //arena: typed_arena::Arena<Value>,
+//    //arr_arena: typed_arena::Arena<ArrayStorage>,
+//    //chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
+//    //index: usize, // in last chunk
+//    //arr_chunks: Vec<Box<[ArrayStorage; ARENA_CHUNK_SIZE]>>,
+//    //arr_index: usize,
+//}
+//
+//impl Arena {
+//    fn new() -> Arena {
+//        //Arena { chunks: vec![], index: 0, arr_chunks: vec![], arr_index: 0 }
+//        Arena {
+//            //arena: typed_arena::Arena::with_capacity(1000),
+//            //arr_arena: typed_arena::Arena::with_capacity(1000),
+//        }
+//    }
+//    //// RSTODO: placeholder
+//    //fn allocArray(&self) -> ArrayStorage {
+//    //    //self.arr_arena.alloc(ArrayStorage::new())
+//    //    vec![]
+//    //}
+//    //pub fn alloc(&self) -> Ref {
+//    //    Ref::new(self.arena.alloc(Value::new()))
+//    //}
+//}
+//
+//// RSTODO: remove
+//// this allows the lazy_static
+//unsafe impl Sync for Arena {}
+//
+//lazy_static! {
+//    pub static ref ARENA: Arena = Arena::new();
+//}
 
 // RSTODO: why can't expr be tt?
 // RSTODO: use arena
