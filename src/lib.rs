@@ -123,8 +123,7 @@ mod num {
     }
 }
 
-use cashew::{ARENA, AstValue};
-use cashew::printAst;
+use cashew::{AstValue, printAst};
 
 // RSTODO: the asmfloatzero static is a pain, and needs to be
 // defined in main and then given to all passes to use. What
@@ -177,9 +176,7 @@ pub fn libmain() {
 
     let mut doc = if unsafe { receiveJSON } {
         // Parse JSON source into the document
-        let mut docref = ARENA.alloc();
-        docref.parse(input.as_bytes());
-        AstValue::from_ref(docref)
+        AstValue::parse_json(input.as_bytes())
     } else {
         let mut builder = parser::Parser::new();
         input.push('\0');

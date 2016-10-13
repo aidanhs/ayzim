@@ -1,76 +1,20 @@
-use std::collections::HashMap;
 use std::io::Write;
-use std::io;
 use std::isize;
 use std::iter;
-use std::ops::{Deref, DerefMut};
-use std::ptr;
 use std::str;
 use std::u64;
 
 use odds::vec::VecExt;
 use serde;
 use serde_json;
+use serde_json::Value;
 use smallvec::SmallVec;
-use typed_arena;
+//use typed_arena;
 
 use super::IString;
-use super::num::{f64toi64, f64tou64, isInteger, isInteger64};
+use super::num::{f64tou64, isInteger, isInteger64};
 use super::parser::{OpClass, OpClassTy};
 use super::parser::isIdentPart;
-
-// RSTODO: totally get rid of Ref?
-#[derive(Copy, Clone, Debug)]
-pub struct Ref {
-    inst: *mut Value,
-}
-
-impl Ref {
-    fn new(v: *mut Value) -> Ref { // can be null
-        Ref { inst: v }
-    }
-    fn get_val(&self) -> &Value {
-        unsafe { &(*self.inst) }
-    }
-    fn get_val_mut(&mut self) -> &mut Value {
-        unsafe { &mut (*self.inst) }
-    }
-    pub fn is_something(&self) -> bool {
-        !self.inst.is_null() && !self.isNull()
-    }
-// RSTODO
-//  Value& operator*() { return *inst; }
-//  Value* operator->() { return inst; }
-//  Ref& operator[](unsigned x);
-//  Ref& operator[](IString x);
-//
-//  // special conveniences
-//  bool operator==(const char *str); // comparison to string, which is by value
-//  bool operator!=(const char *str);
-//  bool operator==(const IString &str);
-//  bool operator!=(const IString &str);
-//  bool operator==(double d) { abort(); return false; } // prevent Ref == number, which is potentially ambiguous; use ->getNumber() == number
-//  bool operator==(Ref other);
-//  bool operator!(); // check if null, in effect
-//};
-}
-
-impl Deref for Ref {
-    type Target = Value;
-
-    fn deref(&self) -> &Value {
-        self.get_val()
-    }
-}
-impl DerefMut for Ref {
-    fn deref_mut(&mut self) -> &mut Value {
-        self.get_val_mut()
-    }
-}
-// RSTODO: not really sync
-unsafe impl Sync for Ref {}
-
-const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 
 // Arena allocation, free it all on process exit
 
@@ -79,7 +23,7 @@ const EMPTYREF: Ref = Ref { inst: ptr::null_mut() };
 // RSTODO: Would an array arena be good? It would add extra indirection
 const ARENA_CHUNK_SIZE: usize = 1000;
 pub struct Arena {
-    arena: typed_arena::Arena<Value>,
+    //arena: typed_arena::Arena<Value>,
     //arr_arena: typed_arena::Arena<ArrayStorage>,
     //chunks: Vec<Box<[Value; ARENA_CHUNK_SIZE]>>,
     //index: usize, // in last chunk
@@ -91,18 +35,18 @@ impl Arena {
     fn new() -> Arena {
         //Arena { chunks: vec![], index: 0, arr_chunks: vec![], arr_index: 0 }
         Arena {
-            arena: typed_arena::Arena::with_capacity(1000),
+            //arena: typed_arena::Arena::with_capacity(1000),
             //arr_arena: typed_arena::Arena::with_capacity(1000),
         }
     }
-    // RSTODO: placeholder
-    fn allocArray(&self) -> ArrayStorage {
-        //self.arr_arena.alloc(ArrayStorage::new())
-        vec![]
-    }
-    pub fn alloc(&self) -> Ref {
-        Ref::new(self.arena.alloc(Value::new()))
-    }
+    //// RSTODO: placeholder
+    //fn allocArray(&self) -> ArrayStorage {
+    //    //self.arr_arena.alloc(ArrayStorage::new())
+    //    vec![]
+    //}
+    //pub fn alloc(&self) -> Ref {
+    //    Ref::new(self.arena.alloc(Value::new()))
+    //}
 }
 
 // RSTODO: remove
@@ -112,9 +56,6 @@ unsafe impl Sync for Arena {}
 lazy_static! {
     pub static ref ARENA: Arena = Arena::new();
 }
-
-pub type ArrayStorage = Vec<Ref>;
-pub type ObjectStorage = HashMap<IString, Ref>;
 
 // RSTODO: why can't expr be tt?
 // RSTODO: use arena
@@ -222,47 +163,54 @@ AstValue!{
 }
 
 impl AstValue {
-    pub fn from_ref(inref: Ref) -> AstNode {
-        fn p(r: Ref) -> AstNode { AstValue::from_ref(r) } // parse
+    // RSTODO: implement serde deserialize rather than using serde_json since
+    // this recursive method seems to perform abysmally with huge json files
+    pub fn parse_json(curr: &[u8]) -> AstNode {
+        let json: Value = serde_json::from_slice(curr).unwrap();
+        AstValue::from_json(&json)
+    }
+    pub fn from_json(value: &Value) -> AstNode {
+        fn p(v: &Value) -> AstNode { AstValue::from_json(v) } // parse
         fn b<T>(v: T) -> Box<T> { Box::new(v) } // box
-        fn mkarr(r: Ref) -> Vec<AstNode> {
-            r.getArray().iter().map(|&e| p(e)).collect()
+        fn mkarr(v: &Value) -> Vec<AstNode> {
+            v.as_array().unwrap().iter().map(|e| p(e)).collect()
         }
-        fn maybe_parse(r: Ref) -> Option<AstNode> {
-            if r.isNull() { None } else { Some(p(r)) }
+        fn mkstr(v: &Value) -> IString { IString::from(v.as_str().unwrap()) } // str
+        fn maybe_parse(v: &Value) -> Option<AstNode> {
+            if v.is_null() { None } else { Some(p(v)) }
         }
-        fn mklabel(label: Ref) -> Option<IString> {
-            if label.isNull() { None } else { Some(label.getIString()) }
+        fn mklabel(label: &Value) -> Option<IString> {
+            if label.is_null() { None } else { Some(mkstr(label)) }
         }
-        let refarr = inref.getArray();
-        Box::new(match (refarr[0].getIString(), &refarr[1..]) {
-            (is!("array"), &[arr]) => Array(b(mkarr(arr))),
-            (is!("assign"), &[b, left, right]) => { assert!(b.getBool()); Assign(b.getBool(), p(left), p(right)) },
-            (is!("binary"), &[op, left, right]) => Binary(op.getIString(), p(left), p(right)),
-            (is!("block"), &[stats]) => Block(b(mkarr(stats))),
-            (is!("break"), &[label]) => Break(mklabel(label)),
-            (is!("call"), &[fnexpr, params]) => Call(p(fnexpr), b(mkarr(params))),
-            (is!("conditional"), &[cond, iftrue, iffalse]) => Conditional(p(cond), p(iftrue), p(iffalse)),
-            (is!("continue"), &[label]) => Continue(mklabel(label)),
-            (is!("defun"), &[fnname, params, stats]) => Defun(fnname.getIString(), b(params.getArray().iter().map(|r| r.getIString()).collect()), b(mkarr(stats))),
-            (is!("do"), &[cond, body]) => Do(p(cond), p(body)),
-            (is!("dot"), &[obj, key]) => Dot(p(obj), key.getIString()),
-            (is!("if"), &[cond, iftrue, maybeiffalse]) => If(p(cond), p(iftrue), maybe_parse(maybeiffalse)),
-            (is!("label"), &[label, body]) => Label(label.getIString(), p(body)),
-            (is!("name"), &[name]) => Name(name.getIString()),
-            (is!("new"), &[call]) => New(p(call)),
-            (is!("num"), &[num]) => Num(num.getNumber()),
-            (is!("object"), &[keyvals]) => Object(b(keyvals.getArray().iter().map(|kv| { (kv.get(0).getIString(), p(kv.get(1))) }).collect())),
-            (is!("return"), &[retval]) => Return(maybe_parse(retval)),
-            (is!("seq"), &[left, right]) => Seq(p(left), p(right)),
-            (is!("stat"), &[stat]) => Stat(p(stat)),
-            (is!("string"), &[string]) => Str(string.getIString()),
-            (is!("sub"), &[target, index]) => Sub(p(target), p(index)),
-            (is!("switch"), &[input, cases]) => Switch(p(input), b(cases.getArray().iter().map(|casedef| { (maybe_parse(casedef.get(0)), mkarr(casedef.get(1))) }).collect())),
-            (is!("toplevel"), &[stats]) => Toplevel(b(mkarr(stats))),
-            (is!("unary-prefix"), &[op, right]) => UnaryPrefix(op.getIString(), p(right)),
-            (is!("var"), &[vardefs]) => Var(b(vardefs.getArray().iter().map(|vardef| { (vardef.get(0).getIString(), maybe_parse(vardef.get(1))) }).collect())),
-            (is!("while"), &[condition, body]) => While(p(condition), p(body)),
+        let arr = value.as_array().unwrap();
+        Box::new(match (arr[0].as_str().unwrap(), &arr[1..]) {
+            ("array", &[ref arr]) => Array(b(mkarr(arr))),
+            ("assign", &[ref b, ref left, ref right]) => { assert!(b.as_bool().unwrap()); Assign(b.as_bool().unwrap(), p(left), p(right)) },
+            ("binary", &[ref op, ref left, ref right]) => Binary(mkstr(op), p(left), p(right)),
+            ("block", &[ref stats]) => Block(b(mkarr(stats))),
+            ("break", &[ref label]) => Break(mklabel(label)),
+            ("call", &[ref fnexpr, ref params]) => Call(p(fnexpr), b(mkarr(params))),
+            ("conditional", &[ref cond, ref iftrue, ref iffalse]) => Conditional(p(cond), p(iftrue), p(iffalse)),
+            ("continue", &[ref label]) => Continue(mklabel(label)),
+            ("defun", &[ref fnname, ref params, ref stats]) => Defun(mkstr(fnname), b(params.as_array().unwrap().iter().map(mkstr).collect()), b(mkarr(stats))),
+            ("do", &[ref cond, ref body]) => Do(p(cond), p(body)),
+            ("dot", &[ref obj, ref key]) => Dot(p(obj), mkstr(key)),
+            ("if", &[ref cond, ref iftrue, ref maybeiffalse]) => If(p(cond), p(iftrue), maybe_parse(maybeiffalse)),
+            ("label", &[ref label, ref body]) => Label(mkstr(label), p(body)),
+            ("name", &[ref name]) => Name(mkstr(name)),
+            ("new", &[ref call]) => New(p(call)),
+            ("num", &[ref num]) => Num(num.as_f64().unwrap()),
+            ("object", &[ref keyvals]) => Object(b(keyvals.as_array().unwrap().iter().map(|kv| { let kv = kv.as_array().unwrap(); (mkstr(&kv[0]), p(&kv[1])) }).collect())),
+            ("return", &[ref retval]) => Return(maybe_parse(retval)),
+            ("seq", &[ref left, ref right]) => Seq(p(left), p(right)),
+            ("stat", &[ref stat]) => Stat(p(stat)),
+            ("string", &[ref string]) => Str(mkstr(string)),
+            ("sub", &[ref target, ref index]) => Sub(p(target), p(index)),
+            ("switch", &[ref input, ref cases]) => Switch(p(input), b(cases.as_array().unwrap().iter().map(|casedef| { let casedef = casedef.as_array().unwrap(); (maybe_parse(&casedef[0]), mkarr(&casedef[1])) }).collect())),
+            ("toplevel", &[ref stats]) => Toplevel(b(mkarr(stats))),
+            ("unary-prefix", &[ref op, ref right]) => UnaryPrefix(mkstr(op), p(right)),
+            ("var", &[ref vardefs]) => Var(b(vardefs.as_array().unwrap().iter().map(|vardef| { let vardef = vardef.as_array().unwrap(); (mkstr(&vardef[0]), maybe_parse(&vardef[1])) }).collect())),
+            ("while", &[ref condition, ref body]) => While(p(condition), p(body)),
             _ => panic!(),
         })
     }
@@ -359,409 +307,9 @@ impl serde::Serialize for AstValue {
     }
 }
 
-#[derive(Clone)]
-pub enum Value {
-    null,
-    str(IString),
-    num(f64),
-    arr(ArrayStorage),
-    boo(bool),
-    obj(ObjectStorage),
-}
-
-impl Eq for Value {}
-impl PartialEq for Value {
-    fn eq(&self, other: &Value) -> bool {
-        match (self, other) {
-            (&Value::null, &Value::null) => true,
-            (&Value::num(n1), &Value::num(n2)) => n1 == n2,
-            (&Value::str(ref s1), &Value::str(ref s2)) => s1 == s2,
-            (&Value::boo(b1), &Value::boo(b2)) => b1 == b2,
-            // if you want a deep compare, use deepCompare
-            (&Value::arr(_), _) |
-            (&Value::obj(_), _) => self as *const _ == other as *const _,
-            _ => false,
-        }
-    }
-}
-
-impl Drop for Value {
-    fn drop(&mut self) {
-        // drop is called when assigning over a value - make sure it's been cleared
-        // back to null
-        if let Value::null = *self {} else { panic!() }
-    }
-}
-
-// RSTODO: are the return values needed in set* and assignFrom?
-impl Value {
-    fn new() -> Value {
-        Value::null
-    }
-    // RSTODO: move this into drop?
-    fn free(&mut self) {
-        match *self {
-            // arrays are in arena, don't drop
-            // RSTODO: arrays aren't in arena in rust
-            Value::arr(ref mut a) => {
-                a.truncate(0);
-                a.shrink_to_fit();
-            },
-            // hashmaps aren't in arena, drop
-            Value::obj(ref mut o) => unsafe { ptr::drop_in_place(o as *mut _) },
-            // IStrings may be dynamically allocated, so drop
-            // RSTODO: may be easier to just leave them around?
-            Value::str(ref mut s) => unsafe { ptr::drop_in_place(s as *mut _) },
-            Value::null |
-            Value::num(_) |
-            Value::boo(_) => (),
-        }
-        // Any drops and memory freeing has been done above
-        unsafe { ptr::write(self as *mut _, Value::null) }
-    }
-
-    fn from_str(s: &str) -> Value {
-        // RSTODO: alloc instead of new?
-        let mut v = Value::new();
-        v.setString(s);
-        v
-    }
-    fn from_double(n: f64) -> Value {
-        // RSTODO: alloc instead of new?
-        let mut v = Value::new();
-        v.setNumber(n);
-        v
-    }
-    fn from_arraystorage(a: &ArrayStorage) -> Value {
-        // RSTODO: alloc instead of new?
-        let mut v = Value::new();
-        v.setArray(a);
-        v
-    }
-
-    fn setString(&mut self, s: &str) -> &mut Value {
-        self.free();
-        *self = Value::str(IString::from(s));
-        self
-    }
-    pub fn setIString(&mut self, a: IString) -> &mut Value {
-        self.free();
-        *self = Value::str(a);
-        self
-    }
-    fn setNumber(&mut self, n: f64) -> &mut Value {
-        self.free();
-        *self = Value::num(n);
-        self
-    }
-    fn setArray(&mut self, a: &ArrayStorage) -> &mut Value {
-        self.free();
-        let mut sa = ARENA.allocArray();
-        sa.extend_from_slice(a);
-        *self = Value::arr(sa);
-        self
-    }
-    pub fn setArrayHint(&mut self, size_hint: usize) -> &mut Value {
-        self.free();
-        let mut sa = ARENA.allocArray();
-        sa.reserve(size_hint);
-        *self = Value::arr(sa);
-        self
-    }
-    fn setNull(&mut self) -> &mut Value {
-        self.free();
-        *self = Value::null;
-        self
-    }
-    pub fn setBool(&mut self, b: bool) -> &mut Value {
-        self.free();
-        *self = Value::boo(b);
-        self
-    }
-    fn setObject(&mut self) -> &mut Value {
-        self.free();
-        *self = Value::obj(ObjectStorage::new());
-        self
-    }
-
-    pub fn isString(&self) -> bool {
-        if let Value::str(_) = *self { true } else { false }
-    }
-    fn isNumber(&self) -> bool {
-        if let Value::num(_) = *self { true } else { false }
-    }
-    fn isArray(&self) -> bool {
-        if let Value::arr(_) = *self { true } else { false }
-    }
-    fn isNull(&self) -> bool {
-        if let Value::null = *self { true } else { false }
-    }
-    fn isBool(&self) -> bool {
-        if let Value::boo(_) = *self { true } else { false }
-    }
-    fn isObject(&self) -> bool {
-        if let Value::obj(_) = *self { true } else { false }
-    }
-
-    // RSTODO: is this comment relevant?
-    // avoid overloading == as it might overload over int
-    fn isBoolEqual(&self, b: bool) -> bool {
-        if let Value::boo(sb) = *self { b == sb } else { false }
-    }
-
-    pub fn getStr(&self) -> &str {
-        if let Value::str(ref a) = *self { &*a } else { panic!() }
-    }
-    pub fn getIString(&self) -> IString {
-        if let Value::str(ref a) = *self { a.clone() } else { panic!() }
-    }
-    pub fn getNumber(&self) -> f64 {
-        if let Value::num(d) = *self { d } else { panic!() }
-    }
-    fn getBool(&self) -> bool {
-        if let Value::boo(b) = *self { b } else { panic!() }
-    }
-    pub fn getArray(&self) -> &ArrayStorage {
-        if let Value::arr(ref a) = *self { a } else { panic!() }
-    }
-    pub fn getArrayMut(&mut self) -> &mut ArrayStorage {
-        if let Value::arr(ref mut a) = *self { a } else { panic!() }
-    }
-    fn getObject(&self) -> &ObjectStorage {
-        if let Value::obj(ref o) = *self { o } else { panic!() }
-    }
-    fn getObjectMut(&mut self) -> &mut ObjectStorage {
-        if let Value::obj(ref mut o) = *self { o } else { panic!() }
-    }
-
-    // convenience function to get a known integer
-    pub fn getInteger(&self) -> i64 {
-        f64toi64(self.getNumber())
-    }
-
-    fn assignFrom(&mut self, other: &Value) -> &Value {
-        self.free();
-        match *other {
-            Value::null => self.setNull(),
-            Value::str(ref a) => self.setIString(a.clone()),
-            Value::num(d) => self.setNumber(d),
-            Value::arr(ref a) => self.setArray(a),
-            Value::boo(b) => self.setBool(b),
-            Value::obj(_) => panic!(), // TODO
-        };
-        self
-    }
-
-    fn deepCompare(&self, other: Ref) -> bool {
-        // either same pointer, or identical value type (str, number, null or bool)
-        if self == &*other { return true }
-        // https://github.com/rust-lang/rust/issues/24263 - enum discriminant
-        let typesame = match *self {
-            Value::null => other.isNull(),
-            Value::str(_) => other.isString(),
-            Value::num(_) => other.isNumber(),
-            Value::arr(_) => other.isArray(),
-            Value::boo(_) => other.isBool(),
-            Value::obj(_) => other.isObject(),
-        };
-        if !typesame { return false }
-        if self.isArray() {
-            let (arr1, arr2) = (self.getArray(), other.getArray());
-            if arr1.len() != arr2.len() { return false }
-            arr1.iter().zip(arr2).all(|(v1, &v2)| v1.deepCompare(v2))
-        } else if self.isObject() {
-            let (obj1, obj2) = (self.getObject(), other.getObject());
-            if obj1.len() != obj2.len() { return false }
-            obj1.iter().all(|(k, v1)|
-                if let Some(&v2) = obj2.get(k) { v1.deepCompare(v2) } else { false }
-            )
-        } else {
-            false
-        }
-    }
-
-    pub fn parse(&mut self, curr: &[u8]) {
-        let json: serde_json::Value = serde_json::from_slice(curr).unwrap();
-        self.parse_json(&json);
-    }
-    fn parse_json(&mut self, json: &serde_json::Value) {
-        match *json {
-            serde_json::Value::Null => self.setNull(),
-            serde_json::Value::Bool(b) => self.setBool(b),
-            serde_json::Value::I64(n) => self.setNumber(n as f64),
-            serde_json::Value::U64(n) => self.setNumber(n as f64),
-            serde_json::Value::F64(n) => self.setNumber(n),
-            serde_json::Value::String(ref s) => self.setString(s),
-            serde_json::Value::Array(ref a) => {
-                self.setArrayHint(a.len());
-                let iter = a.iter().map(|v| {
-                    let mut r = ARENA.alloc(); r.parse_json(v); r
-                });
-                match *self {
-                    Value::arr(ref mut sa) => sa.extend(iter),
-                    _ => unreachable!(),
-                };
-                self
-            },
-            serde_json::Value::Object(ref o) => {
-                self.setObject();
-                self.getObjectMut().extend(o.into_iter().map(|(key, val)| {
-                    let mut r = ARENA.alloc();
-                    r.parse_json(val);
-                    (IString::from(key.as_str()), r)
-                }));
-                self
-            },
-        };
-    }
-
-    pub fn stringify<T>(&self, out: &mut T, pretty: bool) where T: Write {
-        let jsonobj = self.stringify_json();
-        let outstr = if pretty {
-            serde_json::ser::to_string_pretty(&jsonobj)
-        } else {
-            serde_json::ser::to_string(&jsonobj)
-        }.unwrap();
-        out.write(outstr.as_bytes()).unwrap();
-    }
-    fn stringify_json(&self) -> serde_json::Value {
-        match *self {
-            Value::null => serde_json::Value::Null,
-            Value::str(ref a) => serde_json::Value::String((&**a).to_string()),
-            // RSTODO: C++ float serialization is different to serde
-            Value::num(n) => serde_json::Value::F64(n),
-            Value::boo(b) => serde_json::Value::Bool(b),
-            Value::arr(ref a) => {
-                let outvec = a.iter().map(|v| v.stringify_json()).collect();
-                serde_json::Value::Array(outvec)
-            },
-            Value::obj(ref o) => {
-                let outmap = o.iter().map(
-                    |(k, v)| ((&**k).to_string(), v.stringify_json())
-                ).collect();
-                serde_json::Value::Object(outmap)
-            },
-        }
-    }
-
-    // String operations
-
-    // Number operations
-
-    // Array operations
-
-    pub fn size(&self) -> usize {
-        self.getArray().len()
-    }
-
-    fn setSize(&mut self, size: usize) {
-        let a = self.getArrayMut();
-        let old = a.len();
-        if old < size {
-            a.reserve_exact(size - old);
-        }
-        for _ in old..size {
-            a.push(ARENA.alloc());
-        }
-    }
-
-    pub fn get(&self, x: usize) -> Ref {
-        *self.getArray().get(x).unwrap()
-    }
-
-    fn push_back(&mut self, r: Ref) -> &mut Value {
-        self.getArrayMut().push(r);
-        self
-    }
-
-    fn pop_back(&mut self) -> Ref {
-        self.getArrayMut().pop().unwrap()
-    }
-
-    fn back(&self) -> Option<Ref> {
-        self.getArray().last().cloned()
-    }
-
-    fn splice(&mut self, x: usize, num: usize) {
-        self.getArrayMut().splice(x..x+num, iter::empty());
-    }
-
-    // RSTODO: https://github.com/rust-lang/rfcs/issues/1065
-    // RSTODO: should this be implemented on vec instead? See other uses of
-    // slice in the optimizer
-    fn insertEmpties(&mut self, x: usize, num: usize) {
-        let empties: Vec<_> = iter::repeat(EMPTYREF).take(num).collect();
-        self.getArrayMut().splice(x..x, empties.into_iter());
-    }
-
-    fn insert(&mut self, x: usize, node: Ref) {
-        self.getArrayMut().insert(x, node);
-    }
-
-    fn indexOf(&self, other: Ref) -> isize {
-        match self.getArray().iter().position(|&r| *r == *other) {
-            Some(i) => i as isize,
-            None => -1,
-        }
-    }
-
-    fn map<F>(&self, func: F) -> Ref where F: Fn(Ref) -> Ref {
-        let a = self.getArray();
-        let mut ret = ARENA.alloc();
-        ret.setArrayHint(a.len());
-        {
-            let mut retarr = ret.getArrayMut();
-            for r in a {
-                retarr.push(func(*r));
-            }
-        }
-        ret
-    }
-
-    fn filter<F>(&self, func: F) -> Ref where F: Fn(Ref) -> bool {
-        let a = self.getArray();
-        let mut ret = ARENA.alloc();
-        ret.setArrayHint(0);
-        {
-            let mut retarr = ret.getArrayMut();
-            for r in a {
-                if func(*r) { retarr.push(*r) }
-            }
-        }
-        ret
-    }
-
-    // Null operations
-
-    // Bool operations
-
-    // Object operations
-
-    fn lookup(&mut self, x: IString) -> Ref {
-        *self.getObjectMut().entry(x).or_insert(EMPTYREF)
-    }
-
-    fn has(&self, x: IString) -> bool {
-        self.getObject().contains_key(&x)
-    }
-}
-
 // AST traversals
 
 // Traversals
-
-struct TraverseInfo {
-  node: Ref,
-  index: isize,
-  arrlen: isize,
-  arrdata: *const Ref,
-}
-
-impl TraverseInfo {
-    fn new(node: Ref, len: isize, data: *const Ref) -> TraverseInfo {
-        TraverseInfo { node: node, index: 0, arrlen: len, arrdata: data }
-    }
-}
 
 // RSTODO: originally 40, but rust isn't generic over integer params and 40
 // isn't explicitly implemented in smallvec
@@ -902,14 +450,6 @@ pub fn traverseFunctionsMut<F>(ast: &mut AstValue, mut visit: F) where F: FnMut(
         Defun(..) => visit(ast),
         _ => {},
     }
-}
-
-pub fn dump(s: &str, node: Ref, pretty: bool) {
-    let mut stderr = io::stderr();
-    write!(stderr, "{}: ", s).unwrap();
-    if node.is_something() { node.stringify(&mut stderr, pretty); }
-    else { stderr.write(b"(nullptr)").unwrap(); }
-    stderr.write(b"\n").unwrap();
 }
 
 pub fn printAst(pretty: bool, finalize: bool, ast: &AstValue) -> Vec<u8> {

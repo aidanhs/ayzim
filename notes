@@ -22,9 +22,11 @@ DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling 
  - convert all unwraps to expect and add details to panics
  - check for &* - the * isn't needed if rust knows the target type
  - consider mem::replace to be must_use - just use *x = y otherwise (maybe clippy should warn)
+ - rewrite ayzim-macros to use macros 1.1?
 
 
 LATER
+ - not sure how well tested emit and receivejson are
  - not being able to chain conditions onto the beginning or end of if let lines
    is rubbish, there's an issue fr it somewhere
  - ensure no semicolons except where necessary
