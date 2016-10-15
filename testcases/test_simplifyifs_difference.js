@@ -1,3 +1,4 @@
+// Ayzim is better
 function _sqlite3PagerCommitPhaseOne($pPager,$zMaster,$noSync) {
  $pPager = $pPager|0;
  $zMaster = $zMaster|0;

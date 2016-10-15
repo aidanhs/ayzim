@@ -1,3 +1,5 @@
+// Both of the below refer the conversion from while to do+while done in asmlastopts
+
 // Emopt doesn't optimise this, but it (and ayzim) probably could with some work -
 // it just means keeping track of where to insert a stat outside of the label
 function xyz() {

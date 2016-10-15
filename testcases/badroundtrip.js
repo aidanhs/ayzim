@@ -1,3 +1,5 @@
+// Ayzim rounds a value incorrectly when roundtripping via receive/emit json
+// search for SEE_HERE
 function __ZN5physx36createFinalizeSolverContacts4CoulombEPPNS_13PxcNpWorkUnitERNS_18PxcNpThreadContextEPPNS_23PxcSolverConstraintDescEPPKNS_13PxcSolverBodyESB_PPKNS_17PxcSolverBodyDataESF_PPKNS_12PxsRigidCoreESJ_ffffRNS_25PxsConstraintBlockManagerENS_14PxFrictionType4EnumE($n,$threadContext,$desc,$sBody0,$sBody1,$solverBodyData0,$solverBodyData1,$body0,$body1,$invDtF32,$bounceThresholdF32,$frictionOffsetThreshold,$correlationDistance,$constraintBlockManager,$frictionType) {
  $n = $n|0;
  $threadContext = $threadContext|0;
@@ -512,7 +514,7 @@ function __ZN5physx36createFinalizeSolverContacts4CoulombEPPNS_13PxcNpWorkUnitER
   $269 = HEAP32[$19>>2]|0;
   $270 = (((($blockDescs) + (($a$033*56)|0)|0)) + 20|0);
   HEAP32[$270>>2] = $269;
-  // Ayzim rounds this value incorrectly when roundtripping via receive/emit json
+  // SEE_HERE
   (__ZN5physx27createContactPatchesCoulombERNS_27PxcCorrelationBufferCoulombERNS_2Gu13ContactBufferEfj($c,$11,+0.99900001287460327,$261)|0);
   $271 = (((($blockDescs) + (($a$033*56)|0)|0)) + 28|0);
   $272 = HEAP32[$271>>2]|0;
