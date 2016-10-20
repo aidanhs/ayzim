@@ -4,7 +4,7 @@ RSTODO, RSNOTE
 
 why does panic in match arms in rust not type check as *, whereas it does for functions? see setBlockContent
 
-DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling && cp ./target/$([ $DEBUG = 1 ] && echo debug || echo release)/ayzim ~/Desktop/emscripten/
+DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling && cp ./target/$([ $DEBUG = 1 ] && echo debug || echo release)/ayzim-opt ~/Desktop/emscripten/
 
  - make sure to always assert that the last element was/wasn't present (or add
    a note that it's not appropriate) when inserting or deleting from sets and

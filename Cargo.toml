@@ -8,6 +8,9 @@ repository = "https://github.com/aidanhs/ayzim/"
 exclude = ["ayzim-macros/**/*"]
 build = "build.rs"
 
+[[bin]]
+name = "ayzim-opt"
+
 [dependencies]
 lazy_static = "0.1.*"
 odds = "0.2.11"
