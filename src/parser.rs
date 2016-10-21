@@ -215,14 +215,14 @@ impl Frag {
                 // supports hex number strings only in C++11, and Visual Studio 2013
                 // does not yet support that functionality.
                 p!{src+=2};
-                let mut num = 0;
+                let mut num: f64 = 0f64;
                 loop {
                     if p!{src[0]} >= b'0' && p!{src[0]} <= b'9' {
-                        num *= 16; num += p!{src[0]} - b'0';
+                        num *= 16f64; num += (p!{src[0]} - b'0') as f64;
                     } else if p!{src[0]} >= b'a' && p!{src[0]} <= b'f' {
-                        num *= 16; num += p!{src[0]} - b'a' + 10;
+                        num *= 16f64; num += (p!{src[0]} - b'a' + 10) as f64;
                     } else if p!{src[0]} >= b'A' && p!{src[0]} <= b'F' {
-                        num *= 16; num += p!{src[0]} - b'F' + 10;
+                        num *= 16f64; num += (p!{src[0]} - b'F' + 10) as f64;
                     } else {
                         break
                     }
@@ -288,11 +288,12 @@ impl Frag {
             p!{src+=1};
             FragData::Separator(is)
         } else if p!{src[0]} == b'"' || p!{src[0]} == b'\'' {
-            src = libc::strchr(p!{src+1} as *const c_char, p!{src[0]} as c_int) as *const _;
-            p!{src+=1};
-            let b = slice::from_raw_parts(src, src as usize - start as usize);
+            let end = libc::strchr(p!{src+1} as *const c_char, p!{src[0]} as c_int) as *const _;
+            let b = slice::from_raw_parts(p!{src+1}, end as usize - p!{src+1} as usize);
             let s = str::from_utf8_unchecked(b);
             let is = IString::from(s);
+            src = end;
+            p!{src+=1};
             FragData::String(is)
         } else {
             // RSTODO

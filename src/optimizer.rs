@@ -1,9 +1,7 @@
 use std::cell::{Cell, UnsafeCell};
 use std::cmp;
 use std::collections::{BTreeSet, BTreeMap, HashMap, HashSet, hash_map};
-use std::{f64, i32};
-#[cfg(feature = "profiling")]
-use std::io::Write;
+use std::f64;
 use std::iter;
 use std::iter::FromIterator;
 use std::mem;
@@ -144,7 +142,7 @@ impl<'a> AsmData<'a> {
                 if !locals.contains_key(name) {
                     vars.push(name.clone());
                     let val = val.take().unwrap(); // make an un-assigning var
-                    let localty = detectType(&val, None, &mut floatZero, false);
+                    let localty = detectType(&val, None, &mut floatZero, true);
                     // RSTODO: valid to not have type?
                     let prev = locals.insert(name.clone(), Local::new(localty.unwrap(), false));
                     assert!(prev.is_none());
@@ -331,7 +329,7 @@ struct HeapInfo {
 }
 
 fn parseHeap(name_str: &str) -> Option<HeapInfo> {
-    if &name_str[..4] != "HEAP" { return None }
+    if !name_str.starts_with("HEAP") { return None }
     let name = name_str.as_bytes();
     let (unsign, floaty) = (name[4] == b'U', name[4] == b'F');
     let bit_ofs = if unsign || floaty { 5 } else { 4 };
@@ -1648,7 +1646,7 @@ pub fn eliminate(ast: &mut AstValue, memSafe: bool) {
             },
             While(_, ref mut body) => {
                 // try to remove loop helper variables specifically
-                let (stats,) = body.getMutBlock();
+                let stats = if let Block(ref mut stats) = **body { stats } else { return };
                 let mut loopers = vec![];
                 let mut helpers = vec![];
                 let flip;
@@ -2059,7 +2057,7 @@ pub fn simplifyExpressions(ast: &mut AstValue, preciseF32: bool) {
                     }
                 },
                 Binary(is!("&"), mast!(Binary(is!(">>"), Binary(is!("<<"), _, Num(n1)), Num(n2))), mast!(Num(amount)))
-                        if f64toi32(n1) == f64toi32(n2) && (!(0xFFFFFFFFu32 as i32 >> f64toi32(n2))) & jsD2I(amount) == 0 => {
+                        if f64toi32(n1) == f64toi32(n2) && (!(0xFFFFFFFFu32 as u32 >> f64tou32(n2))) & jsD2I(amount) as u32 == 0 => {
                     // x << 24 >> 24 & 255 => x & 255
                     // RSTODO: lexical lifetime inconvenience
                     let (_, input, _) = node.getMutBinary();
@@ -2626,8 +2624,7 @@ pub fn simplifyIfs(ast: &mut AstValue) {
                 }
                 let (_, postiftrue, _) = stats.remove(i+1).intoIf(); // remove the post entirely
                 let (_, _, maybeiffalse) = stats[i].getMutIf();
-                *maybeiffalse = Some(postiftrue);
-                i += 1;
+                *maybeiffalse = Some(postiftrue)
             }}
         }, |node: &mut AstValue| {
             if let While(..) = *node { inLoop.set(inLoop.get() - 1) }
@@ -4587,18 +4584,28 @@ pub fn asmLastOpts(ast: &mut AstValue) {
                     *op = is!("|");
                     *right = an!(Num(0f64))
                 },
-                Binary(is!("-"), _, ref mut right @ mast!(UnaryPrefix(_, _))) => {
+                Binary(ref mut op @ is!("-"), _, ref mut right @ mast!(UnaryPrefix(_, _))) => {
                     // avoid X - (-Y) because some minifiers buggily emit X--Y which is invalid as -- can be a unary. Transform to
                     //        X + Y
-                    let maybenewright = match **right {
-                        UnaryPrefix(is!("-"), ref mut newright) | // integer
-                        UnaryPrefix(is!("+"), mast!(UnaryPrefix(is!("-"), ref mut newright))) => { // float
-                            Some(mem::replace(newright, makeEmpty()))
+                    // RSTODO: lexical lifetimes
+                    match **right {
+                        UnaryPrefix(is!("-"), _) => { // integer
+                            *op = is!("+");
+                            let newright = {
+                                let (_, newright) = right.getMutUnaryPrefix();
+                                mem::replace(newright, makeEmpty())
+                            };
+                            *right = newright
                         },
-                        _ => None,
-                    };
-                    if let Some(newright) = maybenewright {
-                        *right = newright
+                        UnaryPrefix(is!("+"), ref mut inner @ mast!(UnaryPrefix(is!("-"), _))) => { // float
+                            *op = is!("+");
+                            let newinner = {
+                                let (_, newinner) = inner.getMutUnaryPrefix();
+                                mem::replace(newinner, makeEmpty())
+                            };
+                            *inner = newinner
+                        },
+                        _ => (),
                     }
                 },
                 _ => (),
@@ -4625,7 +4632,7 @@ pub fn asmLastOpts(ast: &mut AstValue) {
     traversePreMut(fun, |node: &mut AstValue| {
         if let Label(ref label, ref mut body @ mast!(Do(Num(0f64), Block(_)))) = *node {
             // there shouldn't be any continues on this, not direct break or continue
-            let mut abort = true;
+            let mut abort = false;
             let breakCaptured = Cell::new(0);
             let continueCaptured = Cell::new(0);
             let newbody;
@@ -4667,8 +4674,8 @@ pub fn asmLastOpts(ast: &mut AstValue) {
 pub fn eliminateDeadFuncs(ast: &mut AstValue, extraInfo: &serde_json::Value) {
     let mut deadfns = HashSet::new();
     for deadfn in extraInfo.find("dead_functions").unwrap().as_array().unwrap() {
-        let isnew = deadfns.insert(deadfn.as_str().unwrap());
-        assert!(isnew);
+        // RSNOTE: it's not wrong to name dead functions multiple times, just odd
+        deadfns.insert(deadfn.as_str().unwrap());
     }
 
     traverseFunctionsMut(ast, |fun: &mut AstValue| {

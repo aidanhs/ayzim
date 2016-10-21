@@ -7,6 +7,7 @@ use std::u64;
 use odds::vec::VecExt;
 use serde;
 use serde_json;
+use serde_json::error as serde_error;
 use serde_json::Value;
 use smallvec::SmallVec;
 //use typed_arena;
@@ -166,14 +167,43 @@ AstValue!{
 
 impl AstValue {
     // RSTODO: implement serde deserialize rather than using serde_json since
-    // this recursive method seems to perform abysmally with huge json files
+    // this recursive method seems to perform abysmally (particularly mem
+    // consumption) with huge json files. Maybe bench serde against
+    // https://github.com/maciejhirsz/json-rust?
     pub fn parse_json(curr: &[u8]) -> AstNode {
-        let json: Value = serde_json::from_slice(curr).unwrap();
+        // RSNOTE: for some reason, emscripten tacks on "// EMSCRIPTEN_GENERATED_FUNCTIONS"
+        // to json. This is wrong but the original optimizer handles it, so we must too.
+        let json: Value = match serde_json::from_slice(curr) {
+            Ok(json) => json,
+            Err(serde_error::Error::Syntax(serde_error::ErrorCode::TrailingCharacters, line, col)) => {
+                // RSNOTE: serde read.rs position_of_index
+                let mut curline = 1;
+                let mut curcol = 0;
+                let mut pos = 0;
+                for ch in curr.iter() {
+                    pos += 1;
+                    match *ch {
+                        b'\n' => {
+                            curline += 1;
+                            curcol = 0;
+                        }
+                        _ => {
+                            curcol += 1;
+                        }
+                    }
+                    if line == curline && col == curcol { break }
+                }
+                assert!(line == curline && col == curcol);
+                serde_json::from_slice(&curr[..pos-1]).unwrap()
+            },
+            _ => panic!(),
+        };
         AstValue::from_json(&json)
     }
     pub fn from_json(value: &Value) -> AstNode {
         fn p(v: &Value) -> AstNode { AstValue::from_json(v) } // parse
         fn b<T>(v: T) -> Box<T> { Box::new(v) } // box
+        fn mkemptyarr() -> Vec<AstNode> { vec![] }
         fn mkarr(v: &Value) -> Vec<AstNode> {
             v.as_array().unwrap().iter().map(|e| p(e)).collect()
         }
@@ -189,6 +219,7 @@ impl AstValue {
             ("array", &[ref arr]) => Array(b(mkarr(arr))),
             ("assign", &[ref b, ref left, ref right]) => { assert!(b.as_bool().unwrap()); Assign(p(left), p(right)) },
             ("binary", &[ref op, ref left, ref right]) => Binary(mkstr(op), p(left), p(right)),
+            ("block", &[]) => Block(b(mkemptyarr())),
             ("block", &[ref stats]) => Block(b(mkarr(stats))),
             ("break", &[ref label]) => Break(mklabel(label)),
             ("call", &[ref fnexpr, ref params]) => Call(p(fnexpr), b(mkarr(params))),
@@ -197,6 +228,7 @@ impl AstValue {
             ("defun", &[ref fnname, ref params, ref stats]) => Defun(mkstr(fnname), b(params.as_array().unwrap().iter().map(mkstr).collect()), b(mkarr(stats))),
             ("do", &[ref cond, ref body]) => Do(p(cond), p(body)),
             ("dot", &[ref obj, ref key]) => Dot(p(obj), mkstr(key)),
+            ("if", &[ref cond, ref iftrue]) => If(p(cond), p(iftrue), None),
             ("if", &[ref cond, ref iftrue, ref maybeiffalse]) => If(p(cond), p(iftrue), maybe_parse(maybeiffalse)),
             ("label", &[ref label, ref body]) => Label(mkstr(label), p(body)),
             ("name", &[ref name]) => Name(mkstr(name)),
@@ -213,7 +245,7 @@ impl AstValue {
             ("unary-prefix", &[ref op, ref right]) => UnaryPrefix(mkstr(op), p(right)),
             ("var", &[ref vardefs]) => Var(b(vardefs.as_array().unwrap().iter().map(|vardef| { let vardef = vardef.as_array().unwrap(); (mkstr(&vardef[0]), maybe_parse(&vardef[1])) }).collect())),
             ("while", &[ref condition, ref body]) => While(p(condition), p(body)),
-            _ => panic!(),
+            (v1, v2) => panic!(format!("{}: {} children", v1, v2.len())),
         })
     }
 
@@ -500,7 +532,7 @@ impl<'a> JSPrinter<'a> {
     }
 
     fn emitBuf(&mut self, cs: &[u8]) {
-        self.maybeSpace(cs[0]);
+        self.maybeSpace(*cs.get(0).unwrap_or(&b'\0'));
         self.buffer.extend_from_slice(cs);
     }
 

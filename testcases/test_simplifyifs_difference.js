@@ -1,4 +1,5 @@
-// Ayzim is better
+// Ayzim is better, collapsing an empty label jump into an empty else (emopt doesn't touch it). In theory ayzim could eliminate the else entirely (and does so during a following registerizeHarder pass if run)
+// search for SEE_HERE
 function _sqlite3PagerCommitPhaseOne($pPager,$zMaster,$noSync) {
  $pPager = $pPager|0;
  $zMaster = $zMaster|0;
@@ -290,6 +291,7 @@ function _sqlite3PagerCommitPhaseOne($pPager,$zMaster,$noSync) {
       STACKTOP = sp;return ($$0|0);
      }
     }
+   // SEE_HERE
    } else {
     label = 36;
    }
