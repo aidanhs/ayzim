@@ -20,8 +20,9 @@ string_cache = { version = "0.3.0", features = ["unstable"] }
 smallvec = "0.1.7"
 libc = "0.2.11"
 cfor = "1.1"
-typed-arena = "1.1"
+#typed-arena = "1.1"
 conv = "0.3.2"
+vgrs = { version = "0.1", optional = true }
 
 interpolate_idents = "0.1.1"
 #ayzim-macros = { path = "ayzim-macros" }
@@ -31,7 +32,13 @@ ayzim-macros = "0.1.0"
 string_cache_codegen = "0.3.1"
 
 [features]
-profiling = []
+profiling = ["vgrs"]
 
 [profile.release]
+opt-level = 3
+debug = false
+rpath = false
+lto = true
 debug-assertions = true
+# codegen-units = 1 # (ignored with lto)
+panic = 'abort'

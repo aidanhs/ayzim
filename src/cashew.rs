@@ -123,6 +123,12 @@ macro_rules! AstValue {
                 pub fn [getMut $x](&mut self) -> ($( &mut $y ),*,) {
                     __ifletify!{ mut (*self) $x($( $y ),+) }
                 }
+                //pub fn [maybeGet $x](&self) -> Option<($( &$y ),*,)> {
+                //    if self.[is $x]() { Some(self.[get $x]()) } else { None }
+                //}
+                //pub fn [maybeGetMut $x](&mut self) -> Option<($( &mut $y ),*,)> {
+                //    if self.[is $x]() { Some(self.[getMut $x]()) } else { None }
+                //}
             } )*
         }
     }

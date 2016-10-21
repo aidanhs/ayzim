@@ -1,6 +1,6 @@
 #![feature(stmt_expr_attributes, const_fn, box_patterns, slice_patterns, conservative_impl_trait, drop_types_in_const)]
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
-// Clippy
+// RSNOTE: Clippy
 //#![allow(explicit_iter_loop, explicit_into_iter_loop, float_cmp, cyclomatic_complexity, too_many_arguments)]
 
 // RSTODO: https://github.com/rust-lang/rust/issues/29599
@@ -19,9 +19,13 @@ extern crate serde;
 extern crate serde_json;
 extern crate odds;
 extern crate smallvec;
-extern crate typed_arena;
 extern crate libc;
 extern crate conv;
+
+#[cfg(feature = "profiling")]
+extern crate vgrs;
+// unsafe { ::vgrs::callgrind::start_instrumentation() };
+// unsafe { ::vgrs::callgrind::stop_instrumentation() };
 
 use std::env;
 use std::fs;
