@@ -3931,7 +3931,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             jVar.conf.resize(numLocals, false)
         }
     }
-    let mut possibleBlockConflictsMap = BTreeMap::<&IString, Vec<&Block>>::new();
+    let mut possibleBlockConflictsMap = HashMap::<&IString, Vec<&Block>>::new();
     let mut possibleBlockConflicts = Vec::<(JuncVarId, Vec<&Block>)>::with_capacity(numLocals);
     let mut possibleBlockLinks = HashMap::<&IString, Vec<&Block>>::with_capacity(numLocals);
 
@@ -3967,7 +3967,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         }
         // Extract just the variables we might want to check for conflicts
         // RSTODO: why does drain not exist? https://github.com/rust-lang/rfcs/pull/1254
-        for (name, blocks) in mem::replace(&mut possibleBlockConflictsMap, BTreeMap::new()).into_iter() {
+        for (name, blocks) in mem::replace(&mut possibleBlockConflictsMap, HashMap::new()).into_iter() {
             possibleBlockConflicts.push((nameToJuncVarId!(name), blocks))
         }
 
