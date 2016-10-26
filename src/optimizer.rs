@@ -2,6 +2,7 @@ use std::cell::{Cell, UnsafeCell};
 use std::cmp;
 use std::collections::{BTreeSet, BTreeMap, HashMap, HashSet, hash_map};
 use std::f64;
+use std::hash::{Hash, Hasher};
 use std::iter;
 use std::iter::FromIterator;
 use std::mem;
@@ -3037,13 +3038,59 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     //      (and therefore cannot be safely eliminated)
     //    * set of labels that can be used to jump to this block
 
+    // RSNOTE: the reason this exists is because putting istrings in a btreeset
+    // ends up doing string comparisons, which are slow. Instead, boil var names
+    // down to an integer representing their order
+    #[derive(Copy, Clone, Debug)]
+    struct LocalId {
+        id: usize,
+        parent: *const LocalIds,
+    }
+    impl LocalId {
+        fn get_name(&self) -> &IString {
+            unsafe { &(*self.parent).idtoname[self.id] }
+        }
+    }
+    impl Hash for LocalId {
+        fn hash<H>(&self, state: &mut H) where H: Hasher { self.id.hash(state) }
+    }
+    impl PartialEq for LocalId {
+        fn eq(&self, other: &Self) -> bool { self.id.eq(&other.id) }
+    }
+    impl Eq for LocalId {}
+    impl cmp::Ord for LocalId {
+        fn cmp(&self, other: &Self) -> cmp::Ordering { self.id.cmp(&other.id) }
+    }
+    impl cmp::PartialOrd for LocalId {
+        fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> { self.id.partial_cmp(&other.id) }
+    }
+    struct LocalIds {
+        idtoname: Vec<IString>,
+        nametoid: HashMap<IString, usize>,
+    }
+    impl LocalIds {
+        fn from_asmdata_locals(asmDataLocals: &HashMap<IString, Local>) -> LocalIds {
+            let mut idtoname = Vec::with_capacity(asmDataLocals.len());
+            let mut nametoid = HashMap::with_capacity(asmDataLocals.len());
+            idtoname.extend(asmDataLocals.keys().cloned());
+            idtoname.sort();
+            for (id, name) in idtoname.iter().cloned().enumerate() {
+                let prev = nametoid.insert(name, id);
+                assert!(prev.is_none());
+            }
+            LocalIds { idtoname: idtoname, nametoid: nametoid }
+        }
+        fn get_localid(&self, name: &IString) -> LocalId {
+            LocalId { id: *self.nametoid.get(name).unwrap(), parent: self as *const _ }
+        }
+    }
     // RSNOTE: btrees are used here because they're ordered
     #[derive(Debug)]
     struct Junction {
         id: usize,
         inblocks: BTreeSet<usize>,
         outblocks: BTreeSet<usize>,
-        live: BTreeSet<IString>,
+        live: BTreeSet<LocalId>,
     }
     impl Junction {
         fn new(id: usize) -> Junction {
@@ -3094,6 +3141,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         }
     }
 
+    let localids = LocalIds::from_asmdata_locals(asmDataLocals);
     let mut junctions = Vec::<Junction>::new();
     let mut blocks = Vec::<Block>::new();
     let mut currEntryJunction: Option<usize> = None;
@@ -3662,26 +3710,27 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     // junction.  The outer phase uses this to try to eliminate redundant
     // stores in each basic block, which might in turn affect liveness info.
 
-    fn analyzeJunction(j: usize, junctions: &mut Vec<Junction>, blocks: &[Block]) {
+    fn analyzeJunction(j: usize, junctions: &mut Vec<Junction>, blocks: &[Block], localids: &LocalIds) {
         // Update the live set for this junction.
         let mut live = BTreeSet::new();
         for &b in junctions[j].outblocks.iter() {
             let block = &blocks[b];
-            for name in junctions[block.exit].live.iter() {
+            for &localid in junctions[block.exit].live.iter() {
+                let name = localid.get_name();
                 if !block.kill.contains(name) {
                     // RSNOTE: outgoing blocks can have overlapping live var sets
-                    live.insert(name.clone());
+                    live.insert(localid);
                 }
             }
             for name in block.use_.keys() {
                 // RSNOTE: block can use outgoing vars
-                live.insert(name.clone());
+                live.insert(localids.get_localid(name));
             }
         }
         junctions[j].live = live
     }
 
-    fn analyzeBlock(block: &mut Block, asmData: &AsmData, junctions: &mut Vec<Junction>) {
+    fn analyzeBlock(block: &mut Block, asmData: &AsmData, junctions: &mut Vec<Junction>, localids: &LocalIds) {
         // Update information about the behaviour of the block.
         // This includes the standard 'use' and 'kill' information,
         // plus a 'link' set naming values that flow through from entry
@@ -3704,7 +3753,8 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         firstDeadLoc.clear();
         firstKillLoc.clear();
         lastKillLoc.clear();
-        for name in live.iter() {
+        for localid in live.iter() {
+            let name = localid.get_name();
             let prev1 = link.insert(name.clone(), name.clone());
             let prev2 = lastUseLoc.insert(name.clone(), block.nodes.len());
             let prev3 = firstDeadLoc.insert(name.clone(), block.nodes.len());
@@ -3719,7 +3769,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             match *node {
                 Name(ref name) => {
                     // RSNOTE: may already be live or used
-                    live.insert(name.clone());
+                    live.insert(localids.get_localid(name));
                     use_.insert(name.clone(), Some(j));
                     if !lastUseLoc.contains_key(name) {
                         let prev1 = lastUseLoc.insert(name.clone(), j);
@@ -3728,12 +3778,12 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                     }
                 },
                 // We only keep assignments if they will be subsequently used.
-                Assign(mast!(Name(ref name)), ref right) if live.contains(name) => {
+                Assign(mast!(Name(ref name)), ref right) if live.contains(&localids.get_localid(name)) => {
                     // RSNOTE: may be killed by a previous assign somewhere in this block
                     kill.insert(name.clone());
                     // RSNOTE: may be used in the next block, but perhaps not this one
                     use_.remove(name);
-                    let didremove = live.remove(name);
+                    let didremove = live.remove(&localids.get_localid(name));
                     assert!(didremove);
                     // RSNOTE: previous assign+use could have inserted these two
                     firstDeadLoc.insert(name.clone(), j);
@@ -3831,7 +3881,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             let didremove = jWorkSet.remove(&last);
             assert!(didremove);
             let oldLive = junctions[last].live.clone(); // copy it here to check for changes later
-            analyzeJunction(last, &mut junctions, &blocks);
+            analyzeJunction(last, &mut junctions, &blocks, &localids);
             if oldLive != junctions[last].live {
                 // Live set changed, updated predecessor blocks and junctions.
                 for &b in junctions[last].inblocks.iter() {
@@ -3849,7 +3899,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             assert!(didremove);
             let block = &mut blocks[last];
             let oldUse = block.use_.clone();
-            analyzeBlock(block, &asmData, &mut junctions);
+            analyzeBlock(block, &asmData, &mut junctions, &localids);
             if oldUse != block.use_ {
                 // The use set changed, re-process the entry junction.
                 // RSNOTE: may already be intended for processing
@@ -3871,7 +3921,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
 
     for name in asmData.params.iter() {
         // RSNOTE: if used they'll already be there
-        junctions[ENTRY_JUNCTION].live.insert(name.clone());
+        junctions[ENTRY_JUNCTION].live.insert(localids.get_localid(name));
     }
 
     // For variables that are live at one or more junctions, we assign them
@@ -3923,8 +3973,8 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     let mut juncVars = Vec::<JuncVar>::with_capacity(numLocals);
     juncVars.resize(numLocals, JuncVar::new());
     for junc in junctions.iter() {
-        for name in junc.live.iter() {
-            let id = nameToJuncVarId!(name);
+        for localid in junc.live.iter() {
+            let id = nameToJuncVarId!(localid.get_name());
             let jVar = &mut juncVars[*id];
             jVar.id = id;
             jVar.used = true;
@@ -3944,8 +3994,8 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         for &b in junc.outblocks.iter() {
             let block = &blocks[b];
             let jSucc = &junctions[block.exit];
-            for name in jSucc.live.iter() {
-                possibleBlockConflictsMap.entry(name)
+            for localid in jSucc.live.iter() {
+                possibleBlockConflictsMap.entry(localid.get_name())
                     .or_insert_with(|| Vec::with_capacity(1)).push(block)
             }
             for (name, linkname) in block.link.iter() {
@@ -3958,7 +4008,8 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         // Find the live variables in this block, mark them as unnecessary to
         // check for conflicts (we mark all live vars as conflicting later)
         let mut liveJVarIds = Vec::<JuncVarId>::with_capacity(junc.live.len());
-        for name in junc.live.iter() {
+        for localid in junc.live.iter() {
+            let name = localid.get_name();
             let jVarId = nameToJuncVarId!(name);
             liveJVarIds.push(jVarId);
             // RSNOTE: if all outblocks end at the exit junction, there are no
@@ -4125,7 +4176,8 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         let mut inputVars = HashSet::<&IString>::new();
         let mut inputDeadLoc = HashMap::<usize, usize>::new();
         let mut inputVarsByReg = HashMap::<usize, &IString>::new();
-        for name in jExit.live.iter() {
+        for localid in jExit.live.iter() {
+            let name = localid.get_name();
             if !block.kill.contains(name) {
                 let isnew = inputVars.insert(name);
                 assert!(isnew);
@@ -4153,7 +4205,8 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         let mut assignedRegs = HashMap::<IString, usize>::new();
         let mut freeRegsByTypePre = allRegsByType.clone(); // XXX copy
         // Begin with all live vars assigned per the exit junction.
-        for name in jExit.live.iter() {
+        for localid in jExit.live.iter() {
+            let name = localid.get_name();
             let reg = juncVars[*nameToJuncVarId!(name)].reg.unwrap(); // 'output variable doesnt have a register');
             let prev = assignedRegs.insert(name.clone(), reg);
             assert!(prev.is_none());
