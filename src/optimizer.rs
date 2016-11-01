@@ -2,6 +2,7 @@ use std::cell::{Cell, UnsafeCell};
 use std::cmp;
 use std::collections::{BTreeSet, BTreeMap, HashMap, HashSet, hash_map};
 use std::f64;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter;
 use std::iter::FromIterator;
@@ -3041,28 +3042,38 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     // RSNOTE: the reason this exists is because putting istrings in a btreeset
     // ends up doing string comparisons, which are slow. Instead, boil var names
     // down to an integer representing their order
-    #[derive(Copy, Clone, Debug)]
-    struct LocalId {
+    #[derive(Copy, Clone)]
+    struct LocalId<'a> {
         id: usize,
-        parent: *const LocalIds,
+        parent: &'a LocalIds,
     }
-    impl LocalId {
-        fn get_name(&self) -> &IString {
-            unsafe { &(*self.parent).idtoname[self.id] }
+    impl<'a> LocalId<'a> {
+        fn get_name(&self) -> &'a IString {
+            &self.parent.idtoname[self.id]
         }
     }
-    impl Hash for LocalId {
+    impl<'a> fmt::Debug for LocalId<'a> {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "LocalId {{ id: {}, (name): {} }}", self.id, self.get_name())
+        }
+    }
+    impl<'a> Hash for LocalId<'a> {
         fn hash<H>(&self, state: &mut H) where H: Hasher { self.id.hash(state) }
     }
-    impl PartialEq for LocalId {
+    impl<'a> PartialEq for LocalId<'a> {
         fn eq(&self, other: &Self) -> bool { self.id.eq(&other.id) }
     }
-    impl Eq for LocalId {}
-    impl cmp::Ord for LocalId {
+    impl<'a> Eq for LocalId<'a> {}
+    impl<'a> cmp::Ord for LocalId<'a> {
         fn cmp(&self, other: &Self) -> cmp::Ordering { self.id.cmp(&other.id) }
     }
-    impl cmp::PartialOrd for LocalId {
+    impl<'a> cmp::PartialOrd for LocalId<'a> {
         fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> { self.id.partial_cmp(&other.id) }
+    }
+    impl<'a> Deref for LocalId<'a> {
+        type Target = usize;
+        #[inline(always)]
+        fn deref(&self) -> &usize { &self.id }
     }
     struct LocalIds {
         idtoname: Vec<IString>,
@@ -3081,19 +3092,23 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             LocalIds { idtoname: idtoname, nametoid: nametoid }
         }
         fn get_localid(&self, name: &IString) -> LocalId {
-            LocalId { id: *self.nametoid.get(name).unwrap(), parent: self as *const _ }
+            LocalId { id: *self.nametoid.get(name).unwrap(), parent: self }
         }
+        fn get_localids<'a>(&'a self) -> impl Iterator<Item=LocalId<'a>> + 'a {
+            (0..self.idtoname.len()).map(move |i| LocalId { id: i, parent: self })
+        }
+        fn num_locals(&self) -> usize { self.idtoname.len() }
     }
     // RSNOTE: btrees are used here because they're ordered
     #[derive(Debug)]
-    struct Junction {
+    struct Junction<'a> {
         id: usize,
         inblocks: BTreeSet<usize>,
         outblocks: BTreeSet<usize>,
-        live: BTreeSet<LocalId>,
+        live: BTreeSet<LocalId<'a>>,
     }
-    impl Junction {
-        fn new(id: usize) -> Junction {
+    impl<'a> Junction<'a> {
+        fn new(id: usize) -> Junction<'a> {
             Junction { id: id, inblocks: BTreeSet::new(), outblocks: BTreeSet::new(), live: BTreeSet::new() }
         }
     }
@@ -3710,7 +3725,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     // junction.  The outer phase uses this to try to eliminate redundant
     // stores in each basic block, which might in turn affect liveness info.
 
-    fn analyzeJunction(j: usize, junctions: &mut Vec<Junction>, blocks: &[Block], localids: &LocalIds) {
+    fn analyzeJunction<'a>(j: usize, junctions: &mut Vec<Junction<'a>>, blocks: &[Block], localids: &'a LocalIds) {
         // Update the live set for this junction.
         let mut live = BTreeSet::new();
         for &b in junctions[j].outblocks.iter() {
@@ -3931,58 +3946,32 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     // (the "links").
 
     #[derive(Clone)]
-    struct JuncVar {
-        id: JuncVarId,
+    struct JuncVar<'a> {
+        id: LocalId<'a>,
         conf: Vec<bool>,
         link: BTreeSet<IString>,
         excl: HashSet<usize>,
         reg: Option<usize>,
         used: bool,
     }
-    impl JuncVar {
-        fn new() -> JuncVar {
-            JuncVar { id: JuncVarId { id: 0 }, conf: vec![], link: BTreeSet::new(), excl: HashSet::new(), reg: None, used: false }
+    impl<'a> JuncVar<'a> {
+        fn new(localid: LocalId) -> JuncVar {
+            JuncVar { id: localid, conf: vec![], link: BTreeSet::new(), excl: HashSet::new(), reg: None, used: false }
         }
     }
-    // RSNOTE: simple wrapper just to avoid an ordering impl since it's not meaningful
-    #[derive(Copy, Clone, Hash)]
-    struct JuncVarId {
-        id: usize,
-    }
-    impl Deref for JuncVarId {
-        type Target = usize;
-        #[inline(always)]
-        fn deref(&self) -> &usize { &self.id }
-    }
-    // RSTODO: static assert?
-    assert!(mem::size_of::<JuncVarId>() == mem::size_of::<usize>());
-    let numLocals = asmData.locals.len();
-    let mut nameToJuncVarIdMap = HashMap::<IString, JuncVarId>::with_capacity(numLocals);
-    let mut juncVarIdToNameMap = Vec::<IString>::with_capacity(numLocals);
-    for local in asmData.locals.keys() {
-        let prev = nameToJuncVarIdMap.insert(local.clone(), JuncVarId { id: juncVarIdToNameMap.len() });
-        assert!(prev.is_none());
-        juncVarIdToNameMap.push(local.clone())
-    }
-    macro_rules! nameToJuncVarId {
-        ($name:expr) => { *nameToJuncVarIdMap.get($name).unwrap() };
-        ($name:expr, $map:expr) => { *$map.get($name).unwrap() };
-    };
-    macro_rules! juncVarIdToName { ($juncvarid:expr) => { &juncVarIdToNameMap[$juncvarid.id] } };
 
+    let numLocals = localids.num_locals();
     let mut juncVars = Vec::<JuncVar>::with_capacity(numLocals);
-    juncVars.resize(numLocals, JuncVar::new());
+    juncVars.extend(localids.get_localids().map(JuncVar::new));
     for junc in junctions.iter() {
-        for localid in junc.live.iter() {
-            let id = nameToJuncVarId!(localid.get_name());
-            let jVar = &mut juncVars[*id];
-            jVar.id = id;
+        for &localid in junc.live.iter() {
+            let jVar = &mut juncVars[*localid];
             jVar.used = true;
             jVar.conf.resize(numLocals, false)
         }
     }
-    let mut possibleBlockConflictsMap = HashMap::<&IString, Vec<&Block>>::new();
-    let mut possibleBlockConflicts = Vec::<(JuncVarId, Vec<&Block>)>::with_capacity(numLocals);
+    let mut possibleBlockConflictsMap = HashMap::<LocalId, Vec<&Block>>::new();
+    let mut possibleBlockConflicts = Vec::<(LocalId, Vec<&Block>)>::with_capacity(numLocals);
     let mut possibleBlockLinks = HashMap::<&IString, Vec<&Block>>::with_capacity(numLocals);
 
     for junc in junctions.iter() {
@@ -3994,8 +3983,8 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         for &b in junc.outblocks.iter() {
             let block = &blocks[b];
             let jSucc = &junctions[block.exit];
-            for localid in jSucc.live.iter() {
-                possibleBlockConflictsMap.entry(localid.get_name())
+            for &jVarId in jSucc.live.iter() {
+                possibleBlockConflictsMap.entry(jVarId)
                     .or_insert_with(|| Vec::with_capacity(1)).push(block)
             }
             for (name, linkname) in block.link.iter() {
@@ -4007,23 +3996,21 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         }
         // Find the live variables in this block, mark them as unnecessary to
         // check for conflicts (we mark all live vars as conflicting later)
-        let mut liveJVarIds = Vec::<JuncVarId>::with_capacity(junc.live.len());
-        for localid in junc.live.iter() {
-            let name = localid.get_name();
-            let jVarId = nameToJuncVarId!(name);
+        let mut liveJVarIds = Vec::<LocalId>::with_capacity(junc.live.len());
+        for &jVarId in junc.live.iter() {
             liveJVarIds.push(jVarId);
             // RSNOTE: if all outblocks end at the exit junction, there are no
             // possible block conflicts
-            possibleBlockConflictsMap.remove(name);
+            possibleBlockConflictsMap.remove(&jVarId);
         }
         // Extract just the variables we might want to check for conflicts
         // RSTODO: why does drain not exist? https://github.com/rust-lang/rfcs/pull/1254
-        for (name, blocks) in mem::replace(&mut possibleBlockConflictsMap, HashMap::new()).into_iter() {
-            possibleBlockConflicts.push((nameToJuncVarId!(name), blocks))
+        for (jVarId, blocks) in mem::replace(&mut possibleBlockConflictsMap, HashMap::new()).into_iter() {
+            possibleBlockConflicts.push((jVarId, blocks))
         }
 
         for &jVarId in liveJVarIds.iter() {
-            let name = juncVarIdToName!(jVarId);
+            let name = jVarId.get_name();
             {
             let jvar = &mut juncVars[*jVarId];
             // It conflicts with all other names live at this junction.
@@ -4036,7 +4023,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             // It conflicts with any output vars of successor blocks,
             // if they're assigned before it goes dead in that block.
             for &(otherJVarId, ref blocks) in possibleBlockConflicts.iter() {
-                let otherName = juncVarIdToName!(otherJVarId);
+                let otherName = otherJVarId.get_name();
                 for &block in blocks.iter() {
                     // RSNOTE: firstDeadLoc isn't set when a block doesn't do anything
                     // with a var but happens to be connected to a junction where one
@@ -4054,7 +4041,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                 let linkName = block.link.get(name).unwrap();
                 // RSNOTE: possible links may have already been added by previous blocks
                 juncVars[*jVarId].link.insert(linkName.clone());
-                juncVars[*nameToJuncVarId!(linkName)].link.insert(name.clone());
+                juncVars[*localids.get_localid(linkName)].link.insert(name.clone());
             }
         }
     }
@@ -4069,7 +4056,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     // Simple starting point: handle the most-conflicted variables first.
     // This seems to work pretty well.
 
-    let mut sortedJVarIds = Vec::<JuncVarId>::with_capacity(juncVars.len());
+    let mut sortedJVarIds = Vec::<LocalId>::with_capacity(juncVars.len());
     let mut jVarConfCounts = Vec::<usize>::with_capacity(numLocals);
     jVarConfCounts.resize(numLocals, 0);
     for jVar in juncVars.iter() {
@@ -4077,13 +4064,13 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         jVarConfCounts[*jVar.id] = jVar.conf.iter().filter(|&&conf| conf).count();
         sortedJVarIds.push(jVar.id)
     }
-    sortedJVarIds.sort_by(|&vi1: &JuncVarId, &vi2: &JuncVarId| {
+    sortedJVarIds.sort_by(|&vi1: &LocalId, &vi2: &LocalId| {
         // sort by # of conflicts
         let (i1, i2) = (*vi1, *vi2);
         use std::cmp::Ordering::{Less, Greater};
         if jVarConfCounts[i1] < jVarConfCounts[i2] { return Less }
         if jVarConfCounts[i1] == jVarConfCounts[i2] {
-            return if juncVarIdToName!(vi1) < juncVarIdToName!(vi2) { Less } else { Greater }
+            return if vi1.get_name() < vi2.get_name() { Less } else { Greater }
         }
         Greater
     });
@@ -4099,13 +4086,13 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     // one that works, and propagating the choice to linked/conflicted
     // variables as we go.
 
-    fn tryAssignRegister(name: &IString, reg: usize, juncVars: &mut Vec<JuncVar>, nameToJuncVarIdMap: &HashMap<IString, JuncVarId>) -> bool {
+    fn tryAssignRegister(name: &IString, reg: usize, juncVars: &mut Vec<JuncVar>, localids: &LocalIds) -> bool {
         // RSNOTE: pass juncVars in as a pointer as we do some aliasing which can't be expressed in the rust type system as safe
-        fn tryAssignRegisterInner(name: &IString, reg: usize, juncVars: *mut Vec<JuncVar>, nameToJuncVarIdMap: &HashMap<IString, JuncVarId>) -> bool {
+        fn tryAssignRegisterInner(name: &IString, reg: usize, juncVars: *mut Vec<JuncVar>, localids: &LocalIds) -> bool {
             // Try to assign the given register to the given variable,
             // and propagate that choice throughout the graph.
             // Returns true if successful, false if there was a conflict.
-            let jvid = nameToJuncVarId!(name, nameToJuncVarIdMap);
+            let jvid = localids.get_localid(name);
             let jv = unsafe { &mut (*juncVars)[*jvid] };
             if let Some(jvreg) = jv.reg {
                 return jvreg == reg
@@ -4126,24 +4113,24 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             // RSTODO: tryAssignRegister only mutates reg and conf (not link, nor does it remove
             // elements from juncvars) so this is safe to do
             for linkName in unsafe { (*juncVars)[*jvid].link.iter() } {
-                tryAssignRegisterInner(linkName, reg, juncVars, nameToJuncVarIdMap);
+                tryAssignRegisterInner(linkName, reg, juncVars, localids);
             }
             true
         }
-        tryAssignRegisterInner(name, reg, juncVars as *mut _, nameToJuncVarIdMap)
+        tryAssignRegisterInner(name, reg, juncVars as *mut _, localids)
     }
     for jVarId in sortedJVarIds.into_iter() {
         // It may already be assigned due to linked-variable propagation.
         if juncVars[*jVarId].reg.is_some() {
             continue
         }
-        let name = juncVarIdToName!(jVarId);
+        let name = jVarId.get_name();
         // Try to use existing registers first.
         let mut moar = false;
         {
         let allRegs = &allRegsByType[asmData.getType(name).unwrap().as_usize()];
         for &reg in allRegs.keys() {
-            if tryAssignRegister(name, reg, &mut juncVars, &nameToJuncVarIdMap) {
+            if tryAssignRegister(name, reg, &mut juncVars, &localids) {
                 moar = true;
                 break
             }
@@ -4151,7 +4138,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         }
         if moar { continue }
         // They're all taken, create a new one.
-        assert!(tryAssignRegister(name, createReg(name, &asmData, &mut allRegsByType), &mut juncVars, &nameToJuncVarIdMap))
+        assert!(tryAssignRegister(name, createReg(name, &asmData, &mut allRegsByType), &mut juncVars, &localids))
     }
 
     #[cfg(feature = "profiling")]
@@ -4176,12 +4163,12 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         let mut inputVars = HashSet::<&IString>::new();
         let mut inputDeadLoc = HashMap::<usize, usize>::new();
         let mut inputVarsByReg = HashMap::<usize, &IString>::new();
-        for localid in jExit.live.iter() {
-            let name = localid.get_name();
+        for &jVarId in jExit.live.iter() {
+            let name = jVarId.get_name();
             if !block.kill.contains(name) {
                 let isnew = inputVars.insert(name);
                 assert!(isnew);
-                let reg = juncVars[*nameToJuncVarId!(name)].reg.unwrap(); // 'input variable doesnt have a register');
+                let reg = juncVars[*jVarId].reg.unwrap(); // 'input variable doesnt have a register');
                 let prev1 = inputDeadLoc.insert(reg, *block.firstDeadLoc.get(name).unwrap());
                 let prev2 = inputVarsByReg.insert(reg, name);
                 assert!(prev1.is_none() && prev2.is_none());
@@ -4191,7 +4178,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             if !inputVars.contains(name) {
                 let isnew = inputVars.insert(name);
                 assert!(isnew);
-                let reg = juncVars[*nameToJuncVarId!(name)].reg.unwrap(); // 'input variable doesnt have a register');
+                let reg = juncVars[*localids.get_localid(name)].reg.unwrap(); // 'input variable doesnt have a register');
                 let prev1 = inputDeadLoc.insert(reg, *block.firstDeadLoc.get(name).unwrap());
                 let prev2 = inputVarsByReg.insert(reg, name);
                 assert!(prev1.is_none() && prev2.is_none());
@@ -4205,9 +4192,9 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         let mut assignedRegs = HashMap::<IString, usize>::new();
         let mut freeRegsByTypePre = allRegsByType.clone(); // XXX copy
         // Begin with all live vars assigned per the exit junction.
-        for localid in jExit.live.iter() {
-            let name = localid.get_name();
-            let reg = juncVars[*nameToJuncVarId!(name)].reg.unwrap(); // 'output variable doesnt have a register');
+        for &jVarId in jExit.live.iter() {
+            let name = jVarId.get_name();
+            let reg = juncVars[*jVarId].reg.unwrap(); // 'output variable doesnt have a register');
             let prev = assignedRegs.insert(name.clone(), reg);
             assert!(prev.is_none());
             freeRegsByTypePre[asmData.getType(name).unwrap().as_usize()].remove(&reg); // XXX assert?
@@ -4235,7 +4222,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
                         reg
                     } else if inputVars.contains(name) && nodeidx <= *block.firstDeadLoc.get(name).unwrap() {
                         // Assignment to an input variable, must use pre-assigned reg.
-                        let reg = juncVars[*nameToJuncVarId!(name)].reg.unwrap();
+                        let reg = juncVars[*localids.get_localid(name)].reg.unwrap();
                         let prev = assignedRegs.insert(name.clone(), reg);
                         assert!(prev.is_none());
                         for k in (0..freeRegs.len()).rev() {
@@ -4325,7 +4312,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     let (_, params, _) = asmData.func.getMutDefun();
     for param in params.iter_mut() {
         let allRegs = &allRegsByType[AsmData::getTypeFromLocals(&asmData.locals, param).unwrap().as_usize()];
-        *param = allRegs.get(&juncVars[*nameToJuncVarId!(param)].reg.unwrap()).unwrap().clone();
+        *param = allRegs.get(&juncVars[*localids.get_localid(param)].reg.unwrap()).unwrap().clone();
         let isnew = paramRegs.insert(param.clone());
         assert!(isnew)
     }

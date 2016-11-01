@@ -1,4 +1,4 @@
-#![feature(stmt_expr_attributes, const_fn, box_patterns, slice_patterns)]
+#![feature(stmt_expr_attributes, const_fn, box_patterns, slice_patterns, conservative_impl_trait)]
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 // Clippy
 //#![allow(explicit_iter_loop, explicit_into_iter_loop, float_cmp, cyclomatic_complexity, too_many_arguments)]
