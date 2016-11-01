@@ -4086,14 +4086,13 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     // one that works, and propagating the choice to linked/conflicted
     // variables as we go.
 
-    fn tryAssignRegister(name: &IString, reg: usize, juncVars: &mut Vec<JuncVar>, localids: &LocalIds) -> bool {
+    fn tryAssignRegister(jVarId: LocalId, reg: usize, juncVars: &mut Vec<JuncVar>, localids: &LocalIds) -> bool {
         // RSNOTE: pass juncVars in as a pointer as we do some aliasing which can't be expressed in the rust type system as safe
-        fn tryAssignRegisterInner(name: &IString, reg: usize, juncVars: *mut Vec<JuncVar>, localids: &LocalIds) -> bool {
+        fn tryAssignRegisterInner(jVarId: LocalId, reg: usize, juncVars: *mut Vec<JuncVar>, localids: &LocalIds) -> bool {
             // Try to assign the given register to the given variable,
             // and propagate that choice throughout the graph.
             // Returns true if successful, false if there was a conflict.
-            let jvid = localids.get_localid(name);
-            let jv = unsafe { &mut (*juncVars)[*jvid] };
+            let jv = unsafe { &mut (*juncVars)[*jVarId] };
             if let Some(jvreg) = jv.reg {
                 return jvreg == reg
             }
@@ -4112,12 +4111,12 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             // It's not an error if we can't.
             // RSTODO: tryAssignRegister only mutates reg and conf (not link, nor does it remove
             // elements from juncvars) so this is safe to do
-            for linkName in unsafe { (*juncVars)[*jvid].link.iter() } {
-                tryAssignRegisterInner(linkName, reg, juncVars, localids);
+            for linkName in unsafe { (*juncVars)[*jVarId].link.iter() } {
+                tryAssignRegisterInner(localids.get_localid(linkName), reg, juncVars, localids);
             }
             true
         }
-        tryAssignRegisterInner(name, reg, juncVars as *mut _, localids)
+        tryAssignRegisterInner(jVarId, reg, juncVars as *mut _, localids)
     }
     for jVarId in sortedJVarIds.into_iter() {
         // It may already be assigned due to linked-variable propagation.
@@ -4130,7 +4129,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         {
         let allRegs = &allRegsByType[asmData.getType(name).unwrap().as_usize()];
         for &reg in allRegs.keys() {
-            if tryAssignRegister(name, reg, &mut juncVars, &localids) {
+            if tryAssignRegister(jVarId, reg, &mut juncVars, &localids) {
                 moar = true;
                 break
             }
@@ -4138,7 +4137,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
         }
         if moar { continue }
         // They're all taken, create a new one.
-        assert!(tryAssignRegister(name, createReg(name, &asmData, &mut allRegsByType), &mut juncVars, &localids))
+        assert!(tryAssignRegister(jVarId, createReg(name, &asmData, &mut allRegsByType), &mut juncVars, &localids))
     }
 
     #[cfg(feature = "profiling")]
