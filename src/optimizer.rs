@@ -3949,7 +3949,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
     struct JuncVar<'a> {
         id: LocalId<'a>,
         conf: Vec<bool>,
-        link: BTreeSet<IString>,
+        link: BTreeSet<LocalId<'a>>,
         excl: HashSet<usize>,
         reg: Option<usize>,
         used: bool,
@@ -4040,8 +4040,9 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             for block in possibleBlockLinks.get(name).map(|v| v.as_slice()).unwrap_or(&[]).iter() {
                 let linkName = block.link.get(name).unwrap();
                 // RSNOTE: possible links may have already been added by previous blocks
-                juncVars[*jVarId].link.insert(linkName.clone());
-                juncVars[*localids.get_localid(linkName)].link.insert(name.clone());
+                let linkjVarId = localids.get_localid(linkName);
+                juncVars[*jVarId].link.insert(linkjVarId);
+                juncVars[*linkjVarId].link.insert(jVarId);
             }
         }
     }
@@ -4111,8 +4112,8 @@ pub fn registerizeHarder(ast: &mut AstValue) {
             // It's not an error if we can't.
             // RSTODO: tryAssignRegister only mutates reg and conf (not link, nor does it remove
             // elements from juncvars) so this is safe to do
-            for linkName in unsafe { (*juncVars)[*jVarId].link.iter() } {
-                tryAssignRegisterInner(localids.get_localid(linkName), reg, juncVars, localids);
+            for &linkjvarid in unsafe { (*juncVars)[*jVarId].link.iter() } {
+                tryAssignRegisterInner(linkjvarid, reg, juncVars, localids);
             }
             true
         }
