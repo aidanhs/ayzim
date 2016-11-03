@@ -53,11 +53,12 @@ include!(concat!(env!("OUT_DIR"), "/static_atoms.rs"));
 macro_rules! iss {
     [ $( $x:tt ),+, ] => { iss![ $( $x ),+ ] };
     [ $( $x:tt ),* ] => {{
-        let mut set = $crate::phf_builder::Set::new();
+        let mut set = $crate::std::collections::HashSet::new();
         $(
-            set.entry(is!($x));
+            let isnew = set.insert(is!($x));
+            assert!(isnew);
         )+
-        set.build()
+        set
     }};
 }
 

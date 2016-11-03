@@ -7,6 +7,7 @@
 
 // RSTODO: nom parser?
 
+use std::collections::{HashMap, HashSet};
 use std::ptr;
 use std::slice;
 use std::str;
@@ -14,16 +15,13 @@ use std::str;
 use libc;
 use libc::{c_char, c_int};
 
-use phf;
-use phf_builder;
-
 use super::IString;
 use super::cashew::AstNode;
 use super::cashew::builder;
 use super::num::{f64tou32, isInteger32};
 
 lazy_static! {
-    static ref KEYWORDS: phf::Set<IString> = iss![
+    static ref KEYWORDS: HashSet<IString> = iss![
         "var",
         "const",
         "function",
@@ -64,16 +62,17 @@ lazy_static! {
         OpClass::new(iss![","],               true,  OpClassTy::Binary),
     ];
 
-    static ref PRECEDENCES: Vec<phf::Map<IString, usize>> = {
+    static ref PRECEDENCES: Vec<HashMap<IString, usize>> = {
         let mut prec_builders: Vec<_> = (0..OpClassTy::Tertiary as usize+1).map(|_|
-            phf_builder::Map::new()
+            HashMap::new()
         ).collect();
         for (prec, oc) in OP_CLASSES.iter().enumerate() {
             for curr in &oc.ops {
-                prec_builders[oc.ty as usize].entry(curr.clone(), prec);
+                let prev = prec_builders[oc.ty as usize].insert(curr.clone(), prec);
+                assert!(prev.is_none());
             }
         }
-        prec_builders.into_iter().map(|builder| builder.build()).collect()
+        prec_builders
     };
 }
 
@@ -88,13 +87,13 @@ pub enum OpClassTy {
     Tertiary = 2,
 }
 pub struct OpClass {
-    ops: phf::Set<IString>,
+    ops: HashSet<IString>,
     rtl: bool,
     ty: OpClassTy,
 }
 
 impl OpClass {
-    fn new(ops: phf::Set<IString>, rtl: bool, ty: OpClassTy) -> OpClass {
+    fn new(ops: HashSet<IString>, rtl: bool, ty: OpClassTy) -> OpClass {
         OpClass { ops: ops, rtl: rtl, ty: ty }
     }
 

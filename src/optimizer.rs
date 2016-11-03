@@ -11,8 +11,6 @@ use std::time::{Duration, SystemTime};
 
 use odds::vec::VecExt;
 
-use phf;
-
 use serde_json;
 
 use super::IString;
@@ -861,14 +859,14 @@ fn measureCost(ast: &AstValue) -> isize {
 //=====================
 
 lazy_static! {
-    static ref USEFUL_BINARY_OPS: phf::Set<IString> = iss![
+    static ref USEFUL_BINARY_OPS: HashSet<IString> = iss![
         "<<",
         ">>",
         "|",
         "&",
         "^",
     ];
-    static ref COMPARE_OPS: phf::Set<IString> = iss![
+    static ref COMPARE_OPS: HashSet<IString> = iss![
         "<",
         "<=",
         ">",
@@ -880,18 +878,18 @@ lazy_static! {
         // RSTODO: present in emoptimizer, but don't think necessary?
         //"!==",
     ];
-    static ref BITWISE: phf::Set<IString> = iss![
+    static ref BITWISE: HashSet<IString> = iss![
         "|",
         "&",
         "^",
     ];
     // division is unsafe as it creates non-ints in JS; mod is unsafe as signs matter so we can't remove |0's; mul does not nest with +,- in asm
-    static ref SAFE_BINARY_OPS: phf::Set<IString> = iss![
+    static ref SAFE_BINARY_OPS: HashSet<IString> = iss![
         "+",
         "-",
     ];
     // binary ops that in asm must be coerced
-    static ref COERCION_REQUIRING_BINARIES: phf::Set<IString> = iss![
+    static ref COERCION_REQUIRING_BINARIES: HashSet<IString> = iss![
         "*",
         "/",
         "%",
@@ -899,7 +897,7 @@ lazy_static! {
 }
 
 lazy_static! {
-    static ref ASSOCIATIVE_BINARIES: phf::Set<IString> = iss![
+    static ref ASSOCIATIVE_BINARIES: HashSet<IString> = iss![
         "+",
         "*",
         "|",
@@ -1029,7 +1027,7 @@ fn simplifyCondition(node: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 // can happen in ALLOW_MEMORY_GROWTH mode
 
 lazy_static! {
-    static ref HEAP_NAMES: phf::Set<IString> = iss![
+    static ref HEAP_NAMES: HashSet<IString> = iss![
         "HEAP8",
         "HEAP16",
         "HEAP32",
@@ -4298,7 +4296,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
 
 // minified names generation
 lazy_static! {
-    static ref RESERVED: phf::Set<IString> = iss![
+    static ref RESERVED: HashSet<IString> = iss![
         "do",
         "if",
         "in",
