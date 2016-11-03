@@ -859,14 +859,14 @@ fn measureCost(ast: &AstValue) -> isize {
 //=====================
 
 lazy_static! {
-    static ref USEFUL_BINARY_OPS: HashSet<IString> = iss![
+    static ref USEFUL_BINARY_OPS: Vec<IString> = isv![
         "<<",
         ">>",
         "|",
         "&",
         "^",
     ];
-    static ref COMPARE_OPS: HashSet<IString> = iss![
+    static ref COMPARE_OPS: Vec<IString> = isv![
         "<",
         "<=",
         ">",
@@ -878,18 +878,18 @@ lazy_static! {
         // RSTODO: present in emoptimizer, but don't think necessary?
         //"!==",
     ];
-    static ref BITWISE: HashSet<IString> = iss![
+    static ref BITWISE: Vec<IString> = isv![
         "|",
         "&",
         "^",
     ];
     // division is unsafe as it creates non-ints in JS; mod is unsafe as signs matter so we can't remove |0's; mul does not nest with +,- in asm
-    static ref SAFE_BINARY_OPS: HashSet<IString> = iss![
+    static ref SAFE_BINARY_OPS: Vec<IString> = isv![
         "+",
         "-",
     ];
     // binary ops that in asm must be coerced
-    static ref COERCION_REQUIRING_BINARIES: HashSet<IString> = iss![
+    static ref COERCION_REQUIRING_BINARIES: Vec<IString> = isv![
         "*",
         "/",
         "%",
@@ -897,7 +897,7 @@ lazy_static! {
 }
 
 lazy_static! {
-    static ref ASSOCIATIVE_BINARIES: HashSet<IString> = iss![
+    static ref ASSOCIATIVE_BINARIES: Vec<IString> = isv![
         "+",
         "*",
         "|",
@@ -1027,7 +1027,7 @@ fn simplifyCondition(node: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 // can happen in ALLOW_MEMORY_GROWTH mode
 
 lazy_static! {
-    static ref HEAP_NAMES: HashSet<IString> = iss![
+    static ref HEAP_NAMES: Vec<IString> = isv![
         "HEAP8",
         "HEAP16",
         "HEAP32",
@@ -4296,7 +4296,7 @@ pub fn registerizeHarder(ast: &mut AstValue) {
 
 // minified names generation
 lazy_static! {
-    static ref RESERVED: HashSet<IString> = iss![
+    static ref RESERVED: Vec<IString> = isv![
         "do",
         "if",
         "in",

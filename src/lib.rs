@@ -50,16 +50,9 @@ const DEBUG: bool = false;
 include!(concat!(env!("OUT_DIR"), "/static_atoms.rs"));
 
 // RSTODO: not sure why tt can't be expr in these macros?
-macro_rules! iss {
-    [ $( $x:tt ),+, ] => { iss![ $( $x ),+ ] };
-    [ $( $x:tt ),* ] => {{
-        let mut set = $crate::std::collections::HashSet::new();
-        $(
-            let isnew = set.insert(is!($x));
-            assert!(isnew);
-        )+
-        set
-    }};
+macro_rules! isv {
+    [ $( $x:tt ),+, ] => { isv![ $( $x ),+ ] };
+    [ $( $x:tt ),* ] => { vec![ $( is!($x) ),+ ] };
 }
 
 macro_rules! printlnerr {

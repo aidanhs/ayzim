@@ -7,7 +7,7 @@
 
 // RSTODO: nom parser?
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ptr;
 use std::slice;
 use std::str;
@@ -21,7 +21,7 @@ use super::cashew::builder;
 use super::num::{f64tou32, isInteger32};
 
 lazy_static! {
-    static ref KEYWORDS: HashSet<IString> = iss![
+    static ref KEYWORDS: Vec<IString> = isv![
         "var",
         "const",
         "function",
@@ -47,19 +47,19 @@ lazy_static! {
     ];
 
     static ref OP_CLASSES: Vec<OpClass> = vec![
-        OpClass::new(iss!["."],               false, OpClassTy::Binary),
-        OpClass::new(iss!["!","~","+","-"],   true,  OpClassTy::Prefix),
-        OpClass::new(iss!["*","/","%"],       false, OpClassTy::Binary),
-        OpClass::new(iss!["+","-"],           false, OpClassTy::Binary),
-        OpClass::new(iss!["<<",">>",">>>"],   false, OpClassTy::Binary),
-        OpClass::new(iss!["<","<=",">",">="], false, OpClassTy::Binary),
-        OpClass::new(iss!["==","!="],         false, OpClassTy::Binary),
-        OpClass::new(iss!["&"],               false, OpClassTy::Binary),
-        OpClass::new(iss!["^"],               false, OpClassTy::Binary),
-        OpClass::new(iss!["|"],               false, OpClassTy::Binary),
-        OpClass::new(iss!["?",":"],           true,  OpClassTy::Tertiary),
-        OpClass::new(iss!["="],               true,  OpClassTy::Binary),
-        OpClass::new(iss![","],               true,  OpClassTy::Binary),
+        OpClass::new(isv!["."],               false, OpClassTy::Binary),
+        OpClass::new(isv!["!","~","+","-"],   true,  OpClassTy::Prefix),
+        OpClass::new(isv!["*","/","%"],       false, OpClassTy::Binary),
+        OpClass::new(isv!["+","-"],           false, OpClassTy::Binary),
+        OpClass::new(isv!["<<",">>",">>>"],   false, OpClassTy::Binary),
+        OpClass::new(isv!["<","<=",">",">="], false, OpClassTy::Binary),
+        OpClass::new(isv!["==","!="],         false, OpClassTy::Binary),
+        OpClass::new(isv!["&"],               false, OpClassTy::Binary),
+        OpClass::new(isv!["^"],               false, OpClassTy::Binary),
+        OpClass::new(isv!["|"],               false, OpClassTy::Binary),
+        OpClass::new(isv!["?",":"],           true,  OpClassTy::Tertiary),
+        OpClass::new(isv!["="],               true,  OpClassTy::Binary),
+        OpClass::new(isv![","],               true,  OpClassTy::Binary),
     ];
 
     static ref PRECEDENCES: Vec<HashMap<IString, usize>> = {
@@ -87,13 +87,13 @@ pub enum OpClassTy {
     Tertiary = 2,
 }
 pub struct OpClass {
-    ops: HashSet<IString>,
+    ops: Vec<IString>,
     rtl: bool,
     ty: OpClassTy,
 }
 
 impl OpClass {
-    fn new(ops: HashSet<IString>, rtl: bool, ty: OpClassTy) -> OpClass {
+    fn new(ops: Vec<IString>, rtl: bool, ty: OpClassTy) -> OpClass {
         OpClass { ops: ops, rtl: rtl, ty: ty }
     }
 
