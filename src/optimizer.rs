@@ -861,53 +861,49 @@ fn measureCost(ast: &AstValue) -> isize {
 // Optimization passes
 //=====================
 
-lazy_static! {
-    static ref USEFUL_BINARY_OPS: Vec<IString> = isv![
-        "<<",
-        ">>",
-        "|",
-        "&",
-        "^",
-    ];
-    static ref COMPARE_OPS: Vec<IString> = isv![
-        "<",
-        "<=",
-        ">",
-        ">=",
-        "==",
-        // RSTODO: should be ===?
-        //"==",
-        "!=",
-        // RSTODO: present in emoptimizer, but don't think necessary?
-        //"!==",
-    ];
-    static ref BITWISE: Vec<IString> = isv![
-        "|",
-        "&",
-        "^",
-    ];
-    // division is unsafe as it creates non-ints in JS; mod is unsafe as signs matter so we can't remove |0's; mul does not nest with +,- in asm
-    static ref SAFE_BINARY_OPS: Vec<IString> = isv![
-        "+",
-        "-",
-    ];
-    // binary ops that in asm must be coerced
-    static ref COERCION_REQUIRING_BINARIES: Vec<IString> = isv![
-        "*",
-        "/",
-        "%",
-    ];
-}
+static USEFUL_BINARY_OPS: &'static [IString] = issl![
+    "<<",
+    ">>",
+    "|",
+    "&",
+    "^",
+];
+static COMPARE_OPS: &'static [IString] = issl![
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    // RSTODO: should be ===?
+    //"==",
+    "!=",
+    // RSTODO: present in emoptimizer, but don't think necessary?
+    //"!==",
+];
+static BITWISE: &'static [IString] = issl![
+    "|",
+    "&",
+    "^",
+];
+// division is unsafe as it creates non-ints in JS; mod is unsafe as signs matter so we can't remove |0's; mul does not nest with +,- in asm
+static SAFE_BINARY_OPS: &'static [IString] = issl![
+    "+",
+    "-",
+];
+// binary ops that in asm must be coerced
+static COERCION_REQUIRING_BINARIES: &'static [IString] = issl![
+    "*",
+    "/",
+    "%",
+];
 
-lazy_static! {
-    static ref ASSOCIATIVE_BINARIES: Vec<IString> = isv![
-        "+",
-        "*",
-        "|",
-        "&",
-        "^",
-   ];
-}
+static ASSOCIATIVE_BINARIES: &'static [IString] = issl![
+    "+",
+    "*",
+    "|",
+    "&",
+    "^",
+];
 
 fn isBreakCapturer(node: &AstValue) -> bool {
     match *node { Do(..) | While(..) | Switch(..) => true, _ => false }
@@ -1029,18 +1025,16 @@ fn simplifyCondition(node: &mut AstValue, asmFloatZero: &mut Option<IString>) {
 // In memSafe mode, we are more careful and assume functions can replace HEAP and FUNCTION_TABLE, which
 // can happen in ALLOW_MEMORY_GROWTH mode
 
-lazy_static! {
-    static ref HEAP_NAMES: Vec<IString> = isv![
-        "HEAP8",
-        "HEAP16",
-        "HEAP32",
-        "HEAPU8",
-        "HEAPU16",
-        "HEAPU32",
-        "HEAPF32",
-        "HEAPF64",
-   ];
-}
+static HEAP_NAMES: &'static [IString] = issl![
+    "HEAP8",
+    "HEAP16",
+    "HEAP32",
+    "HEAPU8",
+    "HEAPU16",
+    "HEAPU32",
+    "HEAPF32",
+    "HEAPF64",
+];
 
 fn isTempDoublePtrAccess(node: &AstValue) -> bool { // these are used in bitcasts; they are not really affecting memory, and should cause no invalidation
     assert!(node.isSub());
@@ -4357,25 +4351,23 @@ pub fn registerizeHarder(ast: &mut AstValue) {
 // end registerizeHarder
 
 // minified names generation
-lazy_static! {
-    static ref RESERVED: Vec<IString> = isv![
-        "do",
-        "if",
-        "in",
-        "for",
-        "new",
-        "try",
-        "var",
-        "env",
-        "let",
-        "case",
-        "else",
-        "enum",
-        "this",
-        "void",
-        "with",
-   ];
-}
+static RESERVED: &'static [IString] = issl![
+    "do",
+    "if",
+    "in",
+    "for",
+    "new",
+    "try",
+    "var",
+    "env",
+    "let",
+    "case",
+    "else",
+    "enum",
+    "this",
+    "void",
+    "with",
+];
 const VALID_MIN_INITS: &'static [u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";
 const VALID_MIN_LATERS: &'static [u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$0123456789";
 

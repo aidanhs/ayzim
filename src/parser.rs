@@ -20,54 +20,56 @@ use super::cashew::AstNode;
 use super::cashew::builder;
 use super::num::{f64tou32, isInteger32};
 
+static KEYWORDS: &'static [IString] = issl![
+    "var",
+    "const",
+    "function",
+    "if",
+    "else",
+    "do",
+    "while",
+    "for",
+    "break",
+    "continue",
+    "return",
+    "switch",
+    "case",
+    "default",
+    "throw",
+    "try",
+    "catch",
+    "finally",
+    "true",
+    "false",
+    "null",
+    "new",
+];
+
+static OP_CLASSES: &'static [OpClass] = &[
+    OpClass::new(issl!["."],               false, OpClassTy::Binary),
+    OpClass::new(issl!["!","~","+","-"],   true,  OpClassTy::Prefix),
+    OpClass::new(issl!["*","/","%"],       false, OpClassTy::Binary),
+    OpClass::new(issl!["+","-"],           false, OpClassTy::Binary),
+    OpClass::new(issl!["<<",">>",">>>"],   false, OpClassTy::Binary),
+    OpClass::new(issl!["<","<=",">",">="], false, OpClassTy::Binary),
+    OpClass::new(issl!["==","!="],         false, OpClassTy::Binary),
+    OpClass::new(issl!["&"],               false, OpClassTy::Binary),
+    OpClass::new(issl!["^"],               false, OpClassTy::Binary),
+    OpClass::new(issl!["|"],               false, OpClassTy::Binary),
+    OpClass::new(issl!["?",":"],           true,  OpClassTy::Tertiary),
+    OpClass::new(issl!["="],               true,  OpClassTy::Binary),
+    OpClass::new(issl![","],               true,  OpClassTy::Binary),
+];
+
+// RSTODO: convert into const fn when some of these become const fns, see
+// https://github.com/rust-lang/rust/issues/24111, then remove lazy_static?
 lazy_static! {
-    static ref KEYWORDS: Vec<IString> = isv![
-        "var",
-        "const",
-        "function",
-        "if",
-        "else",
-        "do",
-        "while",
-        "for",
-        "break",
-        "continue",
-        "return",
-        "switch",
-        "case",
-        "default",
-        "throw",
-        "try",
-        "catch",
-        "finally",
-        "true",
-        "false",
-        "null",
-        "new",
-    ];
-
-    static ref OP_CLASSES: Vec<OpClass> = vec![
-        OpClass::new(isv!["."],               false, OpClassTy::Binary),
-        OpClass::new(isv!["!","~","+","-"],   true,  OpClassTy::Prefix),
-        OpClass::new(isv!["*","/","%"],       false, OpClassTy::Binary),
-        OpClass::new(isv!["+","-"],           false, OpClassTy::Binary),
-        OpClass::new(isv!["<<",">>",">>>"],   false, OpClassTy::Binary),
-        OpClass::new(isv!["<","<=",">",">="], false, OpClassTy::Binary),
-        OpClass::new(isv!["==","!="],         false, OpClassTy::Binary),
-        OpClass::new(isv!["&"],               false, OpClassTy::Binary),
-        OpClass::new(isv!["^"],               false, OpClassTy::Binary),
-        OpClass::new(isv!["|"],               false, OpClassTy::Binary),
-        OpClass::new(isv!["?",":"],           true,  OpClassTy::Tertiary),
-        OpClass::new(isv!["="],               true,  OpClassTy::Binary),
-        OpClass::new(isv![","],               true,  OpClassTy::Binary),
-    ];
-
     static ref PRECEDENCES: Vec<HashMap<IString, usize>> = {
         let mut prec_builders: Vec<_> = (0..OpClassTy::Tertiary as usize+1).map(|_|
             HashMap::new()
         ).collect();
         for (prec, oc) in OP_CLASSES.iter().enumerate() {
-            for curr in &oc.ops {
+            for curr in oc.ops.iter() {
                 let prev = prec_builders[oc.ty as usize].insert(curr.clone(), prec);
                 assert!(prev.is_none());
             }
@@ -87,13 +89,13 @@ pub enum OpClassTy {
     Tertiary = 2,
 }
 pub struct OpClass {
-    ops: Vec<IString>,
+    ops: &'static [IString],
     rtl: bool,
     ty: OpClassTy,
 }
 
 impl OpClass {
-    fn new(ops: Vec<IString>, rtl: bool, ty: OpClassTy) -> OpClass {
+    const fn new(ops: &'static [IString], rtl: bool, ty: OpClassTy) -> OpClass {
         OpClass { ops: ops, rtl: rtl, ty: ty }
     }
 

@@ -1,4 +1,4 @@
-#![feature(stmt_expr_attributes, const_fn, box_patterns, slice_patterns, conservative_impl_trait)]
+#![feature(stmt_expr_attributes, const_fn, box_patterns, slice_patterns, conservative_impl_trait, drop_types_in_const)]
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 // Clippy
 //#![allow(explicit_iter_loop, explicit_into_iter_loop, float_cmp, cyclomatic_complexity, too_many_arguments)]
@@ -48,9 +48,9 @@ const DEBUG: bool = false;
 include!(concat!(env!("OUT_DIR"), "/static_atoms.rs"));
 
 // RSTODO: not sure why tt can't be expr in these macros?
-macro_rules! isv {
-    [ $( $x:tt ),+, ] => { isv![ $( $x ),+ ] };
-    [ $( $x:tt ),* ] => { vec![ $( is!($x) ),+ ] };
+macro_rules! issl {
+    [ $( $x:tt ),+, ] => { issl![ $( $x ),+ ] };
+    [ $( $x:tt ),* ] => { &[ $( is!($x) ),+ ] };
 }
 
 macro_rules! printlnerr {
