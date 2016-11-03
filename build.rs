@@ -11,9 +11,9 @@ fn main() {
     let path = Path::new(&std::env::var("OUT_DIR").unwrap()).join("static_atoms.rs");
     let mut file = BufWriter::new(File::create(&path).unwrap());
 
-    let mut builder = string_cache_codegen::AtomSetBuilder::new();
+    let mut builder = string_cache_codegen::AtomType::new("IString", "is!");
     for atom in static_atom_list::ATOMS {
         builder.atom(atom);
     }
-    builder.build(&mut file, "IString", "ISTRING_SET", "is");
+    builder.write_to(&mut file).unwrap();
 }

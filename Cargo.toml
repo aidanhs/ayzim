@@ -16,10 +16,7 @@ lazy_static = "0.1.*"
 odds = "0.2.11"
 serde = "0.8"
 serde_json = "0.8"
-#string_cache = { path = "../string-cache", features = ["unstable"] }
-string_cache = { git = "https://github.com/aidanhs/string-cache.git", branch = "aphs-ayzim-0.1", features = ["unstable"] }
-phf = "0.7.15"
-phf_builder = "0.7.15"
+string_cache = { version = "0.3.0", features = ["unstable"] }
 smallvec = "0.1.7"
 libc = "0.2.11"
 cfor = "1.1"
@@ -31,8 +28,10 @@ interpolate_idents = "0.1.1"
 ayzim-macros = "0.1.0"
 
 [build-dependencies]
-#string_cache_codegen = { path = "../string-cache/string-cache-codegen" }
-string_cache_codegen = { git = "https://github.com/aidanhs/string-cache.git", branch = "aphs-ayzim-0.1" }
+string_cache_codegen = "0.3.1"
 
 [features]
 profiling = []
+
+[profile.release]
+debug-assertions = true

@@ -1,5 +1,5 @@
 #![feature(stmt_expr_attributes, const_fn, box_patterns, slice_patterns)]
-#![allow(non_snake_case, non_camel_case_types)]
+#![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 // Clippy
 //#![allow(explicit_iter_loop, explicit_into_iter_loop, float_cmp, cyclomatic_complexity, too_many_arguments)]
 
@@ -18,8 +18,6 @@ extern crate string_cache;
 extern crate serde;
 extern crate serde_json;
 extern crate odds;
-extern crate phf;
-extern crate phf_builder;
 extern crate smallvec;
 extern crate typed_arena;
 extern crate libc;
