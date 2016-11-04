@@ -8,7 +8,6 @@ use odds::vec::VecExt;
 use serde;
 use serde_json;
 use serde_json::error as serde_error;
-use serde_json::Value;
 use smallvec::SmallVec;
 //use typed_arena;
 
@@ -166,14 +165,10 @@ AstValue!{
 }
 
 impl AstValue {
-    // RSTODO: implement serde deserialize rather than using serde_json since
-    // this recursive method seems to perform abysmally (particularly mem
-    // consumption) with huge json files. Maybe bench serde against
-    // https://github.com/maciejhirsz/json-rust?
     pub fn parse_json(curr: &[u8]) -> AstNode {
         // RSNOTE: for some reason, emscripten tacks on "// EMSCRIPTEN_GENERATED_FUNCTIONS"
         // to json. This is wrong but the original optimizer handles it, so we must too.
-        let json: Value = match serde_json::from_slice(curr) {
+        Box::new(match serde_json::from_slice(curr) {
             Ok(json) => json,
             Err(serde_error::Error::Syntax(serde_error::ErrorCode::TrailingCharacters, line, col)) => {
                 // RSNOTE: serde read.rs position_of_index
@@ -197,55 +192,6 @@ impl AstValue {
                 serde_json::from_slice(&curr[..pos-1]).unwrap()
             },
             _ => panic!(),
-        };
-        AstValue::from_json(&json)
-    }
-    pub fn from_json(value: &Value) -> AstNode {
-        fn p(v: &Value) -> AstNode { AstValue::from_json(v) } // parse
-        fn b<T>(v: T) -> Box<T> { Box::new(v) } // box
-        fn mkemptyarr() -> Vec<AstNode> { vec![] }
-        fn mkarr(v: &Value) -> Vec<AstNode> {
-            v.as_array().unwrap().iter().map(|e| p(e)).collect()
-        }
-        fn mkstr(v: &Value) -> IString { IString::from(v.as_str().unwrap()) } // str
-        fn maybe_parse(v: &Value) -> Option<AstNode> {
-            if v.is_null() { None } else { Some(p(v)) }
-        }
-        fn mklabel(label: &Value) -> Option<IString> {
-            if label.is_null() { None } else { Some(mkstr(label)) }
-        }
-        let arr = value.as_array().unwrap();
-        Box::new(match (arr[0].as_str().unwrap(), &arr[1..]) {
-            ("array", &[ref arr]) => Array(b(mkarr(arr))),
-            ("assign", &[ref b, ref left, ref right]) => { assert!(b.as_bool().unwrap()); Assign(p(left), p(right)) },
-            ("binary", &[ref op, ref left, ref right]) => Binary(mkstr(op), p(left), p(right)),
-            ("block", &[]) => Block(b(mkemptyarr())),
-            ("block", &[ref stats]) => Block(b(mkarr(stats))),
-            ("break", &[ref label]) => Break(mklabel(label)),
-            ("call", &[ref fnexpr, ref params]) => Call(p(fnexpr), b(mkarr(params))),
-            ("conditional", &[ref cond, ref iftrue, ref iffalse]) => Conditional(p(cond), p(iftrue), p(iffalse)),
-            ("continue", &[ref label]) => Continue(mklabel(label)),
-            ("defun", &[ref fnname, ref params, ref stats]) => Defun(mkstr(fnname), b(params.as_array().unwrap().iter().map(mkstr).collect()), b(mkarr(stats))),
-            ("do", &[ref cond, ref body]) => Do(p(cond), p(body)),
-            ("dot", &[ref obj, ref key]) => Dot(p(obj), mkstr(key)),
-            ("if", &[ref cond, ref iftrue]) => If(p(cond), p(iftrue), None),
-            ("if", &[ref cond, ref iftrue, ref maybeiffalse]) => If(p(cond), p(iftrue), maybe_parse(maybeiffalse)),
-            ("label", &[ref label, ref body]) => Label(mkstr(label), p(body)),
-            ("name", &[ref name]) => Name(mkstr(name)),
-            ("new", &[ref call]) => New(p(call)),
-            ("num", &[ref num]) => Num(num.as_f64().unwrap()),
-            ("object", &[ref keyvals]) => Object(b(keyvals.as_array().unwrap().iter().map(|kv| { let kv = kv.as_array().unwrap(); (mkstr(&kv[0]), p(&kv[1])) }).collect())),
-            ("return", &[ref retval]) => Return(maybe_parse(retval)),
-            ("seq", &[ref left, ref right]) => Seq(p(left), p(right)),
-            ("stat", &[ref stat]) => Stat(p(stat)),
-            ("string", &[ref string]) => Str(mkstr(string)),
-            ("sub", &[ref target, ref index]) => Sub(p(target), p(index)),
-            ("switch", &[ref input, ref cases]) => Switch(p(input), b(cases.as_array().unwrap().iter().map(|casedef| { let casedef = casedef.as_array().unwrap(); (maybe_parse(&casedef[0]), mkarr(&casedef[1])) }).collect())),
-            ("toplevel", &[ref stats]) => Toplevel(b(mkarr(stats))),
-            ("unary-prefix", &[ref op, ref right]) => UnaryPrefix(mkstr(op), p(right)),
-            ("var", &[ref vardefs]) => Var(b(vardefs.as_array().unwrap().iter().map(|vardef| { let vardef = vardef.as_array().unwrap(); (mkstr(&vardef[0]), maybe_parse(&vardef[1])) }).collect())),
-            ("while", &[ref condition, ref body]) => While(p(condition), p(body)),
-            (v1, v2) => panic!(format!("{}: {} children", v1, v2.len())),
         })
     }
 
@@ -338,6 +284,56 @@ impl serde::Serialize for AstValue {
             Var(ref vars) => s!("var", vars),
             While(ref cond, ref body) => s!("while", cond, body),
         }
+    }
+}
+
+impl serde::Deserialize for AstValue {
+    fn deserialize<D>(deserializer: &mut D) -> Result<AstValue, D::Error> where D: serde::Deserializer {
+        use serde::de::{SeqVisitor, Visitor};
+        struct AstValueSeqVisitor;
+        impl Visitor for AstValueSeqVisitor {
+            type Value = AstValue;
+            fn visit_seq<V>(&mut self, mut visitor: V) -> Result<AstValue, V::Error> where V: SeqVisitor {
+                macro_rules! v {
+                    () => { try!(visitor.visit()).unwrap() };
+                    (maybe) => { try!(visitor.visit()) };
+                }
+                let tag: String = v!();
+                let res = Ok(match tag.as_str() {
+                    "array" => Array(v!()),
+                    "assign" => { assert!(true == v!()); Assign(v!(), v!()) },
+                    "binary" => Binary(v!(), v!(), v!()),
+                    "block" => Block(v!(maybe).unwrap_or_else(|| Box::new(Vec::new()))),
+                    "break" => Break(v!()),
+                    "call" => Call(v!(), v!()),
+                    "conditional" => Conditional(v!(), v!(), v!()),
+                    "continue" => Continue(v!()),
+                    "defun" => Defun(v!(), v!(), v!()),
+                    "do" => Do(v!(), v!()),
+                    "dot" => Dot(v!(), v!()),
+                    "if" => If(v!(), v!(), v!(maybe).unwrap_or(None)),
+                    "label" => Label(v!(), v!()),
+                    "name" => Name(v!()),
+                    "new" => New(v!()),
+                    "num" => Num(v!()),
+                    "object" => Object(v!()),
+                    "return" => Return(v!()),
+                    "seq" => Seq(v!(), v!()),
+                    "stat" => Stat(v!()),
+                    "string" => Str(v!()),
+                    "sub" => Sub(v!(), v!()),
+                    "switch" => Switch(v!(), v!()),
+                    "toplevel" => Toplevel(v!()),
+                    "unary-prefix" => UnaryPrefix(v!(), v!()),
+                    "var" => Var(v!()),
+                    "while" => While(v!(), v!()),
+                    tag => panic!(format!("{}", tag)),
+                });
+                try!(visitor.end());
+                res
+            }
+        }
+        deserializer.deserialize_seq(AstValueSeqVisitor)
     }
 }
 
