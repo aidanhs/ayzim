@@ -1,6 +1,6 @@
 [root]
 name = "ayzim"
-version = "0.1.1"
+version = "0.1.2-pre"
 dependencies = [
  "ayzim-macros 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cfor 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
