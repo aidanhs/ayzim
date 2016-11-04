@@ -1,0 +1,56 @@
+language: rust
+cache: cargo
+
+env:
+  global:
+    - PROJECT_NAME=ayzim
+
+matrix:
+  include:
+    - os: linux
+      rust: nightly-2016-10-27
+      env: TARGET=x86_64-unknown-linux-musl
+      dist: trusty
+      sudo: required
+      addons:
+        apt:
+          packages:
+          - musl
+          - musl-dev
+          - musl-tools
+
+before_install:
+  - export PATH="$PATH:$HOME/.cargo/bin"
+
+install:
+  - bash ci/install.sh
+
+script:
+  - bash ci/script.sh
+
+before_deploy:
+  - bash ci/before_deploy.sh
+
+deploy:
+  provider: releases
+  api_key:
+    secure: R4QxUb+nWNDbWxzSKJ5ZVUKIYtwI5Qqgv6hIMPKitDwIMv8oXtOTRS5klcdS4LVHNe9pMgtd8K7/Wmen20tr4cHyxnZttENCw6vilSOUhrAEl2YtB64ulmIz4nWm4ri6G9IjD8bvJJSJKHiSGTB8ljNm/LtmklvyF71fPAlZX2H8eoLCYA/KH8FO04Yyy9ySomZb0CMfD5r60wzU/EJC+GOiSYZjn0mXYSSr/yJTdSDCLCW3xU0W/X+8ARD93XUNQT6U3AZXLNxi6nC00+l2RCFK1+Fz0j1TuAKH1Bj/2LcM+quBLe0VXapEQYaPulh4+UeTuT3qMkQ5MsjQhubjiUEY0yQVBg+HgF5zjr+HSYGoijBAzCqQsYfmd4Uw9JATWI90iyt6lV6RtIBRAPwXEyfdjCbL5XVV4r9tqFPeLACau5x7YCkKIjivwkiQk7URACLDW8hsCtPxzc18uqarhbWbiizZTVQNdOHrVDX0oMLaBBuPb9yfcd+AC8wHQc3WW+6NsxfpYZVb1kOhPhhUFZMmEHrbWIJchXYrxdcB9PJCcrhw5W3Dfs9a+Cc5bJRRQnwv5CBFsiorKfere3DA1WWKlqcxGIcMuWHruOLr+8tS0VsxUYjX6KfCqsucQ3pYW2+qGtnhcer0MT8SS+scd87H3jOdJrQc46eEFffl8jM=
+  file_glob: true
+  file: ${PROJECT_NAME}-${TRAVIS_TAG}-${TARGET}.*
+  # don't delete the artifacts from previous phases
+  skip_cleanup: true
+  # deploy when a new tag is pushed
+  on:
+    tags: true
+
+branches:
+  only:
+    # Pushes and PR to the master branch
+    - master
+    # IMPORTANT Ruby regex to match tags. Required, or travis won't trigger deploys when a new tag
+    # is pushed. This regex matches semantic versions like 1.2.3-rc4+2016.02.22
+    - /^\d+\.\d+\.\d+.*$/
+
+notifications:
+  email:
+    on_success: never
