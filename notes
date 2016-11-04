@@ -6,6 +6,8 @@ why does panic in match arms in rust not type check as *, whereas it does for fu
 
 DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling && cp ./target/$([ $DEBUG = 1 ] && echo debug || echo release)/ayzim-opt ~/Desktop/emscripten/
 
+cargo build --release --target x86_64-unknown-linux-musl
+
  - make sure to always assert that the last element was/wasn't present (or add
    a note that it's not appropriate) when inserting or deleting from sets and
    maps
