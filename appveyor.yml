@@ -30,14 +30,12 @@ before_deploy:
   # Generate artifacts for release
   - cargo build --release
   - mkdir staging
-  # TODO update this part to copy the artifacts that make sense for your project
   - copy target\release\ayzim-opt.exe staging
   - cd staging
   - 7z a ../%PROJECT_NAME%-%APPVEYOR_REPO_TAG_NAME%-%TARGET%.zip *
   - appveyor PushArtifact ../%PROJECT_NAME%-%APPVEYOR_REPO_TAG_NAME%-%TARGET%.zip
 
 deploy:
-  description: 'Windows release'
   # All the zipped artifacts will be deployed
   artifact: /.*\.zip/
   auth_token:
@@ -50,3 +48,4 @@ deploy:
 branches:
   only:
     - master
+    - /^\d+\.\d+\.\d+.*$/
