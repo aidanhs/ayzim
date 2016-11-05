@@ -1,6 +1,6 @@
 [package]
 name = "ayzim"
-version = "0.1.2-pre"
+version = "0.1.2"
 authors = ["Aidan Hobson Sayers <aidanhs@cantab.net>"]
 description = "A Rust rewrite of the Emscripten asm.js optimizer"
 license = "MIT/NCSA"
