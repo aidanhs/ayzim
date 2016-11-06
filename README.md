@@ -9,6 +9,8 @@ Ayzim consumes significantly less memory than Emopt - I've seen between 2x and 6
 
 The original motivation for ayzim was to keep my machine usable when trying to optimise what was (probably) the largest asm.js file ever generated (~700MB). The memory consumption would end up swapping out my desktop environment if I allowed it to run everything in parallel (as it does by default), which was annoying. Clearly the correct solution was to rewrite Emopt rather than just buying a new machine :)
 
+Release announcement thread on the emscripten mailing list (with a few technical details in one of my replies): https://groups.google.com/d/msg/emscripten-discuss/pFTcf3lsL3M/W_pucD8MAwAJ
+
 The future
 ----------
 
