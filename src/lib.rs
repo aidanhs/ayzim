@@ -32,6 +32,7 @@ use std::fs;
 use std::io;
 use std::io::{Read, Write};
 use std::mem;
+use std::thread;
 #[cfg(feature = "profiling")]
 use std::time;
 
@@ -133,6 +134,16 @@ static mut minifyWhitespace: bool = false;
 static mut last: bool = false;
 
 pub fn libmain() {
+    thread::Builder::new()
+        .name("worker".into())
+        .stack_size(8*1024*1024)
+        .spawn(libmain2)
+        .expect("worker thread failed to spawn")
+        .join()
+        .expect("worker thread panicked")
+}
+
+fn libmain2() {
     assert!(mem::size_of::<AstValue>() == 32);
 
     let args: Vec<String> = env::args().collect();
@@ -232,6 +243,31 @@ pub fn libmain() {
             doc.stringify(&mut io::stderr(), false);
             printlnerr!("");
         }
+    }
+
+    use cashew::{traverseFunctionsMut, traversePrePostMut};
+    use std::cell::Cell;
+    let mut maxfname = None;
+    let mut maxfnamedepth = 0;
+    traverseFunctionsMut(&mut doc, |func: &mut AstValue| {
+        let curdepth = Cell::new(0);
+        let mut maxdepth = 0;
+        traversePrePostMut(func, |_| {
+            curdepth.set(curdepth.get()+1)
+        }, |_| {
+            use std::cmp;
+            let depth = curdepth.get();
+            maxdepth = cmp::max(maxdepth, depth);
+            curdepth.set(depth-1)
+        });
+        if maxdepth > maxfnamedepth {
+            let (fname, _, _) = func.getDefun();
+            maxfname = Some(fname.to_string());
+            maxfnamedepth = maxdepth;
+        }
+    });
+    if let Some(fname) = maxfname {
+        printlnerr!("==== DEPTH {} FOR {}", maxfnamedepth, fname)
     }
 
     // RSTODO: add profiling of emit to emoptimizer
