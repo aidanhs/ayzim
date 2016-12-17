@@ -22,8 +22,8 @@ extern crate smallvec;
 extern crate libc;
 extern crate conv;
 
-#[cfg(feature = "profiling")]
-extern crate vgrs;
+// #[cfg(feature = "profiling")]
+// extern crate vgrs;
 // unsafe { ::vgrs::callgrind::start_instrumentation() };
 // unsafe { ::vgrs::callgrind::stop_instrumentation() };
 
@@ -136,7 +136,7 @@ static mut last: bool = false;
 pub fn libmain() {
     thread::Builder::new()
         .name("worker".into())
-        .stack_size(8*1024*1024)
+        .stack_size(10*1024*1024)
         .spawn(libmain2)
         .expect("worker thread failed to spawn")
         .join()

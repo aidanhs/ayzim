@@ -32,7 +32,8 @@ ayzim-macros = "0.1.0"
 string_cache_codegen = "0.3.1"
 
 [features]
-profiling = ["vgrs"]
+#profiling = ["vgrs"]
+profiling = []
 
 [profile.release]
 opt-level = 3
