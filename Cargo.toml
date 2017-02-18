@@ -24,7 +24,7 @@ cfor = "1.1"
 conv = "0.3.2"
 vgrs = { version = "0.1", optional = true }
 
-interpolate_idents = "0.1.1"
+interpolate_idents = "0.1.4"
 #ayzim-macros = { path = "ayzim-macros" }
 ayzim-macros = "0.1.0"
 
