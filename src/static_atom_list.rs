@@ -29,7 +29,6 @@ pub static ATOMS: &'static [&'static str] = &[
     "nan",
     "tempRet0",
     "unary-prefix",
-    "unary-postfix",
     "Math_fround",
     "SIMD_Float32x4",
     "SIMD_Float64x2",
