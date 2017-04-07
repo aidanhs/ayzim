@@ -196,7 +196,7 @@ pub fn libmain() {
             (profstg, time::SystemTime::now())
         };
         let mut worked = true;
-        let doc = &mut *doc;
+        let doc = &mut doc;
         match arg.as_str() {
             "asm" |
             "asmPreciseF32" |

@@ -2,6 +2,8 @@ dd76827ca5ec408035f1deea91793f102d71487a of emscripten
 
 RSTODO, RSNOTE
 
+# asm receiveJSON localCSE safeLabelSetting emitJSON
+
 why does panic in match arms in rust not type check as *, whereas it does for functions? see setBlockContent
 
 DEBUG=1 && cargo build $([ $DEBUG = 1 ] || echo --release) --features profiling && cp ./target/$([ $DEBUG = 1 ] && echo debug || echo release)/ayzim-opt ~/Desktop/emscripten/
