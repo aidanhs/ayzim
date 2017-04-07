@@ -11,6 +11,11 @@ The original motivation for ayzim was to keep my machine usable when trying to o
 
 Release announcement thread on the emscripten mailing list (with a few technical details in one of my replies): https://groups.google.com/d/msg/emscripten-discuss/pFTcf3lsL3M/W_pucD8MAwAJ
 
+Building
+--------
+
+Master currently needs: `rustup default nightly-2017-03-03`
+
 The future
 ----------
 

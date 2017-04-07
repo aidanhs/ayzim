@@ -47,7 +47,7 @@ pub fn walk_pat_mut<F>(pat: Pat, it: &mut F) -> Pat where F: FnMut(Pat) -> Pat {
         }
         PatKind::Wild |
         PatKind::Lit(_) |
-        PatKind::Range(_, _) |
+        PatKind::Range(_, _, _) |
         PatKind::Ident(_, _, _) |
         PatKind::Path(..) |
         PatKind::Mac(_) => {
